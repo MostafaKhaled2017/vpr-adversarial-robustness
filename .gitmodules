@@ -1,0 +1,6 @@
+[submodule "third_party/SuperVLAD"]
+	path = third_party/SuperVLAD
+	url = https://github.com/Lu-Feng/SuperVLAD.git
+[submodule "submodules/perceptual-advex"]
+	path = submodules/perceptual-advex
+	url = https://github.com/cassidylaidlaw/perceptual-advex.git
