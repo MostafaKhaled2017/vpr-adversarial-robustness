@@ -6,11 +6,11 @@ The primary retrieval metric is recall at K. Parser defaults and local evaluator
 
 ## Rank displacement
 
-`rank_eval.py` computes the nearest-positive rank before and after attack for valid attacked queries. Rank displacement is reported as attacked nearest-positive rank minus clean nearest-positive rank, with count, mean, median, max, and p95 summaries.
+`rank_eval.py` computes the nearest-positive rank before and after attack for valid attacked queries per dataset and model. Rank displacement is reported as attacked nearest-positive rank minus clean nearest-positive rank, with count, mean, median, max, and p95 summaries.
 
 ## Attack success
 
-`rank_eval.py` reports clean-correct attack success for queries whose clean nearest-positive rank is 1, and all-valid attack success for all attacked queries with positives. A query is counted as attack-successful when the nearest positive moves below rank 1.
+`rank_eval.py` reports clean-correct attack success for queries whose model-specific clean nearest-positive rank is 1, and all-valid attack success for all attacked queries with positives. A query is counted as attack-successful when the nearest positive moves below rank 1.
 
 ## Attack runtime and query counts
 

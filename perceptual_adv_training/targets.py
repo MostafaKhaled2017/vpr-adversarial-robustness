@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-import faiss
 import numpy as np
 import torch
 from torch import Tensor
@@ -95,6 +94,8 @@ def build_attack_targets(
     clean_query_features: np.ndarray,
     limit_queries: Optional[int] = None,
 ) -> Tuple[List[Dict[str, object]], np.ndarray]:
+    import faiss
+
     positives_per_query = eval_ds.get_positives()
     valid_query_indices = np.flatnonzero(
         np.fromiter((len(positive_candidates) > 0 for positive_candidates in positives_per_query), dtype=bool)

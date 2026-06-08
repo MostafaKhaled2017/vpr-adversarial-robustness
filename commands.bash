@@ -41,3 +41,22 @@ python3 perceptual_eval.py \
   --test_method=hard_resize \
   --output_json=test/perceptual_eval/msls_sped_nordland_comparison.json \
   --output_csv=test/perceptual_eval/msls_sped_nordland_comparison.csv
+
+python3 rank_eval.py \
+  --eval_datasets_folder=datasets \
+  --datasets msls sped nordland \
+  --models checkpoints/SuperVLAD.pth checkpoints/perceptual_adv_checkpoint.pth \
+  --model_tags base checkpoint \
+  --foundation_model_path=checkpoints/dinov2_vitb14_pretrain.pth \
+  --backbone=dino \
+  --supervlad_clusters=4 \
+  --crossimage_encoder \
+  --freeze_te=8 \
+  --infer_batch_size=16 \
+  --test_method=hard_resize \
+  --rank_attack=rank_pgd_linf \
+  --rank_steps=20 \
+  --rank_restarts=1 \
+  --epsilons 0.01 0.1 0.2 \
+  --output_json=test/rank_eval/msls_sped_nordland_rank_comparison.json \
+  --output_csv=test/rank_eval/msls_sped_nordland_rank_comparison.csv

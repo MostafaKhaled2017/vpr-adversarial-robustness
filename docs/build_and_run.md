@@ -11,6 +11,7 @@ Repository-documented examples from `commands.bash`:
 - `python adv_train.py ...`
 - `python3 fgsm_eval.py ...`
 - `python3 perceptual_eval.py ...`
+- `python3 rank_eval.py ...`
 
 Repository-documented shell wrappers:
 
@@ -22,10 +23,15 @@ Repository-documented shell wrappers:
 Lightweight tests added for native rank attacks and retrieval metrics:
 
 - `python3 -m unittest discover tests`
+- `python3 tests/test_rank_eval_interface.py`
 
 Syntax validation for the native rank evaluator:
 
 - `python3 -m py_compile rank_eval.py perceptual_adv_training/rank_attacks.py perceptual_adv_training/retrieval_metrics.py perceptual_adv_training/targets.py`
+- `python3 -m py_compile rank_eval.py tests/test_rank_eval_interface.py`
+- `python3 rank_eval.py --help`
+- `bash -n commands.bash`
+- `bash -n scripts/run_rank_eval.sh`
 
 Validation commands run during the 2026-06-04 compatibility fix:
 
@@ -34,4 +40,4 @@ Validation commands run during the 2026-06-04 compatibility fix:
 
 ## Validation notes
 
-The native rank attack unit tests and syntax checks pass with `python3`. Full training and full dataset evaluation were not run because they require longer dataset, checkpoint, and likely GPU resources.
+The native rank attack unit tests, syntax checks, and CLI help checks pass with `python3`. Full training and full dataset evaluation were not run because they require longer dataset, checkpoint, and likely GPU resources.
