@@ -2,11 +2,11 @@
 
 ## Working status
 
-The repository appears to be a Python ML/CV experiment workspace. Lightweight unit tests and syntax checks pass for the native rank attack evaluator added on 2026-06-06. Full training and full MSLS evaluation status are unknown because they require longer dataset/checkpoint/GPU runs.
+The repository is a Python ML/CV experiment workspace. Lightweight unit tests and syntax checks pass for the native rank attack evaluator added on 2026-06-06. A full multi-dataset `rank_pgd_linf` evaluation for MSLS, SPED, and Nordland is available under `test/rank_eval/2026-06-08_18-46-59/`. Full training status is unknown because training requires longer dataset/checkpoint/GPU runs.
 
 ## Active task
 
-Update rank evaluation command examples and unified rank-eval CLI.
+Regenerate the native rank attack evaluation PDF with fixed table placement.
 
 ## Recent changes
 
@@ -15,6 +15,8 @@ Update rank evaluation command examples and unified rank-eval CLI.
 - Updated `rank_eval.py` to add the vendored `third_party/SuperVLAD` path at runtime, so `python3 rank_eval.py ...` works from the repository root without a manual `PYTHONPATH` export.
 - Updated `rank_eval.py` to save each run under a timestamped subdirectory such as `test/rank_eval/YYYY-MM-DD_HH-MM-SS/`, including when explicit JSON/CSV filenames are provided.
 - Added a multi-dataset base/checkpoint `rank_eval.py` example to `commands.bash`.
+- Added `reports/native-rank-attacks-evaluation.tex` and compiled `reports/native-rank-attacks-evaluation.pdf` summarizing the final native `rank_pgd_linf` evaluation.
+- Updated `reports/native-rank-attacks-evaluation.tex` so the recall table is pinned at its source location in the compiled PDF.
 - Added reusable rank attack and retrieval metric modules under `perceptual_adv_training/`.
 - Added `scripts/run_rank_eval.sh` and lightweight `unittest` coverage for rank attacks and metrics.
 - Added `reports/phase1_native_rank_attack_implementation.md` to explain the Phase 1 implementation, outputs, validation, and limitations.
@@ -33,6 +35,6 @@ Update rank evaluation command examples and unified rank-eval CLI.
 
 ## Next recommended steps
 
-- Run the new `commands.bash` `rank_eval.py` example on the intended dataset setup and compare Rank-PGD-Linf against FGSM `training_style` at comparable epsilon.
+- Compare the native `rank_pgd_linf` report against the proxy/perceptual attack report and decide which robustness findings belong in the final write-up.
 - Implement rank-margin diagnostics to compare clean margins and attack success.
-- Rerun the original `perceptual_eval.py` command with the intended datasets and checkpoints when dataset/checkpoint access is available.
+- Evaluate `rank_pgd_l2` and `rank_apgd_linf` if additional native attack coverage is needed.

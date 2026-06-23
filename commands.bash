@@ -57,6 +57,6 @@ python3 rank_eval.py \
   --rank_attack=rank_pgd_linf \
   --rank_steps=20 \
   --rank_restarts=1 \
-  --epsilons 0.01 0.1 0.2 \
+  --epsilons 0.01 0.1 \
   --output_json=test/rank_eval/msls_sped_nordland_rank_comparison.json \
   --output_csv=test/rank_eval/msls_sped_nordland_rank_comparison.csv

@@ -37,11 +37,14 @@
 - `docs/`: repository project documentation.
 - `reports/vpr_next_steps_implementation_plan.md`: roadmap for the next VPR robustness implementation phases.
 - `reports/phase1_native_rank_attack_implementation.md`: detailed explanation of the implemented Phase 1 native rank attack evaluator.
+- `reports/native-rank-attacks-evaluation.tex`: LaTeX report summarizing the final native rank attack evaluation.
+- `reports/native-rank-attacks-evaluation.pdf`: compiled PDF report for the final native rank attack evaluation.
 
 ## Generated or output files
 
 - `logs/`: training logs and checkpoints, referenced by command examples.
 - `test/rank_eval/`: default native rank evaluation output location.
+- `test/rank_eval/2026-06-08_18-46-59/msls_sped_nordland_rank_comparison.csv`: completed native `rank_pgd_linf` evaluation summary used by the report.
 - `test/perceptual_eval/`: perceptual evaluation logs and result outputs.
 - `checkpoints/`: expected checkpoint location in command examples.
 - `datasets/`: expected dataset location in command examples.
