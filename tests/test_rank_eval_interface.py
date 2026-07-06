@@ -42,6 +42,7 @@ class RankEvalInterfaceTests(unittest.TestCase):
         self.assertIn("--datasets", parser._option_string_actions)
         self.assertIn("--models", parser._option_string_actions)
         self.assertIn("--model_tags", parser._option_string_actions)
+        self.assertIn("--max_dataset_samples", parser._option_string_actions)
         self.assertIn("--audit_attack_implementation", parser._option_string_actions)
         self.assertIn("--audit_output_json", parser._option_string_actions)
         self.assertIn("--audit_sample_database_size", parser._option_string_actions)
@@ -214,6 +215,38 @@ class RankEvalInterfaceTests(unittest.TestCase):
         self.assertEqual(targets[0]["query_feature_index"], 0)
         self.assertEqual(targets[0]["positive_index"], 0)
         np.testing.assert_array_equal(targets[0]["negative_indexes"], np.array([2, 3]))
+
+    def test_context_targets_are_cached_by_negative_count(self):
+        args = Namespace(adv_negatives=2, max_queries=None, model_tags=["base"])
+        context = {
+            "sampled_gallery": False,
+            "eval_ds": object(),
+            "clean_features": {
+                "base": {
+                    "database": np.zeros((4, 2), dtype=np.float32),
+                    "queries": np.zeros((2, 2), dtype=np.float32),
+                }
+            },
+            "valid_query_indices": np.array([0, 1], dtype=np.int64),
+            "target_cache": {},
+        }
+        calls = []
+        original_build_attack_targets = rank_eval.build_attack_targets
+
+        def fake_build_attack_targets(*_args, **_kwargs):
+            calls.append(args.adv_negatives)
+            return [{"query_index": 0}], np.array([0, 1], dtype=np.int64)
+
+        try:
+            rank_eval.build_attack_targets = fake_build_attack_targets
+            rank_eval.get_context_targets(args, context)
+            rank_eval.get_context_targets(args, context)
+            args.adv_negatives = 3
+            rank_eval.get_context_targets(args, context)
+        finally:
+            rank_eval.build_attack_targets = original_build_attack_targets
+
+        self.assertEqual(calls, [2, 3])
 
     def test_query_diagnostics_compute_margins_and_cwr_estimate(self):
         database = np.array(

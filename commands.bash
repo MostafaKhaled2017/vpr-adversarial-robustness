@@ -82,3 +82,14 @@ python rank_eval.py \
   --audit_sample_database_size 64 \
   --output_json=test/rank_eval/phase1_audit_sample.json \
   --output_csv=test/rank_eval/phase1_audit_sample.csv
+
+# Attack sweep
+python3 scripts/run_rank_pgd_strength_sweep.py \
+  --parallel_runs 1 \
+  --infer_batch_size 16
+#  --resume_sweep_dir test/rank_eval/sweeps/2026-07-06_13-17-09_full \
+
+## To preview resume status only
+python3 scripts/run_rank_pgd_strength_sweep.py \
+  --resume_sweep_dir test/rank_eval/sweeps/2026-07-06_13-17-09_full \
+  --dry_run

@@ -1,5 +1,6 @@
 import copy
 import csv
+import hashlib
 import json
 import logging
 import shlex
@@ -102,6 +103,15 @@ def build_parser():
     parser.add_argument("--adv_negatives", type=int, default=5, help="Hard negatives per rank attack target.")
     parser.add_argument("--adv_margin", type=float, default=0.1, help="Margin for the retrieval rank objective.")
     parser.add_argument("--max_queries", type=int, default=None, help="Optional cap on attacked valid queries.")
+    parser.add_argument(
+        "--max_dataset_samples",
+        type=int,
+        default=None,
+        help=(
+            "Optional sampled-gallery cap. When set, at most this many query images and this many database images "
+            "are selected deterministically from --seed; metrics are not full-benchmark comparable."
+        ),
+    )
     parser.add_argument(
         "--audit_sample_database_size",
         type=int,
@@ -223,6 +233,11 @@ def validate_arguments(args) -> None:
         raise ValueError("--adv_negatives must be at least 1.")
     if args.max_queries is not None and args.max_queries < 1:
         raise ValueError("--max_queries must be at least 1 when provided.")
+    if args.max_dataset_samples is not None:
+        if args.max_dataset_samples < 1:
+            raise ValueError("--max_dataset_samples must be at least 1 when provided.")
+        if args.max_dataset_samples < args.adv_negatives + 1:
+            raise ValueError("--max_dataset_samples must be at least --adv_negatives + 1.")
     if args.audit_output_json is not None and not args.audit_attack_implementation:
         raise ValueError("--audit_output_json requires --audit_attack_implementation.")
     if args.trace_query_indices is not None and any(index < 0 for index in args.trace_query_indices):
@@ -439,6 +454,110 @@ def select_valid_query_indices(positives_per_query: Sequence[Sequence[int]], lim
     return valid_query_indices.astype(np.int64, copy=False)
 
 
+def stable_sample_seed(seed: int, dataset_name: str, split_name: str) -> int:
+    payload = f"{int(seed)}:{dataset_name}:{split_name}".encode("utf-8")
+    return int.from_bytes(hashlib.sha256(payload).digest()[:8], byteorder="little", signed=False)
+
+
+def deterministic_subset(values: Sequence[int], requested_size: int, seed: int) -> np.ndarray:
+    array = np.asarray([int(value) for value in values], dtype=np.int64)
+    if requested_size >= len(array):
+        return np.sort(array)
+    rng = np.random.default_rng(seed)
+    selected = rng.choice(array, size=int(requested_size), replace=False)
+    return np.sort(selected.astype(np.int64, copy=False))
+
+
+def select_sampled_query_indices(
+    positives_per_query: Sequence[Sequence[int]],
+    dataset_name: str,
+    seed: int,
+    requested_size: int,
+    limit_queries: int | None,
+) -> np.ndarray:
+    valid_query_indices = select_valid_query_indices(positives_per_query, None)
+    sample_size = min(int(requested_size), len(valid_query_indices))
+    sampled = deterministic_subset(
+        valid_query_indices,
+        sample_size,
+        stable_sample_seed(seed, dataset_name, "queries"),
+    )
+    if limit_queries is not None:
+        sampled = sampled[:limit_queries]
+    if len(sampled) == 0:
+        raise RuntimeError("The sampled query set is empty.")
+    return sampled.astype(np.int64, copy=False)
+
+
+def select_sampled_database_indices(
+    positives_per_query: Sequence[Sequence[int]],
+    sampled_query_indices: np.ndarray,
+    database_size: int,
+    dataset_name: str,
+    seed: int,
+    requested_size: int,
+) -> np.ndarray:
+    required: list[int] = []
+    required_set: set[int] = set()
+    for query_index in sampled_query_indices:
+        positive_candidates = sorted(int(index) for index in positives_per_query[int(query_index)])
+        if not positive_candidates:
+            continue
+        positive_index = positive_candidates[0]
+        if positive_index not in required_set:
+            required.append(positive_index)
+            required_set.add(positive_index)
+
+    if len(required) > requested_size:
+        raise RuntimeError(
+            "The sampled database cap is too small to retain one positive for each sampled query. "
+            f"Required {len(required)} positives but max_dataset_samples={requested_size}."
+        )
+
+    remaining_slots = int(requested_size) - len(required)
+    candidates = [index for index in range(int(database_size)) if index not in required_set]
+    filler = deterministic_subset(
+        candidates,
+        min(remaining_slots, len(candidates)),
+        stable_sample_seed(seed, dataset_name, "database"),
+    )
+    selected = np.asarray([*required, *[int(index) for index in filler]], dtype=np.int64)
+    if selected.size == 0:
+        raise RuntimeError("The sampled database set is empty.")
+    return np.sort(selected)
+
+
+def filter_sampled_queries_with_targets(
+    positives_per_query: Sequence[Sequence[int]],
+    sampled_query_indices: np.ndarray,
+    sampled_database_indices: np.ndarray,
+    max_adv_negatives: int,
+) -> tuple[np.ndarray, list[np.ndarray], int]:
+    database_index_to_row = {int(index): row for row, index in enumerate(sampled_database_indices)}
+    filtered_indices: list[int] = []
+    filtered_positives: list[np.ndarray] = []
+    dropped = 0
+    database_rows = set(range(len(sampled_database_indices)))
+
+    for query_index in sampled_query_indices:
+        positive_rows = [
+            database_index_to_row[int(positive_index)]
+            for positive_index in positives_per_query[int(query_index)]
+            if int(positive_index) in database_index_to_row
+        ]
+        positive_set = set(int(row) for row in positive_rows)
+        negative_count = len(database_rows - positive_set)
+        if not positive_rows or negative_count < int(max_adv_negatives):
+            dropped += 1
+            continue
+        filtered_indices.append(int(query_index))
+        filtered_positives.append(np.asarray(sorted(positive_set), dtype=np.int64))
+
+    if not filtered_indices:
+        raise RuntimeError("No sampled queries retained positives and enough negatives for attack evaluation.")
+    return np.asarray(filtered_indices, dtype=np.int64), filtered_positives, dropped
+
+
 def select_audit_database_indices(
     positives_per_query: Sequence[Sequence[int]],
     valid_query_indices: np.ndarray,
@@ -581,6 +700,11 @@ def build_rank_attack(model: nn.Module, args, epsilon: float) -> nn.Module:
     if args.rank_attack == "rank_apgd_linf":
         return RankAPGDLinfAttack(model, config)
     return RankPGDAttack(model, config)
+
+
+def clear_cuda_cache(args) -> None:
+    if getattr(args, "device", None) == "cuda" and torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def summarize_descriptor_norms(descriptors: np.ndarray) -> Dict[str, float]:
@@ -1119,6 +1243,40 @@ def add_sampled_clean_results(
     return clean_ranks_by_model
 
 
+def add_sampled_gallery_clean_results(
+    results: MutableMapping[str, Dict[str, object]],
+    clean_features: Mapping[str, np.ndarray],
+    sampled_positives,
+    recall_values: Sequence[int],
+) -> Dict[str, np.ndarray]:
+    clean_ranks_by_model = {}
+    for model_tag, features in clean_features.items():
+        clean_sample = compute_recalls_from_features(
+            features["database"],
+            features["queries"],
+            sampled_positives,
+            recall_values,
+        )
+        clean_ranks_by_model[model_tag] = nearest_positive_ranks(
+            features["database"],
+            features["queries"],
+            sampled_positives,
+        )
+        clean_block = {
+            **clean_sample,
+            "condition": "clean_attacked_subset",
+            "attacked_queries": int(len(sampled_positives)),
+            "sampled_gallery": True,
+            "benchmark_comparable": False,
+        }
+        results[model_tag] = {
+            "clean_all_queries": clean_block,
+            "clean_attacked_subset": clean_block,
+        }
+        logging.info("%s clean sampled-gallery recalls: %s", model_tag, clean_sample["recalls_str"])
+    return clean_ranks_by_model
+
+
 def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, Tuple[nn.Module, object]]):
     import datasets_ws
 
@@ -1310,152 +1468,347 @@ def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, 
     return results, runtimes, query_counts, audit_by_condition, image_manifest
 
 
-def evaluate_dataset(args, dataset_name: str, models: Mapping[str, Tuple[nn.Module, object]]):
-    if args.audit_sample_database_size is not None:
-        return evaluate_audit_sample_dataset(args, dataset_name, models)
-
+def prepare_dataset_context(
+    args,
+    dataset_name: str,
+    models: Mapping[str, Tuple[nn.Module, object]],
+    max_adv_negatives: int | None = None,
+) -> Dict[str, object]:
     import datasets_ws
 
     eval_ds = datasets_ws.BaseDataset(args, args.eval_datasets_folder, dataset_name, "test")
     logging.info("Test set: %s", eval_ds)
+    max_adv_negatives = int(max_adv_negatives if max_adv_negatives is not None else args.adv_negatives)
+    positives = eval_ds.get_positives()
+
+    if args.max_dataset_samples is None:
+        feature_times = {}
+        clean_features = {}
+        for model_tag, (model, model_args) in models.items():
+            logging.info("Extracting clean descriptors for %s on %s.", model_tag, dataset_name)
+            feature_start = perf_counter()
+            clean_features[model_tag] = extract_clean_features(model_args, eval_ds, model)
+            feature_times[model_tag] = perf_counter() - feature_start
+
+        valid_query_indices = select_valid_query_indices(positives, args.max_queries)
+        valid_positives = [positives[index] for index in valid_query_indices]
+        query_counts = {
+            "total_queries": int(eval_ds.queries_num),
+            "attacked_queries": int(len(valid_query_indices)),
+            "skipped_queries_without_positives": int(eval_ds.queries_num - len(valid_query_indices)),
+            "sampled_gallery": False,
+            "benchmark_comparable": True,
+            "max_dataset_samples": None,
+        }
+        clean_results: Dict[str, Dict[str, object]] = {}
+        clean_ranks_by_model = add_clean_results(
+            clean_results,
+            clean_features,
+            positives,
+            valid_query_indices,
+            valid_positives,
+            args.recall_values,
+        )
+        return {
+            "dataset_name": dataset_name,
+            "eval_ds": eval_ds,
+            "models": models,
+            "clean_features": clean_features,
+            "feature_times": feature_times,
+            "positives": positives,
+            "valid_query_indices": valid_query_indices,
+            "valid_positives": valid_positives,
+            "clean_results": clean_results,
+            "clean_ranks_by_model": clean_ranks_by_model,
+            "query_counts": query_counts,
+            "target_cache": {},
+            "sampled_gallery": False,
+        }
+
+    logging.info(
+        "Using sampled-gallery mode on %s with max_dataset_samples=%s. Results are not benchmark-comparable.",
+        dataset_name,
+        args.max_dataset_samples,
+    )
+    sampled_query_indices = select_sampled_query_indices(
+        positives,
+        dataset_name,
+        args.seed,
+        args.max_dataset_samples,
+        args.max_queries,
+    )
+    sampled_database_indices = select_sampled_database_indices(
+        positives,
+        sampled_query_indices,
+        eval_ds.database_num,
+        dataset_name,
+        args.seed,
+        args.max_dataset_samples,
+    )
+    valid_query_indices, sampled_positives, dropped_queries = filter_sampled_queries_with_targets(
+        positives,
+        sampled_query_indices,
+        sampled_database_indices,
+        max_adv_negatives,
+    )
+    sampled_query_dataset_indices = [eval_ds.database_num + int(query_index) for query_index in valid_query_indices]
 
     feature_times = {}
     clean_features = {}
     for model_tag, (model, model_args) in models.items():
-        logging.info("Extracting clean descriptors for %s on %s.", model_tag, dataset_name)
+        logging.info(
+            "Extracting sampled-gallery descriptors for %s on %s (%d database, %d queries).",
+            model_tag,
+            dataset_name,
+            len(sampled_database_indices),
+            len(valid_query_indices),
+        )
         feature_start = perf_counter()
-        clean_features[model_tag] = extract_clean_features(model_args, eval_ds, model)
+        clean_features[model_tag] = {
+            "database": extract_indexed_features(
+                model_args,
+                eval_ds,
+                model,
+                sampled_database_indices.tolist(),
+                desc=f"{dataset_name}:{model_tag}:sampled database",
+                test_method="hard_resize",
+            ),
+            "queries": extract_indexed_features(
+                model_args,
+                eval_ds,
+                model,
+                sampled_query_dataset_indices,
+                desc=f"{dataset_name}:{model_tag}:sampled queries",
+                test_method=args.test_method,
+            ),
+        }
         feature_times[model_tag] = perf_counter() - feature_start
-
-    reference_tag = attack_reference_tag(args)
-    reference_features = clean_features[reference_tag]
-    positives = eval_ds.get_positives()
-
-    target_start = perf_counter()
-    targets, valid_query_indices = build_attack_targets(
-        args,
-        eval_ds,
-        reference_features["database"],
-        reference_features["queries"],
-        limit_queries=args.max_queries,
-    )
-    target_seconds = perf_counter() - target_start
-    valid_positives = [positives[index] for index in valid_query_indices]
 
     query_counts = {
         "total_queries": int(eval_ds.queries_num),
         "attacked_queries": int(len(valid_query_indices)),
-        "skipped_queries_without_positives": int(eval_ds.queries_num - len(valid_query_indices)),
+        "skipped_queries_without_positives": int(eval_ds.queries_num - len(select_valid_query_indices(positives, None))),
+        "sampled_gallery": True,
+        "benchmark_comparable": False,
+        "max_dataset_samples": int(args.max_dataset_samples),
+        "sampled_query_indices": [int(index) for index in valid_query_indices],
+        "sampled_database_indices": [int(index) for index in sampled_database_indices],
+        "sampled_database_images": int(len(sampled_database_indices)),
+        "dropped_sampled_queries_without_targets": int(dropped_queries),
+        "max_adv_negatives": int(max_adv_negatives),
     }
-    results: Dict[str, Dict[str, object]] = {}
-    clean_ranks_by_model = add_clean_results(
-        results,
+    clean_results = {}
+    clean_ranks_by_model = add_sampled_gallery_clean_results(
+        clean_results,
         clean_features,
-        positives,
-        valid_query_indices,
-        valid_positives,
+        sampled_positives,
         args.recall_values,
     )
+    return {
+        "dataset_name": dataset_name,
+        "eval_ds": eval_ds,
+        "models": models,
+        "clean_features": clean_features,
+        "feature_times": feature_times,
+        "positives": positives,
+        "valid_query_indices": valid_query_indices,
+        "valid_positives": sampled_positives,
+        "sampled_database_indices": sampled_database_indices,
+        "clean_results": clean_results,
+        "clean_ranks_by_model": clean_ranks_by_model,
+        "query_counts": query_counts,
+        "target_cache": {},
+        "sampled_gallery": True,
+    }
 
+
+def get_context_targets(args, context: MutableMapping[str, object]) -> tuple[list[Dict[str, object]], float]:
+    cache = context.setdefault("target_cache", {})
+    assert isinstance(cache, dict)
+    cache_key = int(args.adv_negatives)
+    if cache_key in cache:
+        return cache[cache_key]["targets"], 0.0
+
+    target_start = perf_counter()
+    reference_tag = attack_reference_tag(args)
+    reference_features = context["clean_features"][reference_tag]
+    if context.get("sampled_gallery"):
+        targets = build_sampled_attack_targets(
+            args,
+            context["sampled_database_indices"],
+            reference_features["database"],
+            reference_features["queries"],
+            context["valid_query_indices"],
+            context["valid_positives"],
+        )
+    else:
+        targets, returned_valid_query_indices = build_attack_targets(
+            args,
+            context["eval_ds"],
+            reference_features["database"],
+            reference_features["queries"],
+            limit_queries=args.max_queries,
+        )
+        if not np.array_equal(returned_valid_query_indices, context["valid_query_indices"]):
+            raise RuntimeError("Unexpected change in valid query indices while building attack targets.")
+    target_seconds = perf_counter() - target_start
+    cache[cache_key] = {"targets": targets, "target_seconds": target_seconds}
+    return targets, target_seconds
+
+
+def evaluate_condition_from_context(
+    args,
+    context: MutableMapping[str, object],
+    dataset_name: str,
+    epsilon: float,
+) -> tuple[Dict[str, Dict[str, object]], Dict[str, object], Dict[str, object], Dict[str, object], list[Dict[str, object]]]:
+    results: Dict[str, Dict[str, object]] = copy.deepcopy(context["clean_results"])
+    clean_features = context["clean_features"]
+    clean_ranks_by_model = context["clean_ranks_by_model"]
+    valid_query_indices = context["valid_query_indices"]
+    valid_positives = context["valid_positives"]
+    models = context["models"]
+    reference_tag = attack_reference_tag(args)
+    reference_features = clean_features[reference_tag]
     reference_model = models[reference_tag][0]
     database_features_tensor = torch.from_numpy(reference_features["database"]).to(args.device)
-    attack_times: Dict[str, float] = {}
-    attack_metadata_by_condition = {}
     audit_by_condition: Dict[str, object] = {}
     image_manifest: list[Dict[str, object]] = []
-    for epsilon in args.epsilons:
-        condition_name = f"{args.rank_attack}_eps_{epsilon:g}"
-        attack = build_rank_attack(reference_model, args, epsilon)
-        attack_start = perf_counter()
-        attacked_features_by_model, attack_metadata, trace_rows, image_rows = generate_shared_attacked_query_features(
+    clean_query_feature_indices = (
+        np.arange(len(valid_query_indices), dtype=np.int64)
+        if context.get("sampled_gallery")
+        else None
+    )
+
+    targets, target_seconds = get_context_targets(args, context)
+    condition_name = f"{args.rank_attack}_eps_{epsilon:g}"
+    clear_cuda_cache(args)
+    attack = build_rank_attack(reference_model, args, epsilon)
+    attack_start = perf_counter()
+    attacked_features_by_model, attack_metadata, trace_rows, image_rows = generate_shared_attacked_query_features(
+        args,
+        context["eval_ds"],
+        attack,
+        models,
+        database_features_tensor,
+        reference_features["queries"],
+        targets,
+        dataset_name,
+        epsilon,
+        desc=f"{dataset_name}:{condition_name}",
+    )
+    image_manifest.extend(image_rows)
+    elapsed = perf_counter() - attack_start
+    attack_metadata_summary = summarize_metadata(attack_metadata)
+    write_trace_csvs(
+        args.trace_output_dir_path,
+        dataset_name,
+        args.rank_attack,
+        epsilon,
+        trace_rows,
+        reference_features["database"],
+        {int(index): valid_positives[row] for row, index in enumerate(valid_query_indices)},
+    )
+    if args.audit_attack_implementation:
+        audit_by_condition[condition_name] = build_condition_audit(
             args,
-            eval_ds,
-            attack,
-            models,
-            database_features_tensor,
-            reference_features["queries"],
+            epsilon,
+            clean_features,
+            attacked_features_by_model,
+            valid_query_indices,
+            attack_metadata,
+            clean_query_feature_indices=clean_query_feature_indices,
+        )
+
+    for model_tag, attacked_features in attacked_features_by_model.items():
+        model_database_features = clean_features[model_tag]["database"]
+        diagnostic_rows = compute_query_diagnostic_rows(
+            model_database_features,
+            clean_features[model_tag]["queries"],
+            attacked_features,
+            valid_positives,
+            valid_query_indices,
             targets,
-            dataset_name,
-            epsilon,
-            desc=f"{dataset_name}:{condition_name}",
+            attack_metadata["perturbation_norm"].detach().cpu().numpy(),
+            clean_query_feature_indices=clean_query_feature_indices,
         )
-        image_manifest.extend(image_rows)
-        elapsed = perf_counter() - attack_start
-        attack_times[condition_name] = elapsed
-        attack_metadata_by_condition[condition_name] = summarize_metadata(attack_metadata)
-        write_trace_csvs(
-            args.trace_output_dir_path,
-            dataset_name,
-            args.rank_attack,
-            epsilon,
-            trace_rows,
-            reference_features["database"],
-            {int(index): valid_positives[row] for row, index in enumerate(valid_query_indices)},
+        diagnostics_path = (
+            args.diagnostics_output_dir_path
+            / (
+                f"{_filename_token(dataset_name)}_{_filename_token(model_tag)}_"
+                f"{_filename_token(args.rank_attack)}_eps_{_epsilon_label(epsilon)}.csv"
+            )
         )
-        if args.audit_attack_implementation:
-            audit_by_condition[condition_name] = build_condition_audit(
-                args,
-                epsilon,
-                clean_features,
-                attacked_features_by_model,
-                valid_query_indices,
-                attack_metadata,
-            )
+        write_diagnostics_csv(diagnostics_path, diagnostic_rows)
+        attacked_recalls = compute_recalls_from_features(
+            model_database_features,
+            attacked_features,
+            valid_positives,
+            args.recall_values,
+        )
+        attacked_ranks = nearest_positive_ranks(model_database_features, attacked_features, valid_positives)
+        displacement = rank_displacement_summary(clean_ranks_by_model[model_tag], attacked_ranks)
+        success = attack_success_metrics(clean_ranks_by_model[model_tag], attacked_ranks)
 
-        for model_tag, attacked_features in attacked_features_by_model.items():
-            model_database_features = clean_features[model_tag]["database"]
-            diagnostic_rows = compute_query_diagnostic_rows(
-                model_database_features,
-                clean_features[model_tag]["queries"],
-                attacked_features,
-                valid_positives,
-                valid_query_indices,
-                targets,
-                attack_metadata["perturbation_norm"].detach().cpu().numpy(),
-            )
-            diagnostics_path = (
-                args.diagnostics_output_dir_path
-                / (
-                    f"{_filename_token(dataset_name)}_{_filename_token(model_tag)}_"
-                    f"{_filename_token(args.rank_attack)}_eps_{_epsilon_label(epsilon)}.csv"
-                )
-            )
-            write_diagnostics_csv(diagnostics_path, diagnostic_rows)
-            attacked_recalls = compute_recalls_from_features(
-                model_database_features,
-                attacked_features,
-                valid_positives,
-                args.recall_values,
-            )
-            attacked_ranks = nearest_positive_ranks(model_database_features, attacked_features, valid_positives)
-            displacement = rank_displacement_summary(clean_ranks_by_model[model_tag], attacked_ranks)
-            success = attack_success_metrics(clean_ranks_by_model[model_tag], attacked_ranks)
-
-            results[model_tag][condition_name] = {
-                **attacked_recalls,
-                "condition": condition_name,
-                "attack": args.rank_attack,
-                "attack_reference_model": reference_tag,
-                "epsilon": float(epsilon),
-                "rank_steps": int(args.rank_steps),
-                "rank_restarts": int(args.rank_restarts),
-                "rank_step_size": args.rank_step_size,
-                "adv_margin": float(args.adv_margin),
-                "adv_negatives": int(args.adv_negatives),
-                "attacked_queries": query_counts["attacked_queries"],
-                "rank_displacement": displacement,
-                "attack_success": success,
-                "runtime_seconds": elapsed,
-                "runtime_per_query_seconds": float(elapsed / max(1, len(valid_query_indices))),
-                "attack_metadata": attack_metadata_by_condition[condition_name],
-            }
-            logging.info("%s/%s recalls: %s", model_tag, condition_name, attacked_recalls["recalls_str"])
+        results[model_tag][condition_name] = {
+            **attacked_recalls,
+            "condition": condition_name,
+            "attack": args.rank_attack,
+            "attack_reference_model": reference_tag,
+            "epsilon": float(epsilon),
+            "rank_steps": int(args.rank_steps),
+            "rank_restarts": int(args.rank_restarts),
+            "rank_step_size": args.rank_step_size,
+            "adv_margin": float(args.adv_margin),
+            "adv_negatives": int(args.adv_negatives),
+            "attacked_queries": context["query_counts"]["attacked_queries"],
+            "sampled_gallery": bool(context.get("sampled_gallery")),
+            "benchmark_comparable": not bool(context.get("sampled_gallery")),
+            "rank_displacement": displacement,
+            "attack_success": success,
+            "runtime_seconds": elapsed,
+            "runtime_per_query_seconds": float(elapsed / max(1, len(valid_query_indices))),
+            "attack_metadata": attack_metadata_summary,
+        }
+        logging.info("%s/%s recalls: %s", model_tag, condition_name, attacked_recalls["recalls_str"])
 
     runtimes = {
-        "feature_seconds": feature_times,
+        "feature_seconds": context["feature_times"],
         "target_seconds": target_seconds,
-        "attack_seconds": attack_times,
+        "attack_seconds": {condition_name: elapsed},
     }
+    return results, runtimes, context["query_counts"], audit_by_condition, image_manifest
+
+
+def evaluate_dataset(args, dataset_name: str, models: Mapping[str, Tuple[nn.Module, object]]):
+    if args.audit_sample_database_size is not None:
+        return evaluate_audit_sample_dataset(args, dataset_name, models)
+
+    context = prepare_dataset_context(args, dataset_name, models)
+    results: Dict[str, Dict[str, object]] = copy.deepcopy(context["clean_results"])
+    runtimes = {
+        "feature_seconds": context["feature_times"],
+        "target_seconds": 0.0,
+        "attack_seconds": {},
+    }
+    query_counts = context["query_counts"]
+    audit_by_condition: Dict[str, object] = {}
+    image_manifest: list[Dict[str, object]] = []
+
+    for epsilon in args.epsilons:
+        condition_results, condition_runtimes, _, condition_audit, condition_images = evaluate_condition_from_context(
+            args,
+            context,
+            dataset_name,
+            epsilon,
+        )
+        for model_tag, model_results in condition_results.items():
+            results.setdefault(model_tag, {}).update(model_results)
+        runtimes["target_seconds"] += float(condition_runtimes["target_seconds"])
+        runtimes["attack_seconds"].update(condition_runtimes["attack_seconds"])
+        audit_by_condition.update(condition_audit)
+        image_manifest.extend(condition_images)
+
     return results, runtimes, query_counts, audit_by_condition, image_manifest
 
 
@@ -1592,6 +1945,8 @@ def main() -> None:
                 "adv_negatives": int(args.adv_negatives),
                 "adv_margin": float(args.adv_margin),
                 "max_queries": args.max_queries,
+                "max_dataset_samples": args.max_dataset_samples,
+                "sampled_gallery_mode": args.max_dataset_samples is not None,
                 "audit_sample_database_size": args.audit_sample_database_size,
                 "audit_sample_mode": args.audit_sample_database_size is not None,
             },
@@ -1622,6 +1977,7 @@ def main() -> None:
                 "Descriptor norm checks summarize model outputs and do not force descriptor normalization.",
                 "Gradient checks are computed during attack optimization forward passes.",
                 "When audit_sample_database_size is set, recall and rank metrics are audit-only and not benchmark-comparable.",
+                "When max_dataset_samples is set, recall and rank metrics use a deterministic sampled gallery and are not benchmark-comparable.",
             ],
         }
 
