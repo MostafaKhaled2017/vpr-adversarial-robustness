@@ -1,7 +1,7 @@
 import warnings
 from contextlib import nullcontext
 from pathlib import Path
-from typing import ContextManager, Optional, Tuple
+from typing import ContextManager, Dict, Optional, Tuple
 
 import torch
 from torch import Tensor, nn
@@ -122,6 +122,25 @@ def get_normalized_bounds(device: str) -> Tuple[Tensor, Tensor]:
     min_value = (torch.zeros_like(mean) - mean) / std
     max_value = (torch.ones_like(mean) - mean) / std
     return min_value, max_value
+
+
+def denormalize_imagenet(inputs: Tensor) -> Tensor:
+    mean = IMAGENET_MEAN.to(device=inputs.device, dtype=inputs.dtype)
+    std = IMAGENET_STD.to(device=inputs.device, dtype=inputs.dtype)
+    return inputs * std + mean
+
+
+def normalized_epsilon_to_raw_pixels(epsilon: float) -> Dict[str, object]:
+    raw_01_values = [float(epsilon) * float(std) for std in IMAGENET_MEAN_STD["std"]]
+    raw_255_values = [value * 255.0 for value in raw_01_values]
+    channel_names = ("R", "G", "B")
+    return {
+        "normalized_epsilon": float(epsilon),
+        "per_channel_raw_01": dict(zip(channel_names, raw_01_values)),
+        "per_channel_raw_255": dict(zip(channel_names, raw_255_values)),
+        "max_raw_01": max(raw_01_values),
+        "max_raw_255": max(raw_255_values),
+    }
 
 
 def create_summary_writer(log_dir: str):
