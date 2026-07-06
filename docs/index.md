@@ -34,4 +34,4 @@ Python, computer vision, machine learning, visual place recognition, adversarial
 
 ## Last updated
 
-2026-06-04 19:32 MSK
+2026-07-06 11:27 MSK

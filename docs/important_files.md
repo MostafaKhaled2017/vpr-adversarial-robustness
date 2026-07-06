@@ -24,9 +24,11 @@
 - `commands.bash`: example commands for training and evaluation.
 - `scripts/run_perceptual_adv_training.sh`: perceptual adversarial training wrapper.
 - `scripts/run_rank_eval.sh`: native rank attack evaluation wrapper.
+- `scripts/run_rank_pgd_strength_sweep.py`: Phase 5 Rank-PGD strength sweep runner with default SPED in-process execution, optional subprocess fallback, deterministic sampled-gallery mode, resume support, and summary collation.
 - `scripts/run_fgsm_dual_eval.sh`: FGSM evaluation wrapper.
 - `scripts/run_fgsm_checkpoint_list_eval.sh`: FGSM checkpoint-list evaluation wrapper.
 - `scripts/adv_training_different_epsilons.sh`: adversarial training sweep wrapper.
+- `scripts/visualizations.py`: figure-generation script for rank-evaluation summaries, trace CSVs, diagnostics CSVs, and optional attack-image artifacts.
 - `tests/`: lightweight unit tests for rank attack mechanics and retrieval metrics.
 
 ## Documentation files
@@ -44,6 +46,7 @@
 
 - `logs/`: training logs and checkpoints, referenced by command examples.
 - `test/rank_eval/`: default native rank evaluation output location.
+- `test/rank_eval/sweeps/`: default Phase 5 strength sweep output location for manifests, per-dataset/per-condition runs, attempt logs, and summary CSVs.
 - `test/rank_eval/2026-06-08_18-46-59/msls_sped_nordland_rank_comparison.csv`: completed native `rank_pgd_linf` evaluation summary used by the report.
 - `test/perceptual_eval/`: perceptual evaluation logs and result outputs.
 - `checkpoints/`: expected checkpoint location in command examples.

@@ -39,9 +39,19 @@ When `--trace_query_indices` is supplied, per-step trace CSV rows include attack
 
 ## Figure outputs
 
-`scripts/visualization.py` uses rank summary CSVs, trace CSVs, diagnostics CSVs, and optional saved attack images to generate supervisor-facing plots. The attack-strength plot uses attacked summary rows and a selected recall metric such as `R@1`. Trace plots use positive distance, hard-negative distance, and nearest-positive rank. The margin-vs-failure plot uses clean margin and attacked nearest-positive rank, with attack success as the outcome marker.
+`scripts/visualizations.py` uses rank summary CSVs, trace CSVs, diagnostics CSVs, and optional saved attack images to generate supervisor-facing plots. The attack-strength plot uses attacked summary rows and a selected recall metric such as `R@1`. Trace plots use positive distance, hard-negative distance, and nearest-positive rank. The margin-vs-failure plot uses clean margin and attacked nearest-positive rank, with attack success as the outcome marker.
 
 The Phase 3 image-saving smoke run under `test/rank_eval/2026-06-24_19-16-54/` generated all expected figure types, including the perturbation visibility grid. Its metrics are audit-sample-only and are not benchmark-comparable.
+
+## Strength sweep summary
+
+`scripts/run_rank_pgd_strength_sweep.py` collates Phase 5 per-condition JSON reports into `rank_pgd_strength_sweep_summary.csv`. The summary records clean and attacked R@1/5/10/100, clean-correct and all-valid attack success rates, mean and p95 rank displacement, runtime per query, mean perturbation norm, and the attack hyperparameters used for each dataset-condition result.
+
+The runner selects the strongest practical setting using attacked `R@1` on the `base` model averaged across available datasets, then clean-correct attack success rate, runtime per query, and compute budget as tie-breakers.
+
+When resuming a sweep, a job contributes to the summary only if its `rank_eval_results.json` passes validation for the expected dataset, model tags, attack condition, recalls, attack success, rank displacement, and perturbation metadata. Partial or interrupted outputs are rerun and are not included in the summary.
+
+When `--max_dataset_samples` is omitted, sweep metrics use the full selected dataset. When `--max_dataset_samples` is set, metrics are computed on a deterministic sampled query/database gallery and are marked as not full-benchmark comparable; this mode is intended for comparing attack settings at lower cost.
 
 ## Notes
 

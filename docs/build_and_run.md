@@ -18,17 +18,41 @@ Repository-documented shell wrappers:
 - `scripts/run_perceptual_adv_training.sh`
 - `scripts/run_rank_eval.sh`
 
+Phase 5 Rank-PGD strength sweep dry run:
+
+- `python3 scripts/run_rank_pgd_strength_sweep.py --dry_run`
+
+Phase 5 smoke sweep command shape:
+
+- `python3 scripts/run_rank_pgd_strength_sweep.py --smoke --max_dataset_samples 21`
+
+The default full Phase 5 sweep uses SPED only, `--execution_mode in_process`, and `--parallel_runs 1`. When `--max_dataset_samples` is omitted, it uses the full selected dataset. To run MSLS and SPED concurrently in in-process mode, pass both datasets and set `--parallel_runs 2`:
+
+- `python3 scripts/run_rank_pgd_strength_sweep.py --datasets msls sped --parallel_runs 2`
+
+Use `--max_dataset_samples N` only for deterministic sampled-gallery attack-setting comparisons; sampled-gallery metrics are not full-benchmark comparable.
+
+Phase 5 resume command shape:
+
+- `python3 scripts/run_rank_pgd_strength_sweep.py --resume_sweep_dir test/rank_eval/sweeps/<sweep_id> --parallel_runs 1 --infer_batch_size 8`
+
+Phase 5 resume status preview:
+
+- `python3 scripts/run_rank_pgd_strength_sweep.py --resume_sweep_dir test/rank_eval/sweeps/<sweep_id> --dry_run`
+
 ## Test commands
 
 Lightweight tests added for native rank attacks and retrieval metrics:
 
 - `python3 -m unittest discover tests`
-- `python3 tests/test_rank_eval_interface.py`
+- `python3 -m unittest tests/test_rank_eval_interface.py`
+- `python3 -m unittest tests/test_rank_pgd_strength_sweep.py`
 
 Syntax validation for the native rank evaluator:
 
 - `python3 -m py_compile rank_eval.py perceptual_adv_training/rank_attacks.py perceptual_adv_training/retrieval_metrics.py perceptual_adv_training/targets.py`
 - `python3 -m py_compile rank_eval.py tests/test_rank_eval_interface.py`
+- `python3 -m py_compile scripts/run_rank_pgd_strength_sweep.py tests/test_rank_pgd_strength_sweep.py`
 - `python3 rank_eval.py --help`
 - `bash -n commands.bash`
 - `bash -n scripts/run_rank_eval.sh`
@@ -40,4 +64,4 @@ Validation commands run during the 2026-06-04 compatibility fix:
 
 ## Validation notes
 
-The native rank attack unit tests, syntax checks, and CLI help checks pass with `python3`. Full training and full dataset evaluation were not run because they require longer dataset, checkpoint, and likely GPU resources.
+The native rank attack unit tests, syntax checks, CLI help checks, and Phase 5 sweep-runner dry runs pass with `python3`. Full training and full dataset evaluation were not run because they require longer dataset, checkpoint, and likely GPU resources. In in-process sweep mode, `--parallel_runs` cannot exceed the number of selected datasets.

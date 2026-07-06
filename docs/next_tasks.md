@@ -2,13 +2,13 @@
 
 ## High priority
 
-- Run native rank attack evaluation on the intended MSLS setup.
-  - Reason: Phase 1 implementation is available, but the full benchmark must be run to compare Rank-PGD-Linf against FGSM `training_style`.
-  - Related files: `rank_eval.py`, `scripts/run_rank_eval.sh`, `fgsm_eval.py`
+- Run the Phase 5 Rank-PGD strength sweep smoke test.
+  - Reason: The sweep runner is implemented, but a sampled-gallery SPED smoke run should validate in-process execution, output collation, and summary generation before the full benchmark.
+  - Related files: `scripts/run_rank_pgd_strength_sweep.py`, `rank_eval.py`
 
-- Implement rank-margin diagnostics.
-  - Reason: The next research direction needs positive margin and certified worst-case rank estimates to explain vulnerable queries.
-  - Related files: `reports/vpr_student_research_decision_brief.md`, `reports/vpr_next_steps_implementation_plan.md`
+- Run the full Phase 5 Rank-PGD strength sweep.
+  - Reason: The supervisor-facing attack-strength plot and final attack setting require full benchmark runs without query caps.
+  - Related files: `scripts/run_rank_pgd_strength_sweep.py`, `scripts/visualizations.py`, `reports/sprint1/next_tasks.md`
 
 - Rerun the original perceptual evaluation.
   - Reason: Confirm the NumPy compatibility fix against the real dataset and checkpoint setup.
