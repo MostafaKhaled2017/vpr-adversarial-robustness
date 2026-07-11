@@ -10,10 +10,13 @@ logs/default
 
 checkpoints/
 
+changes
+current_state.md
+next_tasks.md
+
 venv
 reports
 datasets
 checkpoints
 test
-docs
 datasets
