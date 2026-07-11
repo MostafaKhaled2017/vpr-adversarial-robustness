@@ -1,0 +1,60 @@
+# Important Files
+
+## Source files
+
+- `adv_train.py`: rank-aware adversarial training script.
+- `perceptual_adv_training.py`: perceptual adversarial training script.
+- `fgsm_eval.py`: FGSM robustness evaluation script.
+- `rank_eval.py`: native retrieval rank attack evaluation script.
+- `perceptual_eval.py`: clean and perceptual attack comparison script.
+- `perceptual_adv_training/`: local package for training, attacks, losses, targets, checkpoints, and evaluation support.
+- `perceptual_adv_training/rank_attacks.py`: Rank-PGD and APGD-style rank attack implementations.
+- `perceptual_adv_training/retrieval_metrics.py`: recall, nearest-positive rank, rank displacement, and attack success metric helpers.
+- `third_party/SuperVLAD/datasets_ws.py`: SuperVLAD dataset loader for database/query image splits and UTM coordinates.
+- `third_party/SuperVLAD/model/`: SuperVLAD model implementation.
+
+## Configuration files
+
+- `requirements.txt`: pinned Python dependencies.
+- `installation.bash`: additional pip installation commands.
+- `.gitmodules`: submodule metadata.
+
+## Launch or entry-point files
+
+- `commands.bash`: example commands for training and evaluation.
+- `scripts/run_perceptual_adv_training.sh`: perceptual adversarial training wrapper.
+- `scripts/run_rank_eval.sh`: native rank attack evaluation wrapper.
+- `scripts/run_rank_pgd_strength_sweep.py`: Phase 5 Rank-PGD strength sweep runner with default SPED in-process execution, optional subprocess fallback, deterministic sampled-gallery mode, resume support, and summary collation.
+- `scripts/run_delayed_msls_rank_pgd_strength_sweep.sh`: delayed launch wrapper that waits four hours before running an MSLS sampled-gallery Rank-PGD strength sweep.
+- `scripts/run_fgsm_dual_eval.sh`: FGSM evaluation wrapper.
+- `scripts/run_fgsm_checkpoint_list_eval.sh`: FGSM checkpoint-list evaluation wrapper.
+- `scripts/adv_training_different_epsilons.sh`: adversarial training sweep wrapper.
+- `scripts/visualizations.py`: figure-generation script for rank-evaluation summaries, trace CSVs, diagnostics CSVs, and optional attack-image artifacts.
+- `tests/`: lightweight unit tests for rank attack mechanics and retrieval metrics.
+
+## Documentation files
+
+- `README.md`: empty root README.
+- `third_party/SuperVLAD/README.md`: upstream SuperVLAD usage and dataset layout notes.
+- `submodules/perceptual-advex/README.md`: perceptual-advex documentation.
+- `docs/`: repository project documentation.
+- `reports/vpr_next_steps_implementation_plan.md`: roadmap for the next VPR robustness implementation phases.
+- `reports/phase1_native_rank_attack_implementation.md`: detailed explanation of the implemented Phase 1 native rank attack evaluator.
+- `reports/native-rank-attacks-evaluation.tex`: LaTeX report summarizing the final native rank attack evaluation.
+- `reports/native-rank-attacks-evaluation.pdf`: compiled PDF report for the final native rank attack evaluation.
+- `reports/sprint1/attack_strength_sweep_implementation.tex`: LaTeX report describing the implemented Rank-PGD strength sweep and SPED/MSLS results.
+- `reports/sprint1/attack_strength_sweep_implementation.pdf`: compiled PDF progress report for the Rank-PGD strength sweep.
+- `docs/vpr_model_adversarial_training_integration_analysis.md`: source-backed comparison of eight modern VPR repositories for integration with the current perceptual adversarial training methodology.
+
+## Generated or output files
+
+- `logs/`: training logs and checkpoints, referenced by command examples.
+- `test/rank_eval/`: default native rank evaluation output location.
+- `test/rank_eval/sweeps/`: default Phase 5 strength sweep output location for manifests, per-dataset/per-condition runs, attempt logs, and summary CSVs.
+- `test/rank_eval/sweeps/2026-07-06_21-28-03_full/`: completed SPED full-dataset Rank-PGD strength sweep output used by the Sprint 1 report.
+- `test/rank_eval/sweeps/2026-07-07_03-47-39_full/`: completed MSLS deterministic sampled-gallery Rank-PGD strength sweep output used by the Sprint 1 report.
+- `reports/figures/attack_strength_sweep/`: generated figures for the attack strength sweep progress report.
+- `test/rank_eval/2026-06-08_18-46-59/msls_sped_nordland_rank_comparison.csv`: completed native `rank_pgd_linf` evaluation summary used by the report.
+- `test/perceptual_eval/`: perceptual evaluation logs and result outputs.
+- `checkpoints/`: expected checkpoint location in command examples.
+- `datasets/`: expected dataset location in command examples.
