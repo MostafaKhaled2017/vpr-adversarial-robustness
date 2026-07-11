@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate supervisor feedback figures from saved rank-evaluation artifacts."""
+"""Generate figures from saved rank-evaluation artifacts."""
 
 from __future__ import annotations
 

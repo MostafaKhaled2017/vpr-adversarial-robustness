@@ -39,7 +39,7 @@ When `--trace_query_indices` is supplied, per-step trace CSV rows include attack
 
 ## Figure outputs
 
-`scripts/visualizations.py` uses rank summary CSVs, trace CSVs, diagnostics CSVs, and optional saved attack images to generate supervisor-facing plots. The attack-strength plot uses attacked summary rows and a selected recall metric such as `R@1`. Trace plots use positive distance, hard-negative distance, and nearest-positive rank. The margin-vs-failure plot uses clean margin and attacked nearest-positive rank, with attack success as the outcome marker.
+`scripts/visualizations.py` uses rank summary CSVs, trace CSVs, diagnostics CSVs, and optional saved attack images to generate plots. The attack-strength plot uses attacked summary rows and a selected recall metric such as `R@1`. Trace plots use positive distance, hard-negative distance, and nearest-positive rank. The margin-vs-failure plot uses clean margin and attacked nearest-positive rank, with attack success as the outcome marker.
 
 The Phase 3 image-saving smoke run under `test/rank_eval/2026-06-24_19-16-54/` generated all expected figure types, including the perturbation visibility grid. Its metrics are audit-sample-only and are not benchmark-comparable.
 
