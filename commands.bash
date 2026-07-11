@@ -86,7 +86,7 @@ python rank_eval.py \
 # Attack sweep
 python3 scripts/run_rank_pgd_strength_sweep.py \
   --parallel_runs 1 \
-  --infer_batch_size 16
+  --infer_batch_size 8
 #  --resume_sweep_dir test/rank_eval/sweeps/2026-07-06_13-17-09_full \
 
 ## To preview resume status only
