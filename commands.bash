@@ -41,3 +41,55 @@ python3 perceptual_eval.py \
   --test_method=hard_resize \
   --output_json=test/perceptual_eval/msls_sped_nordland_comparison.json \
   --output_csv=test/perceptual_eval/msls_sped_nordland_comparison.csv
+
+python3 rank_eval.py \
+  --eval_datasets_folder=datasets \
+  --datasets msls sped nordland \
+  --models checkpoints/SuperVLAD.pth checkpoints/perceptual_adv_checkpoint.pth \
+  --model_tags base checkpoint \
+  --foundation_model_path=checkpoints/dinov2_vitb14_pretrain.pth \
+  --backbone=dino \
+  --supervlad_clusters=4 \
+  --crossimage_encoder \
+  --freeze_te=8 \
+  --infer_batch_size=16 \
+  --test_method=hard_resize \
+  --rank_attack=rank_pgd_linf \
+  --rank_steps=20 \
+  --rank_restarts=1 \
+  --epsilons 0.01 0.1 \
+  --output_json=test/rank_eval/msls_sped_nordland_rank_comparison.json \
+  --output_csv=test/rank_eval/msls_sped_nordland_rank_comparison.csv
+
+# Smoke test
+python rank_eval.py \
+  --eval_datasets_folder=datasets \
+  --datasets msls \
+  --models checkpoints/SuperVLAD.pth \
+  --foundation_model_path=checkpoints/dinov2_vitb14_pretrain.pth \
+  --backbone=dino \
+  --supervlad_clusters=4 \
+  --crossimage_encoder \
+  --freeze_te=8 \
+  --infer_batch_size=4 \
+  --test_method=hard_resize \
+  --rank_attack=rank_pgd_linf \
+  --rank_steps=3 \
+  --rank_restarts=1 \
+  --epsilons 0.01 \
+  --max_queries 5 \
+  --audit_attack_implementation \
+  --audit_sample_database_size 64 \
+  --output_json=test/rank_eval/phase1_audit_sample.json \
+  --output_csv=test/rank_eval/phase1_audit_sample.csv
+
+# Attack sweep
+python3 scripts/run_rank_pgd_strength_sweep.py \
+  --parallel_runs 1 \
+  --infer_batch_size 8
+#  --resume_sweep_dir test/rank_eval/sweeps/2026-07-06_13-17-09_full \
+
+## To preview resume status only
+python3 scripts/run_rank_pgd_strength_sweep.py \
+  --resume_sweep_dir test/rank_eval/sweeps/2026-07-06_13-17-09_full \
+  --dry_run

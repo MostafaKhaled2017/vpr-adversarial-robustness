@@ -14,5 +14,6 @@ venv
 reports
 datasets
 checkpoints
+docs
 test
 datasets
