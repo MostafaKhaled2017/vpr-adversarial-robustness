@@ -4,3 +4,9 @@
 [submodule "submodules/perceptual-advex"]
 	path = submodules/perceptual-advex
 	url = https://github.com/cassidylaidlaw/perceptual-advex.git
+[submodule "third_party/Bag-of-Queries"]
+	path = third_party/Bag-of-Queries
+	url = https://github.com/amaralibey/Bag-of-Queries.git
+[submodule "third_party/VPR-methods-evaluation"]
+	path = third_party/VPR-methods-evaluation
+	url = https://github.com/gmberton/VPR-methods-evaluation.git
