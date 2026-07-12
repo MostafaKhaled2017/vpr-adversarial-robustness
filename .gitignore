@@ -7,6 +7,7 @@ logs/default
 
 .cache
 .tmp
+.vscode
 
 checkpoints/
 

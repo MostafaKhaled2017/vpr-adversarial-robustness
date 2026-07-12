@@ -33,7 +33,7 @@ exec python3 train.py \
   --optim=adamw \
   --weight_decay=0.0001 \
   --lr=0.000005 \
-  --num_epochs=50 \
+  --num_epochs=10 \
   --batch_size=16 \
   --attack "FastLagrangePerceptualAttack(model, bound=0.1, num_iterations=5)" \
   --attack "PerceptualPGDAttack(model, bound=0.1, num_iterations=3)" \
