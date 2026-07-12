@@ -6,8 +6,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cd "${REPO_ROOT}"
+export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/third_party/SuperVLAD:${PYTHONPATH:-}"
 
 exec python3 perceptual_adv_training.py \
+  --model=supervlad \
   --eval_datasets_folder=datasets \
   --gsv_cities_base_path=datasets/gsv_cities \
   --eval_dataset_name=msls \
@@ -26,5 +28,6 @@ exec python3 perceptual_adv_training.py \
   --adv_loss_weight=0.25 \
   --adv_align_weight=0.2 \
   --adv_negatives=5 \
-  --val_batches=100 \
-  # --mixed_precision
+  --val_batches=100
+
+# Add --mixed_precision to the command above when AMP training is desired.

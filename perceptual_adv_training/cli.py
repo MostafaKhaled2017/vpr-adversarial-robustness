@@ -1,6 +1,7 @@
 import parser as parser_module
 
 from .config import SUPPORTED_ATTACK_NAMES, UNSUPPORTED_ATTACK_NAMES
+from .models import add_model_arguments, model_names
 
 REQUIRED_RECALL_VALUES = (1, 5, 10, 100)
 
@@ -25,7 +26,32 @@ def parse_attack_names(attack_strings):
 
 def build_parser():
     parser = parser_module.build_parser()
-    parser.description = "Perceptual adversarial training for SuperVLAD"
+    parser.description = "Perceptual adversarial training for visual place recognition models"
+    parser.add_argument(
+        "--model",
+        choices=model_names(),
+        default="supervlad",
+        help="Descriptor model to train.",
+    )
+    parser.add_argument(
+        "--train_resize",
+        type=int,
+        nargs=2,
+        default=None,
+        metavar=("HEIGHT", "WIDTH"),
+        help="Training image size. Defaults to --resize.",
+    )
+    parser.add_argument(
+        "--weight_decay",
+        type=float,
+        default=None,
+        help="Optimizer weight decay. Model-compatible optimizer defaults are retained when omitted.",
+    )
+    parser.add_argument(
+        "--download_pretrained",
+        action="store_true",
+        help="Download official initial weights when --resume is not supplied.",
+    )
     parser.add_argument(
         "--attack",
         type=str,
@@ -126,11 +152,12 @@ def build_parser():
         default=False,
         help="Skip baseline validation before the first training epoch.",
     )
+    add_model_arguments(parser)
     return parser
 
 
-def parse_arguments():
-    args = build_parser().parse_args()
+def parse_arguments(argv=None):
+    args = build_parser().parse_args(argv)
     args = parser_module.validate_arguments(args)
 
     if args.train_batch_size is None:
@@ -150,6 +177,16 @@ def parse_arguments():
         raise ValueError("--adv_warmup_epochs must be non-negative")
     if args.clip_grad <= 0:
         raise ValueError("--clip_grad must be positive")
+    if args.weight_decay is not None and args.weight_decay < 0:
+        raise ValueError("--weight_decay must be non-negative")
+    if args.train_resize is None:
+        args.train_resize = list(args.resize)
+    if any(dimension <= 0 for dimension in args.train_resize):
+        raise ValueError("--train_resize dimensions must be positive")
+    if args.model == "boq":
+        from .models.boq import resolve_descriptor_dimension
+
+        args.boq_descriptors_dimension = resolve_descriptor_dimension(args)
 
     args.recall_values = list(dict.fromkeys([*args.recall_values, *REQUIRED_RECALL_VALUES]))
     parse_attack_names(args.attack)

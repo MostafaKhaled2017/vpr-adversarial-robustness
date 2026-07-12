@@ -37,7 +37,7 @@ def main():
         model, optimizer, scaler, train_loader, val_ds, test_ds, best_score, start_epoch, not_improved = (
             build_training_components(args)
         )
-        maybe_copy_resume_checkpoint(args)
+        maybe_copy_resume_checkpoint(args, model)
 
         train_attacks = instantiate_attacks(model, args.attack, args)
         validation_attacks = [instantiate_attacks(model, [attack_string], args)[0] for attack_string in args.attack]
