@@ -6,7 +6,7 @@ python3 eval.py --eval_datasets_folder=/home/mostafa/git_repos/vpr-adversarial-r
                 --eval_dataset_name=msls 
                 --resume=/home/mostafa/git_repos/vpr-adversarial-robustness/checkpoints/CricaVPR.pth
 
-python adv_train.py \
+python -m src.fgsm_train \
   --eval_datasets_folder=datasets \
   --gsv_cities_base_path=datasets/gsv_cities \
   --eval_dataset_name=msls \

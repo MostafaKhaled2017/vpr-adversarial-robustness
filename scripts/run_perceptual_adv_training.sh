@@ -8,7 +8,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/third_party/SuperVLAD:${PYTHONPATH:-}"
 
-exec python3 perceptual_adv_training.py \
+exec python3 train.py \
   --model=supervlad \
   --eval_datasets_folder=datasets \
   --gsv_cities_base_path=datasets/gsv_cities \

@@ -5,7 +5,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from perceptual_adv_training.checkpoints import load_model_state_dict, load_model_weights
+from src.checkpoints import load_model_state_dict, load_model_weights
 
 
 class TrainingCheckpointTests(unittest.TestCase):

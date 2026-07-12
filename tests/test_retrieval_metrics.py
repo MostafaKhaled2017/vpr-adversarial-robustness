@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from perceptual_adv_training.retrieval_metrics import (
+from src.retrieval_metrics import (
     attack_success_metrics,
     compute_recalls_from_features,
     nearest_positive_ranks,

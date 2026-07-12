@@ -4,7 +4,7 @@ import unittest
 import torch
 from torch import nn
 
-from perceptual_adv_training.models.boq import _build_model_classes
+from src.models.boq import _build_model_classes
 
 
 class TokenBlock(nn.Module):

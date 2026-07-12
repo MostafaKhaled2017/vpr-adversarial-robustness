@@ -23,15 +23,15 @@ if str(SUPERVLAD_ROOT) not in sys.path:
     sys.path.insert(0, str(SUPERVLAD_ROOT))
 
 import parser as parser_module
-from perceptual_adv_training.config import denormalize_imagenet, normalized_epsilon_to_raw_pixels, validate_cuda_runtime
-from perceptual_adv_training.rank_attacks import RankAPGDLinfAttack, RankAttackConfig, RankPGDAttack
-from perceptual_adv_training.retrieval_metrics import (
+from src.config import denormalize_imagenet, normalized_epsilon_to_raw_pixels, validate_cuda_runtime
+from src.rank_attacks import RankAPGDLinfAttack, RankAttackConfig, RankPGDAttack
+from src.retrieval_metrics import (
     attack_success_metrics,
     compute_recalls_from_features,
     nearest_positive_ranks,
     rank_displacement_summary,
 )
-from perceptual_adv_training.targets import RetrievalAttackBatch, build_attack_targets
+from src.targets import RetrievalAttackBatch, build_attack_targets
 
 
 SUPPORTED_TEST_METHODS = {"hard_resize", "central_crop", "single_query"}

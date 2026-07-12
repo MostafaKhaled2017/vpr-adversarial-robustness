@@ -6,13 +6,13 @@ from os.path import join
 import commons
 import torch
 
-from perceptual_adv_training.attacks import instantiate_attacks
-from perceptual_adv_training.checkpoints import maybe_copy_resume_checkpoint
-from perceptual_adv_training.cli import parse_arguments
-from perceptual_adv_training.components import build_training_components
-from perceptual_adv_training.config import create_summary_writer, validate_cuda_runtime
-from perceptual_adv_training.losses import configure_metric_learning
-from perceptual_adv_training.train_loop import run_training
+from src.attacks import instantiate_attacks
+from src.checkpoints import maybe_copy_resume_checkpoint
+from src.cli import parse_arguments
+from src.components import build_training_components
+from src.config import create_summary_writer, validate_cuda_runtime
+from src.losses import configure_metric_learning
+from src.train_loop import run_training
 
 
 def main():

@@ -2,7 +2,7 @@ import unittest
 
 from torch import nn
 
-from perceptual_adv_training.models import ModelAdapter, ModelBundle, get_model_adapter, model_names, register_model
+from src.models import ModelAdapter, ModelBundle, get_model_adapter, model_names, register_model
 
 
 class ModelRegistryTests(unittest.TestCase):

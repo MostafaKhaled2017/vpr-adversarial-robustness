@@ -3,13 +3,13 @@ import unittest
 import torch
 from torch import nn
 
-from perceptual_adv_training.config import (
+from src.config import (
     denormalize_imagenet,
     get_normalized_bounds,
     normalized_epsilon_to_raw_pixels,
 )
-from perceptual_adv_training.rank_attacks import RankAPGDLinfAttack, RankAttackConfig, RankPGDAttack
-from perceptual_adv_training.targets import RetrievalAttackBatch
+from src.rank_attacks import RankAPGDLinfAttack, RankAttackConfig, RankPGDAttack
+from src.targets import RetrievalAttackBatch
 
 
 class TinyDescriptorModel(nn.Module):

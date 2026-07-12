@@ -8,7 +8,7 @@ SUPERVLAD_ROOT = REPO_ROOT / "third_party" / "SuperVLAD"
 if str(SUPERVLAD_ROOT) not in sys.path:
     sys.path.insert(0, str(SUPERVLAD_ROOT))
 
-from perceptual_adv_training.cli import parse_arguments
+from src.cli import parse_arguments
 
 
 class PerceptualTrainingCliTests(unittest.TestCase):

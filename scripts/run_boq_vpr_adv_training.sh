@@ -20,7 +20,7 @@ else
   exit 2
 fi
 
-exec python3 perceptual_adv_training.py \
+exec python3 train.py \
   --model=boq \
   "${MODEL_WEIGHTS_ARGS[@]}" \
   --eval_datasets_folder=datasets \
