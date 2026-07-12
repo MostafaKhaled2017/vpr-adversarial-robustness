@@ -11,9 +11,10 @@ from .models import get_model_adapter
 
 def build_training_components(args):
     adapter = get_model_adapter(args.model)
-    if args.model == "boq" and args.resume is None and not args.download_pretrained:
+    if args.model in {"boq", "mixvpr"} and args.resume is None and not args.download_pretrained:
+        model_name = "BoQ" if args.model == "boq" else "MixVPR"
         raise ValueError(
-            "BoQ requires initial weights. Pass --resume with a local checkpoint or "
+            f"{model_name} requires initial weights. Pass --resume with a local checkpoint or "
             "pass --download_pretrained to download the official weights."
         )
     if args.resume is None and args.download_pretrained and adapter.download_weights is None:

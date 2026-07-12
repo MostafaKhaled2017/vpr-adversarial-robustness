@@ -1,5 +1,5 @@
 # Run Adverserial training for BOQ model
-./scripts/scripts/run_boq_vpr_adv_training.sh
+./scripts/run_boq_vpr_adv_training.sh
 
 # Evaluaion command for CricaVPR
 python3 eval.py --eval_datasets_folder=/home/mostafa/git_repos/vpr-adversarial-robustness/datasets  \

@@ -9,7 +9,9 @@ class ModelRegistryTests(unittest.TestCase):
     def test_builtin_models_are_registered(self):
         self.assertIn("supervlad", model_names())
         self.assertIn("boq", model_names())
+        self.assertIn("mixvpr", model_names())
         self.assertEqual(get_model_adapter("supervlad").name, "supervlad")
+        self.assertEqual(get_model_adapter("mixvpr").name, "mixvpr")
 
     def test_unknown_model_reports_available_models(self):
         with self.assertRaisesRegex(ValueError, "Available models"):
