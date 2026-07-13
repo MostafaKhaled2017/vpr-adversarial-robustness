@@ -500,7 +500,8 @@ def command_for_job(config: SweepConfig, job: SweepJob, job_dir: Path) -> list[s
         f"--eval_datasets_folder={config.eval_datasets_folder}",
         "--datasets",
         job.dataset,
-        "--models",
+        "--model_type=supervlad",
+        "--model_paths",
         *config.models,
         "--model_tags",
         *config.model_tags,
@@ -752,11 +753,7 @@ def rank_eval_args_for_job(config: SweepConfig, job: SweepJob, job_dir: Path):
 
     argv = command_for_job(config, job, job_dir)[2:]
     args = rank_eval.build_parser().parse_args(argv)
-    args = rank_eval.parser_module.validate_arguments(args)
-    args.model_tags = rank_eval.resolve_model_tags(args.models, args.model_tags)
-    args.recall_values = list(dict.fromkeys([*args.recall_values, *rank_eval.REQUIRED_RECALL_VALUES]))
-    rank_eval.validate_arguments(args)
-    return args
+    return rank_eval.finalize_arguments(args)
 
 
 def configure_rank_eval_output_dirs(args, job_dir: Path) -> None:
@@ -788,7 +785,15 @@ def write_condition_rank_eval_report(
         "timestamp": started_at.isoformat(),
         "command": " ".join(shlex.quote(argument) for argument in command_for_job(config, job, output_json.parent)),
         "argv": command_for_job(config, job, output_json.parent),
-        "checkpoints": dict(zip(args.model_tags, args.models)),
+        "model_type": args.model_type,
+        "checkpoints": dict(zip(args.model_tags, args.model_paths)),
+        "model_configuration": {
+            "input_size": list(args.resize),
+            "descriptor_dimensions": {
+                model_tag: int(args.features_dim * args.supervlad_clusters)
+                for model_tag in args.model_tags
+            },
+        },
         "datasets": [job.dataset],
         "arguments": rank_eval.serialize_args(args),
         "attack": {

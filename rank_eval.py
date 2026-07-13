@@ -24,6 +24,7 @@ if str(SUPERVLAD_ROOT) not in sys.path:
 
 import parser as parser_module
 from src.config import denormalize_imagenet, normalized_epsilon_to_raw_pixels, validate_cuda_runtime
+from src.models import add_model_arguments, get_model_adapter, model_names
 from src.rank_attacks import RankAPGDLinfAttack, RankAttackConfig, RankPGDAttack
 from src.retrieval_metrics import (
     attack_success_metrics,
@@ -54,9 +55,18 @@ def remove_parser_argument(parser, *option_strings: str) -> None:
 
 def build_parser():
     parser = parser_module.build_parser()
-    parser.description = "Native rank attack evaluation for one or more SuperVLAD checkpoints"
+    parser.allow_abbrev = False
+    parser.description = "Native rank attack evaluation for one or more VPR checkpoints"
     remove_parser_argument(parser, "--resume")
     remove_parser_argument(parser, "--eval_dataset_name")
+    parser.set_defaults(resize=None)
+    parser.add_argument(
+        "--model_type",
+        type=str,
+        required=True,
+        choices=model_names(),
+        help="Descriptor model architecture shared by every path in --model_paths.",
+    )
     parser.add_argument(
         "--datasets",
         type=str,
@@ -65,18 +75,18 @@ def build_parser():
         help="One or more dataset names under --eval_datasets_folder to evaluate.",
     )
     parser.add_argument(
-        "--models",
+        "--model_paths",
         type=str,
         nargs="+",
         required=True,
-        help="One or more checkpoint paths to evaluate. The first model is used to generate shared attacks.",
+        help="One or more local checkpoint paths. The first model is used to generate shared attacks.",
     )
     parser.add_argument(
         "--model_tags",
         type=str,
         nargs="+",
         default=None,
-        help="Labels for --models. Defaults to 'base' for one model and 'base checkpoint' for two models.",
+        help="Labels for --model_paths. Defaults to 'base' for one model and 'base checkpoint' for two models.",
     )
     parser.add_argument(
         "--rank_attack",
@@ -186,14 +196,22 @@ def build_parser():
         default=None,
         help="Optional CSV summary filename/path. The file is written inside the same timestamped run directory.",
     )
+    add_model_arguments(parser)
     return parser
 
 
 def parse_arguments():
-    args = build_parser().parse_args()
+    return finalize_arguments(build_parser().parse_args())
+
+
+def finalize_arguments(args):
     args = parser_module.validate_arguments(args)
-    args.model_tags = resolve_model_tags(args.models, args.model_tags)
+    args.model_tags = resolve_model_tags(args.model_paths, args.model_tags)
     args.recall_values = list(dict.fromkeys([*args.recall_values, *REQUIRED_RECALL_VALUES]))
+    adapter = get_model_adapter(args.model_type)
+    if adapter.configure_evaluation is None:
+        raise ValueError(f"Model {args.model_type!r} does not define rank-evaluation preprocessing.")
+    adapter.configure_evaluation(args)
     validate_arguments(args)
     return args
 
@@ -255,8 +273,8 @@ def validate_arguments(args) -> None:
             raise ValueError("--audit_sample_database_size must be at least --adv_negatives + 1.")
 
     validate_cuda_runtime(args)
-    for model_path in args.models:
-        require_file(model_path, "--models")
+    for model_path in args.model_paths:
+        require_file(model_path, "--model_paths")
     if args.foundation_model_path is not None:
         require_file(args.foundation_model_path, "--foundation_model_path")
     validate_dataset_layouts(args.eval_datasets_folder, args.datasets)
@@ -336,19 +354,16 @@ def serialize_args(args) -> Dict[str, object]:
 
 
 def load_model(args, checkpoint_path: str) -> Tuple[nn.Module, object]:
-    import util
-    from model import network
-
     model_args = copy.deepcopy(args)
     model_args.resume = checkpoint_path
-    model = network.SuperVLADModel(
-        model_args,
-        pretrained_foundation=bool(model_args.foundation_model_path),
-        foundation_model_path=model_args.foundation_model_path,
-    )
+    adapter = get_model_adapter(model_args.model_type)
+    build_model = adapter.build_evaluation or adapter.build
+    model_bundle = build_model(model_args)
+    model = model_bundle.model
     model = model.to(model_args.device)
-    model_args.features_dim *= model_args.supervlad_clusters
-    util.resume_model(model_args, model)
+    model_args.features_dim = int(model_bundle.descriptor_dim)
+    load_weights = adapter.load_evaluation_weights or adapter.load_weights
+    load_weights(model, checkpoint_path, model_args)
     model = torch.nn.DataParallel(model)
     model.eval()
     return model, model_args
@@ -356,10 +371,17 @@ def load_model(args, checkpoint_path: str) -> Tuple[nn.Module, object]:
 
 def load_models(args) -> Dict[str, Tuple[nn.Module, object]]:
     models = {}
-    for model_tag, model_path in zip(args.model_tags, args.models):
+    for model_tag, model_path in zip(args.model_tags, args.model_paths):
         logging.info("Loading %s checkpoint from %s.", model_tag, model_path)
         models[model_tag] = load_model(args, model_path)
     return models
+
+
+def build_evaluation_dataset(args, dataset_name: str):
+    adapter = get_model_adapter(args.model_type)
+    if adapter.build_evaluation_dataset is None:
+        raise ValueError(f"Model {args.model_type!r} does not define an evaluation dataset.")
+    return adapter.build_evaluation_dataset(args, dataset_name)
 
 
 def attack_reference_tag(args) -> str:
@@ -1278,9 +1300,7 @@ def add_sampled_gallery_clean_results(
 
 
 def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, Tuple[nn.Module, object]]):
-    import datasets_ws
-
-    eval_ds = datasets_ws.BaseDataset(args, args.eval_datasets_folder, dataset_name, "test")
+    eval_ds = build_evaluation_dataset(args, dataset_name)
     logging.info("Test set: %s", eval_ds)
     logging.info(
         "Using audit sample mode with max_queries=%s and audit_sample_database_size=%s. "
@@ -1474,9 +1494,7 @@ def prepare_dataset_context(
     models: Mapping[str, Tuple[nn.Module, object]],
     max_adv_negatives: int | None = None,
 ) -> Dict[str, object]:
-    import datasets_ws
-
-    eval_ds = datasets_ws.BaseDataset(args, args.eval_datasets_folder, dataset_name, "test")
+    eval_ds = build_evaluation_dataset(args, dataset_name)
     logging.info("Test set: %s", eval_ds)
     max_adv_negatives = int(max_adv_negatives if max_adv_negatives is not None else args.adv_negatives)
     positives = eval_ds.get_positives()
@@ -1931,7 +1949,15 @@ def main() -> None:
         "timestamp": started_at.isoformat(),
         "command": " ".join(shlex.quote(argument) for argument in sys.argv),
         "argv": sys.argv,
-        "checkpoints": dict(zip(args.model_tags, args.models)),
+        "model_type": args.model_type,
+        "checkpoints": dict(zip(args.model_tags, args.model_paths)),
+        "model_configuration": {
+            "input_size": list(args.resize),
+            "descriptor_dimensions": {
+                model_tag: int(model_args.features_dim)
+                for model_tag, (_, model_args) in models.items()
+            },
+        },
         "datasets": list(args.datasets),
         "arguments": serialize_args(args),
         "attack": {

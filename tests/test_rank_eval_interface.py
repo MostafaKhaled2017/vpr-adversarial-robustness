@@ -1,3 +1,5 @@
+import contextlib
+import io
 import sys
 import unittest
 from argparse import Namespace
@@ -40,8 +42,13 @@ class RankEvalInterfaceTests(unittest.TestCase):
         parser = rank_eval.build_parser()
 
         self.assertIn("--datasets", parser._option_string_actions)
-        self.assertIn("--models", parser._option_string_actions)
+        self.assertIn("--model_type", parser._option_string_actions)
+        self.assertIn("--model_paths", parser._option_string_actions)
         self.assertIn("--model_tags", parser._option_string_actions)
+        self.assertTrue(parser._option_string_actions["--model_type"].required)
+        self.assertTrue(parser._option_string_actions["--model_paths"].required)
+        self.assertNotIn("--models", parser._option_string_actions)
+        self.assertNotIn("--model", parser._option_string_actions)
         self.assertIn("--max_dataset_samples", parser._option_string_actions)
         self.assertIn("--audit_attack_implementation", parser._option_string_actions)
         self.assertIn("--audit_output_json", parser._option_string_actions)
@@ -55,6 +62,60 @@ class RankEvalInterfaceTests(unittest.TestCase):
         self.assertIn("--attack_image_amplification", parser._option_string_actions)
         self.assertNotIn("--resume", parser._option_string_actions)
         self.assertNotIn("--eval_dataset_name", parser._option_string_actions)
+
+    def test_model_type_and_model_paths_are_required(self):
+        parser = rank_eval.build_parser()
+
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["--datasets", "msls", "--epsilons", "0.01"])
+
+    def test_legacy_model_options_are_rejected(self):
+        parser = rank_eval.build_parser()
+        common = ["--datasets", "msls", "--epsilons", "0.01"]
+
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args([*common, "--model_type", "supervlad", "--models", "base.pth"])
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args([*common, "--model", "supervlad", "--model_paths", "base.pth"])
+
+    def test_boq_and_mixvpr_resolve_reference_input_sizes(self):
+        boq_args = Namespace(
+            boq_backbone="Dinov2",
+            boq_descriptors_dimension=None,
+            resize=None,
+            test_method="hard_resize",
+        )
+        mixvpr_args = Namespace(
+            mixvpr_descriptors_dimension=None,
+            resize=None,
+            test_method="hard_resize",
+        )
+
+        rank_eval.get_model_adapter("boq").configure_evaluation(boq_args)
+        rank_eval.get_model_adapter("mixvpr").configure_evaluation(mixvpr_args)
+
+        self.assertEqual(boq_args.boq_descriptors_dimension, 12288)
+        self.assertEqual(boq_args.resize, [322, 322])
+        self.assertEqual(mixvpr_args.mixvpr_descriptors_dimension, 4096)
+        self.assertEqual(mixvpr_args.resize, [320, 320])
+
+    def test_boq_and_mixvpr_reject_non_reference_test_methods(self):
+        boq_args = Namespace(
+            boq_backbone="Dinov2",
+            boq_descriptors_dimension=None,
+            resize=None,
+            test_method="central_crop",
+        )
+        mixvpr_args = Namespace(
+            mixvpr_descriptors_dimension=None,
+            resize=None,
+            test_method="single_query",
+        )
+
+        with self.assertRaisesRegex(ValueError, "hard_resize"):
+            rank_eval.get_model_adapter("boq").configure_evaluation(boq_args)
+        with self.assertRaisesRegex(ValueError, "hard_resize"):
+            rank_eval.get_model_adapter("mixvpr").configure_evaluation(mixvpr_args)
 
     def test_descriptor_norm_summary(self):
         summary = rank_eval.summarize_descriptor_norms(np.array([[3.0, 4.0], [0.0, 2.0]], dtype=np.float32))

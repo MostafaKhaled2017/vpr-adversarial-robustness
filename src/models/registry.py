@@ -17,6 +17,10 @@ class ModelAdapter:
     build: Callable[[object], ModelBundle]
     load_weights: Callable[[nn.Module, str, object], None]
     download_weights: Optional[Callable[[nn.Module, object], None]] = None
+    build_evaluation: Optional[Callable[[object], ModelBundle]] = None
+    configure_evaluation: Optional[Callable[[object], None]] = None
+    build_evaluation_dataset: Optional[Callable[[object, str], object]] = None
+    load_evaluation_weights: Optional[Callable[[nn.Module, str, object], None]] = None
 
 
 _REGISTRY: Dict[str, ModelAdapter] = {}

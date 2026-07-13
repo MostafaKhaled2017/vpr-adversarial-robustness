@@ -6,6 +6,7 @@ import torch
 from torch import nn
 
 from ..checkpoints import load_model_state_dict, load_model_weights
+from ..evaluation_data import build_vpr_evaluation_dataset
 from .registry import ModelAdapter, ModelBundle, register_model
 
 
@@ -159,6 +160,19 @@ def load_weights(model: nn.Module, checkpoint_path: str, args) -> None:
     load_model_weights(model, checkpoint_path, map_location=args.device, strict=True)
 
 
+def configure_evaluation(args) -> None:
+    args.boq_descriptors_dimension = resolve_descriptor_dimension(args)
+    expected_resize = [322, 322] if args.boq_backbone == "Dinov2" else [384, 384]
+    if args.resize is not None and list(args.resize) != expected_resize:
+        raise ValueError(
+            f"BoQ with {args.boq_backbone} requires --resize {' '.join(map(str, expected_resize))} "
+            "to match the reference evaluation pipeline."
+        )
+    if args.test_method != "hard_resize":
+        raise ValueError("BoQ rank evaluation requires --test_method=hard_resize.")
+    args.resize = expected_resize
+
+
 def download_weights(model: nn.Module, args) -> None:
     upstream = load_upstream_module()
     descriptor_dim = resolve_descriptor_dimension(args)
@@ -177,6 +191,8 @@ ADAPTER = ModelAdapter(
     build=build,
     load_weights=load_weights,
     download_weights=download_weights,
+    configure_evaluation=configure_evaluation,
+    build_evaluation_dataset=build_vpr_evaluation_dataset,
 )
 
 

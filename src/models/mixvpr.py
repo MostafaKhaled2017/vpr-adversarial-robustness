@@ -5,6 +5,7 @@ from types import ModuleType
 from torch import nn
 
 from ..checkpoints import load_model_weights
+from ..evaluation_data import build_vpr_evaluation_dataset
 from .registry import ModelAdapter, ModelBundle, register_model
 
 
@@ -106,6 +107,18 @@ def load_weights(model: nn.Module, checkpoint_path: str, args) -> None:
     load_model_weights(model, checkpoint_path, map_location=args.device, strict=True)
 
 
+def configure_evaluation(args) -> None:
+    args.mixvpr_descriptors_dimension = resolve_descriptor_dimension(args)
+    expected_resize = [320, 320]
+    if args.resize is not None and list(args.resize) != expected_resize:
+        raise ValueError(
+            "MixVPR requires --resize 320 320 to match the reference evaluation pipeline."
+        )
+    if args.test_method != "hard_resize":
+        raise ValueError("MixVPR rank evaluation requires --test_method=hard_resize.")
+    args.resize = expected_resize
+
+
 def official_checkpoint_path(upstream: ModuleType, descriptor_dim: int) -> Path:
     _, filename, _, _ = upstream.MODELS_INFO[descriptor_dim]
     return UPSTREAM_MODULE_PATH.parents[1] / "trained_models" / "mixvpr" / filename
@@ -139,6 +152,8 @@ ADAPTER = ModelAdapter(
     build=build,
     load_weights=load_weights,
     download_weights=download_weights,
+    configure_evaluation=configure_evaluation,
+    build_evaluation_dataset=build_vpr_evaluation_dataset,
 )
 
 
