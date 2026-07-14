@@ -6,6 +6,7 @@ from argparse import Namespace
 from pathlib import Path
 
 import numpy as np
+import torch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -56,6 +57,8 @@ class RankEvalInterfaceTests(unittest.TestCase):
         self.assertIn("--trace_query_indices", parser._option_string_actions)
         self.assertIn("--trace_output_dir", parser._option_string_actions)
         self.assertIn("--diagnostics_output_dir", parser._option_string_actions)
+        self.assertIn("--compute_diagnostics", parser._option_string_actions)
+        self.assertFalse(parser._option_string_actions["--compute_diagnostics"].default)
         self.assertIn("--save_attack_images", parser._option_string_actions)
         self.assertIn("--save_attack_image_count", parser._option_string_actions)
         self.assertIn("--attack_image_output_dir", parser._option_string_actions)
@@ -186,6 +189,93 @@ class RankEvalInterfaceTests(unittest.TestCase):
 
         self.assertEqual(rank_eval.build_trace_output_dir(args, run_dir), Path("test/custom_traces"))
         self.assertEqual(rank_eval.build_diagnostics_output_dir(args, run_dir), Path("test/custom_diagnostics"))
+
+    def test_diagnostics_are_explicitly_opt_in(self):
+        parser = rank_eval.build_parser()
+
+        args = parser.parse_args(
+            [
+                "--datasets",
+                "msls",
+                "--model_type",
+                "supervlad",
+                "--model_paths",
+                "base.pth",
+                "--epsilons",
+                "0.01",
+                "--compute_diagnostics",
+            ]
+        )
+
+        self.assertTrue(args.compute_diagnostics)
+
+    def test_diagnostics_output_dir_requires_opt_in(self):
+        args = rank_eval.build_parser().parse_args(
+            [
+                "--datasets",
+                "msls",
+                "--model_type",
+                "supervlad",
+                "--model_paths",
+                "base.pth",
+                "--epsilons",
+                "0.01",
+            ]
+        )
+        args.diagnostics_output_dir = "test/diagnostics"
+
+        with self.assertRaisesRegex(ValueError, "requires --compute_diagnostics"):
+            rank_eval.validate_arguments(args)
+
+    def test_shared_extraction_loads_each_image_once_for_all_models(self):
+        class CountingDataset(torch.utils.data.Dataset):
+            def __init__(self):
+                self.calls = 0
+                self.test_method = ""
+
+            def __len__(self):
+                return 5
+
+            def __getitem__(self, index):
+                self.calls += 1
+                return torch.tensor([float(index), float(index + 1)]), index
+
+        class TwoDimensionalModel(torch.nn.Module):
+            def forward(self, inputs, queryflag=0):
+                del queryflag
+                return inputs * 2.0
+
+        class ThreeDimensionalModel(torch.nn.Module):
+            def forward(self, inputs, queryflag=0):
+                del queryflag
+                return torch.cat([inputs, inputs[:, :1] + inputs[:, 1:]], dim=1)
+
+        args = Namespace(device="cpu", num_workers=0)
+        dataset = CountingDataset()
+        models = {
+            "two": (TwoDimensionalModel(), Namespace(features_dim=2)),
+            "three": (ThreeDimensionalModel(), Namespace(features_dim=3)),
+        }
+
+        features, model_seconds, shared_seconds = rank_eval.extract_features_for_models(
+            args,
+            dataset,
+            models,
+            [3, 1, 4],
+            desc="test",
+            test_method="hard_resize",
+            batch_size=2,
+        )
+
+        self.assertEqual(dataset.calls, 3)
+        self.assertEqual(dataset.test_method, "hard_resize")
+        np.testing.assert_array_equal(features["two"], np.array([[6, 8], [2, 4], [8, 10]], dtype=np.float32))
+        np.testing.assert_array_equal(
+            features["three"],
+            np.array([[3, 4, 7], [1, 2, 3], [4, 5, 9]], dtype=np.float32),
+        )
+        self.assertEqual(set(model_seconds), {"two", "three"})
+        self.assertGreaterEqual(shared_seconds, 0.0)
 
     def test_attack_image_output_dir_defaults_to_run_dir(self):
         args = Namespace(attack_image_output_dir=None)
@@ -350,6 +440,74 @@ class RankEvalInterfaceTests(unittest.TestCase):
         self.assertAlmostEqual(rows[0]["rho_q"], 1.7, places=6)
         self.assertEqual(rows[0]["cwr_estimate"], 3)
         self.assertEqual(rows[0]["selected_hard_negative_indexes"], "1 2")
+
+    def test_batched_query_diagnostics_match_legacy_calculation(self):
+        rng = np.random.default_rng(11)
+        database = rng.normal(size=(23, 5)).astype(np.float32)
+        clean_queries = rng.normal(size=(4, 5)).astype(np.float32)
+        attacked_queries = (clean_queries + rng.normal(scale=0.02, size=(4, 5))).astype(np.float32)
+        positives = [np.array([index, index + 6], dtype=np.int64) for index in range(4)]
+        valid_indices = np.arange(4, dtype=np.int64)
+        targets = [
+            {
+                "query_index": index,
+                "positive_index": int(positive_indexes[0]),
+                "negative_indexes": np.array([20, 21], dtype=np.int64),
+            }
+            for index, positive_indexes in enumerate(positives)
+        ]
+
+        rows = rank_eval.compute_query_diagnostic_rows(
+            database,
+            clean_queries,
+            attacked_queries,
+            positives,
+            valid_indices,
+            targets,
+            np.full(4, 0.02, dtype=np.float32),
+            chunk_size=2,
+        )
+
+        float_fields = {
+            "clean_positive_distance",
+            "clean_nearest_negative_distance",
+            "clean_margin",
+            "attacked_positive_distance",
+            "attacked_nearest_negative_distance",
+            "attacked_margin",
+            "rho_q",
+        }
+        for index, row in enumerate(rows):
+            positive_indexes = positives[index]
+            negative_indexes = np.setdiff1d(np.arange(len(database)), positive_indexes)
+            clean_distances = np.linalg.norm(database - clean_queries[index][None, :], axis=1)
+            attacked_distances = np.linalg.norm(database - attacked_queries[index][None, :], axis=1)
+            clean_positive = float(clean_distances[targets[index]["positive_index"]])
+            attacked_positive = float(attacked_distances[targets[index]["positive_index"]])
+            clean_negative = float(np.min(clean_distances[negative_indexes]))
+            attacked_negative = float(np.min(attacked_distances[negative_indexes]))
+            rho_q = float(np.linalg.norm(attacked_queries[index] - clean_queries[index]))
+            expected = {
+                "clean_positive_distance": clean_positive,
+                "clean_nearest_negative_distance": clean_negative,
+                "clean_margin": clean_negative - clean_positive,
+                "attacked_positive_distance": attacked_positive,
+                "attacked_nearest_negative_distance": attacked_negative,
+                "attacked_margin": attacked_negative - attacked_positive,
+                "rho_q": rho_q,
+            }
+            for field in float_fields:
+                self.assertTrue(np.isclose(row[field], expected[field], rtol=1e-5, atol=1e-6), field)
+
+            clean_rank = rank_eval._distance_to_rank(database, clean_queries[index], positive_indexes)
+            attacked_rank = rank_eval._distance_to_rank(database, attacked_queries[index], positive_indexes)
+            cwr = 1 + np.count_nonzero(
+                np.maximum(clean_distances[negative_indexes] - rho_q, 0.0) <= clean_positive + rho_q
+            )
+            self.assertEqual(row["clean_nearest_positive_rank"], clean_rank)
+            self.assertEqual(row["attacked_nearest_positive_rank"], attacked_rank)
+            self.assertEqual(row["attack_success"], clean_rank == 1 and attacked_rank > 1)
+            self.assertEqual(row["cwr_estimate"], cwr)
 
 
 if __name__ == "__main__":

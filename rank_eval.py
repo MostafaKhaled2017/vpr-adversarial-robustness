@@ -30,7 +30,9 @@ from src.retrieval_metrics import (
     attack_success_metrics,
     compute_recalls_from_features,
     nearest_positive_ranks,
+    prepare_distance_database,
     rank_displacement_summary,
+    squared_l2_distance_chunk,
 )
 from src.targets import RetrievalAttackBatch, build_attack_targets
 
@@ -156,10 +158,15 @@ def build_parser():
         help="Directory for per-query trace CSV files. Defaults to <run_dir>/traces.",
     )
     parser.add_argument(
+        "--compute_diagnostics",
+        action="store_true",
+        help="Compute and write per-query diagnostic CSV files. Disabled by default.",
+    )
+    parser.add_argument(
         "--diagnostics_output_dir",
         type=str,
         default=None,
-        help="Directory for per-query diagnostic CSV files. Defaults to <run_dir>/diagnostics.",
+        help="Directory for per-query diagnostic CSV files when --compute_diagnostics is set.",
     )
     parser.add_argument(
         "--save_attack_images",
@@ -260,6 +267,8 @@ def validate_arguments(args) -> None:
         raise ValueError("--audit_output_json requires --audit_attack_implementation.")
     if args.trace_query_indices is not None and any(index < 0 for index in args.trace_query_indices):
         raise ValueError("--trace_query_indices must contain non-negative original query indices.")
+    if args.diagnostics_output_dir is not None and not args.compute_diagnostics:
+        raise ValueError("--diagnostics_output_dir requires --compute_diagnostics.")
     if args.save_attack_image_count < 1:
         raise ValueError("--save_attack_image_count must be at least 1.")
     if args.attack_image_amplification <= 0:
@@ -392,42 +401,80 @@ def query_batch_size(args) -> int:
     return 1 if args.test_method == "single_query" else args.infer_batch_size
 
 
-def extract_database_features(args, eval_ds, model: nn.Module) -> np.ndarray:
-    eval_ds.test_method = "hard_resize"
-    database_subset = Subset(eval_ds, range(eval_ds.database_num))
+def extract_features_for_models(
+    args,
+    eval_ds,
+    models: Mapping[str, Tuple[nn.Module, object]],
+    dataset_indices: Sequence[int],
+    desc: str,
+    test_method: str,
+    batch_size: int,
+) -> tuple[Dict[str, np.ndarray], Dict[str, float], float]:
+    eval_ds.test_method = test_method
+    ordered_indices = [int(index) for index in dataset_indices]
+    index_to_position = {index: position for position, index in enumerate(ordered_indices)}
+    subset = Subset(eval_ds, ordered_indices)
     dataloader = DataLoader(
-        database_subset,
-        batch_size=args.infer_batch_size,
+        subset,
+        batch_size=batch_size,
         num_workers=args.num_workers,
         pin_memory=(args.device == "cuda"),
     )
 
-    features = np.empty((eval_ds.database_num, args.features_dim), dtype=np.float32)
+    features = {
+        model_tag: np.empty((len(ordered_indices), model_args.features_dim), dtype=np.float32)
+        for model_tag, (_, model_args) in models.items()
+    }
+    model_seconds = {model_tag: 0.0 for model_tag in models}
+    input_start = perf_counter()
+    iterator = iter(dataloader)
+    shared_input_seconds = perf_counter() - input_start
     with torch.inference_mode():
-        for inputs, indices in tqdm(dataloader, ncols=100, desc="Database"):
-            descriptors = model(inputs.to(args.device), queryflag=0).cpu().numpy()
-            features[indices.numpy(), :] = descriptors
-    return features
+        with tqdm(total=len(dataloader), ncols=100, desc=desc) as progress:
+            while True:
+                input_start = perf_counter()
+                try:
+                    inputs, indices = next(iterator)
+                except StopIteration:
+                    break
+                device_inputs = inputs.to(args.device)
+                positions = [index_to_position[int(index)] for index in indices.numpy()]
+                shared_input_seconds += perf_counter() - input_start
+
+                for model_tag, (model, _) in models.items():
+                    model_start = perf_counter()
+                    descriptors = model(device_inputs, queryflag=0).cpu().numpy()
+                    features[model_tag][positions, :] = descriptors
+                    model_seconds[model_tag] += perf_counter() - model_start
+                progress.update(1)
+    return features, model_seconds, shared_input_seconds
+
+
+def extract_database_features(args, eval_ds, model: nn.Module) -> np.ndarray:
+    features, _, _ = extract_features_for_models(
+        args,
+        eval_ds,
+        {"model": (model, args)},
+        range(eval_ds.database_num),
+        desc="Database",
+        test_method="hard_resize",
+        batch_size=args.infer_batch_size,
+    )
+    return features["model"]
 
 
 def extract_clean_query_features(args, eval_ds, model: nn.Module) -> np.ndarray:
-    eval_ds.test_method = args.test_method
     query_indices = range(eval_ds.database_num, eval_ds.database_num + eval_ds.queries_num)
-    query_subset = Subset(eval_ds, query_indices)
-    dataloader = DataLoader(
-        query_subset,
+    features, _, _ = extract_features_for_models(
+        args,
+        eval_ds,
+        {"model": (model, args)},
+        query_indices,
+        desc="Clean queries",
+        test_method=args.test_method,
         batch_size=query_batch_size(args),
-        num_workers=args.num_workers,
-        pin_memory=(args.device == "cuda"),
     )
-
-    features = np.empty((eval_ds.queries_num, args.features_dim), dtype=np.float32)
-    with torch.inference_mode():
-        for inputs, indices in tqdm(dataloader, ncols=100, desc="Clean queries"):
-            descriptors = model(inputs.to(args.device), queryflag=0).cpu().numpy()
-            local_indices = indices.numpy() - eval_ds.database_num
-            features[local_indices, :] = descriptors
-    return features
+    return features["model"]
 
 
 def extract_indexed_features(
@@ -438,24 +485,16 @@ def extract_indexed_features(
     desc: str,
     test_method: str,
 ) -> np.ndarray:
-    eval_ds.test_method = test_method
-    ordered_indices = [int(index) for index in dataset_indices]
-    index_to_position = {index: position for position, index in enumerate(ordered_indices)}
-    subset = Subset(eval_ds, ordered_indices)
-    dataloader = DataLoader(
-        subset,
+    features, _, _ = extract_features_for_models(
+        args,
+        eval_ds,
+        {"model": (model, args)},
+        dataset_indices,
+        desc=desc,
+        test_method=test_method,
         batch_size=args.infer_batch_size,
-        num_workers=args.num_workers,
-        pin_memory=(args.device == "cuda"),
     )
-
-    features = np.empty((len(ordered_indices), args.features_dim), dtype=np.float32)
-    with torch.inference_mode():
-        for inputs, indices in tqdm(dataloader, ncols=100, desc=desc):
-            descriptors = model(inputs.to(args.device), queryflag=0).cpu().numpy()
-            positions = [index_to_position[int(index)] for index in indices.numpy()]
-            features[positions, :] = descriptors
-    return features
+    return features["model"]
 
 
 def extract_clean_features(args, eval_ds, model: nn.Module) -> Dict[str, np.ndarray]:
@@ -1011,58 +1050,75 @@ def compute_query_diagnostic_rows(
     targets: Sequence[Mapping[str, object]],
     perturbation_norms: np.ndarray,
     clean_query_feature_indices: np.ndarray | None = None,
+    clean_ranks: np.ndarray | None = None,
+    attacked_ranks: np.ndarray | None = None,
+    chunk_size: int = 128,
 ) -> list[Dict[str, object]]:
     rows = []
     query_feature_indices = clean_query_feature_indices if clean_query_feature_indices is not None else valid_query_indices
+    selected_clean_queries = clean_query_features[np.asarray(query_feature_indices, dtype=np.int64)]
+    if clean_ranks is None:
+        clean_ranks = nearest_positive_ranks(database_features, selected_clean_queries, positives_per_query)
+    if attacked_ranks is None:
+        attacked_ranks = nearest_positive_ranks(database_features, attacked_query_features, positives_per_query)
 
-    for row_index, (query_index, query_feature_index, target) in enumerate(
-        zip(valid_query_indices, query_feature_indices, targets)
-    ):
-        positives = np.asarray(positives_per_query[row_index], dtype=np.int64)
-        positive_index = int(target["positive_index"])
-        negative_indexes = np.asarray(target["negative_indexes"], dtype=np.int64)
-        clean_query = clean_query_features[int(query_feature_index)]
-        attacked_query = attacked_query_features[row_index]
+    database, database_norms = prepare_distance_database(database_features)
+    for start in range(0, len(valid_query_indices), chunk_size):
+        end = min(start + chunk_size, len(valid_query_indices))
+        clean_batch = selected_clean_queries[start:end]
+        attacked_batch = attacked_query_features[start:end]
+        clean_distance_rows = squared_l2_distance_chunk(database, database_norms, clean_batch)
+        attacked_distance_rows = squared_l2_distance_chunk(database, database_norms, attacked_batch)
+        np.sqrt(clean_distance_rows, out=clean_distance_rows)
+        np.sqrt(attacked_distance_rows, out=attacked_distance_rows)
 
-        positive_mask = np.zeros(database_features.shape[0], dtype=bool)
-        positive_mask[positives] = True
-        negative_candidates = np.flatnonzero(~positive_mask)
+        for local_index, row_index in enumerate(range(start, end)):
+            query_index = int(valid_query_indices[row_index])
+            target = targets[row_index]
+            positives = np.asarray(positives_per_query[row_index], dtype=np.int64)
+            positive_index = int(target["positive_index"])
+            negative_indexes = np.asarray(target["negative_indexes"], dtype=np.int64)
+            clean_query = clean_batch[local_index]
+            attacked_query = attacked_batch[local_index]
+            clean_distances = clean_distance_rows[local_index]
+            attacked_distances = attacked_distance_rows[local_index]
 
-        clean_distances = np.linalg.norm(database_features - clean_query[None, :], axis=1)
-        attacked_distances = np.linalg.norm(database_features - attacked_query[None, :], axis=1)
+            positive_mask = np.zeros(database_features.shape[0], dtype=bool)
+            positive_mask[positives] = True
+            negative_candidates = np.flatnonzero(~positive_mask)
 
-        clean_positive_distance = float(clean_distances[positive_index])
-        attacked_positive_distance = float(attacked_distances[positive_index])
-        clean_nearest_negative_distance = float(np.min(clean_distances[negative_candidates]))
-        attacked_nearest_negative_distance = float(np.min(attacked_distances[negative_candidates]))
-        clean_rank = _distance_to_rank(database_features, clean_query, positives)
-        attacked_rank = _distance_to_rank(database_features, attacked_query, positives)
-        rho_q = float(np.linalg.norm(attacked_query - clean_query, ord=2))
-        cwr_positive_upper = clean_positive_distance + rho_q
-        cwr_negative_lower = np.maximum(clean_distances[negative_candidates] - rho_q, 0.0)
+            clean_positive_distance = float(clean_distances[positive_index])
+            attacked_positive_distance = float(attacked_distances[positive_index])
+            clean_nearest_negative_distance = float(np.min(clean_distances[negative_candidates]))
+            attacked_nearest_negative_distance = float(np.min(attacked_distances[negative_candidates]))
+            clean_rank = int(clean_ranks[row_index])
+            attacked_rank = int(attacked_ranks[row_index])
+            rho_q = float(np.linalg.norm(attacked_query - clean_query, ord=2))
+            cwr_positive_upper = clean_positive_distance + rho_q
+            cwr_negative_lower = np.maximum(clean_distances[negative_candidates] - rho_q, 0.0)
 
-        rows.append(
-            {
-                "query_index": int(query_index),
-                "clean_nearest_positive_rank": clean_rank,
-                "attacked_nearest_positive_rank": attacked_rank,
-                "attack_success": bool(clean_rank == 1 and attacked_rank > 1),
-                "clean_positive_distance": clean_positive_distance,
-                "clean_nearest_negative_distance": clean_nearest_negative_distance,
-                "clean_margin": clean_nearest_negative_distance - clean_positive_distance,
-                "attacked_positive_distance": attacked_positive_distance,
-                "attacked_hard_negative_distance": attacked_nearest_negative_distance,
-                "attacked_nearest_negative_distance": attacked_nearest_negative_distance,
-                "attacked_margin": attacked_nearest_negative_distance - attacked_positive_distance,
-                "rank_displacement": int(attacked_rank - clean_rank) if clean_rank > 0 and attacked_rank > 0 else "",
-                "perturbation_norm": float(perturbation_norms[row_index]),
-                "rho_q": rho_q,
-                "cwr_estimate": int(1 + np.count_nonzero(cwr_negative_lower <= cwr_positive_upper)),
-                "cwr_note": "descriptor-space sensitivity estimate, not a formal certificate",
-                "selected_positive_index": positive_index,
-                "selected_hard_negative_indexes": " ".join(str(int(index)) for index in negative_indexes),
-            }
-        )
+            rows.append(
+                {
+                    "query_index": query_index,
+                    "clean_nearest_positive_rank": clean_rank,
+                    "attacked_nearest_positive_rank": attacked_rank,
+                    "attack_success": bool(clean_rank == 1 and attacked_rank > 1),
+                    "clean_positive_distance": clean_positive_distance,
+                    "clean_nearest_negative_distance": clean_nearest_negative_distance,
+                    "clean_margin": clean_nearest_negative_distance - clean_positive_distance,
+                    "attacked_positive_distance": attacked_positive_distance,
+                    "attacked_hard_negative_distance": attacked_nearest_negative_distance,
+                    "attacked_nearest_negative_distance": attacked_nearest_negative_distance,
+                    "attacked_margin": attacked_nearest_negative_distance - attacked_positive_distance,
+                    "rank_displacement": int(attacked_rank - clean_rank) if clean_rank > 0 and attacked_rank > 0 else "",
+                    "perturbation_norm": float(perturbation_norms[row_index]),
+                    "rho_q": rho_q,
+                    "cwr_estimate": int(1 + np.count_nonzero(cwr_negative_lower <= cwr_positive_upper)),
+                    "cwr_note": "descriptor-space sensitivity estimate, not a formal certificate",
+                    "selected_positive_index": positive_index,
+                    "selected_hard_negative_indexes": " ".join(str(int(index)) for index in negative_indexes),
+                }
+            )
     return rows
 
 
@@ -1320,36 +1376,40 @@ def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, 
     sampled_query_dataset_indices = [eval_ds.database_num + int(query_index) for query_index in valid_query_indices]
     sampled_positives = map_sampled_positives(positives, valid_query_indices, sampled_database_indices)
 
-    feature_times = {}
-    clean_features = {}
-    for model_tag, (model, model_args) in models.items():
-        logging.info(
-            "Extracting audit-sample descriptors for %s on %s (%d database, %d queries).",
-            model_tag,
-            dataset_name,
-            len(sampled_database_indices),
-            len(valid_query_indices),
-        )
-        feature_start = perf_counter()
-        clean_features[model_tag] = {
-            "database": extract_indexed_features(
-                model_args,
-                eval_ds,
-                model,
-                sampled_database_indices.tolist(),
-                desc=f"{dataset_name}:{model_tag}:audit database",
-                test_method="hard_resize",
-            ),
-            "queries": extract_indexed_features(
-                model_args,
-                eval_ds,
-                model,
-                sampled_query_dataset_indices,
-                desc=f"{dataset_name}:{model_tag}:audit queries",
-                test_method=args.test_method,
-            ),
-        }
-        feature_times[model_tag] = perf_counter() - feature_start
+    logging.info(
+        "Extracting shared audit-sample descriptors on %s (%d database, %d queries, %d models).",
+        dataset_name,
+        len(sampled_database_indices),
+        len(valid_query_indices),
+        len(models),
+    )
+    database_features, database_times, database_input_seconds = extract_features_for_models(
+        args,
+        eval_ds,
+        models,
+        sampled_database_indices.tolist(),
+        desc=f"{dataset_name}:audit database",
+        test_method="hard_resize",
+        batch_size=args.infer_batch_size,
+    )
+    query_features, query_times, query_input_seconds = extract_features_for_models(
+        args,
+        eval_ds,
+        models,
+        sampled_query_dataset_indices,
+        desc=f"{dataset_name}:audit queries",
+        test_method=args.test_method,
+        batch_size=query_batch_size(args),
+    )
+    clean_features = {
+        model_tag: {"database": database_features[model_tag], "queries": query_features[model_tag]}
+        for model_tag in models
+    }
+    feature_times = {
+        model_tag: database_times[model_tag] + query_times[model_tag]
+        for model_tag in models
+    }
+    feature_shared_input_seconds = database_input_seconds + query_input_seconds
 
     reference_tag = attack_reference_tag(args)
     reference_features = clean_features[reference_tag]
@@ -1430,31 +1490,34 @@ def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, 
 
         for model_tag, attacked_features in attacked_features_by_model.items():
             model_database_features = clean_features[model_tag]["database"]
-            diagnostic_rows = compute_query_diagnostic_rows(
-                model_database_features,
-                clean_features[model_tag]["queries"],
-                attacked_features,
-                sampled_positives,
-                valid_query_indices,
-                targets,
-                attack_metadata["perturbation_norm"].detach().cpu().numpy(),
-                clean_query_feature_indices=query_feature_indices,
-            )
-            diagnostics_path = (
-                args.diagnostics_output_dir_path
-                / (
-                    f"{_filename_token(dataset_name)}_{_filename_token(model_tag)}_"
-                    f"{_filename_token(args.rank_attack)}_eps_{_epsilon_label(epsilon)}.csv"
+            attacked_ranks = nearest_positive_ranks(model_database_features, attacked_features, sampled_positives)
+            if args.compute_diagnostics:
+                diagnostic_rows = compute_query_diagnostic_rows(
+                    model_database_features,
+                    clean_features[model_tag]["queries"],
+                    attacked_features,
+                    sampled_positives,
+                    valid_query_indices,
+                    targets,
+                    attack_metadata["perturbation_norm"].detach().cpu().numpy(),
+                    clean_query_feature_indices=query_feature_indices,
+                    clean_ranks=clean_ranks_by_model[model_tag],
+                    attacked_ranks=attacked_ranks,
                 )
-            )
-            write_diagnostics_csv(diagnostics_path, diagnostic_rows)
+                diagnostics_path = (
+                    args.diagnostics_output_dir_path
+                    / (
+                        f"{_filename_token(dataset_name)}_{_filename_token(model_tag)}_"
+                        f"{_filename_token(args.rank_attack)}_eps_{_epsilon_label(epsilon)}.csv"
+                    )
+                )
+                write_diagnostics_csv(diagnostics_path, diagnostic_rows)
             attacked_recalls = compute_recalls_from_features(
                 model_database_features,
                 attacked_features,
                 sampled_positives,
                 args.recall_values,
             )
-            attacked_ranks = nearest_positive_ranks(model_database_features, attacked_features, sampled_positives)
             displacement = rank_displacement_summary(clean_ranks_by_model[model_tag], attacked_ranks)
             success = attack_success_metrics(clean_ranks_by_model[model_tag], attacked_ranks)
 
@@ -1482,6 +1545,7 @@ def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, 
 
     runtimes = {
         "feature_seconds": feature_times,
+        "feature_shared_input_seconds": feature_shared_input_seconds,
         "target_seconds": target_seconds,
         "attack_seconds": attack_times,
     }
@@ -1500,13 +1564,35 @@ def prepare_dataset_context(
     positives = eval_ds.get_positives()
 
     if args.max_dataset_samples is None:
-        feature_times = {}
-        clean_features = {}
-        for model_tag, (model, model_args) in models.items():
-            logging.info("Extracting clean descriptors for %s on %s.", model_tag, dataset_name)
-            feature_start = perf_counter()
-            clean_features[model_tag] = extract_clean_features(model_args, eval_ds, model)
-            feature_times[model_tag] = perf_counter() - feature_start
+        logging.info("Extracting shared clean descriptors for %d models on %s.", len(models), dataset_name)
+        database_features, database_times, database_input_seconds = extract_features_for_models(
+            args,
+            eval_ds,
+            models,
+            range(eval_ds.database_num),
+            desc=f"{dataset_name}:database",
+            test_method="hard_resize",
+            batch_size=args.infer_batch_size,
+        )
+        query_dataset_indices = range(eval_ds.database_num, eval_ds.database_num + eval_ds.queries_num)
+        query_features, query_times, query_input_seconds = extract_features_for_models(
+            args,
+            eval_ds,
+            models,
+            query_dataset_indices,
+            desc=f"{dataset_name}:clean queries",
+            test_method=args.test_method,
+            batch_size=query_batch_size(args),
+        )
+        clean_features = {
+            model_tag: {"database": database_features[model_tag], "queries": query_features[model_tag]}
+            for model_tag in models
+        }
+        feature_times = {
+            model_tag: database_times[model_tag] + query_times[model_tag]
+            for model_tag in models
+        }
+        feature_shared_input_seconds = database_input_seconds + query_input_seconds
 
         valid_query_indices = select_valid_query_indices(positives, args.max_queries)
         valid_positives = [positives[index] for index in valid_query_indices]
@@ -1533,6 +1619,7 @@ def prepare_dataset_context(
             "models": models,
             "clean_features": clean_features,
             "feature_times": feature_times,
+            "feature_shared_input_seconds": feature_shared_input_seconds,
             "positives": positives,
             "valid_query_indices": valid_query_indices,
             "valid_positives": valid_positives,
@@ -1571,36 +1658,40 @@ def prepare_dataset_context(
     )
     sampled_query_dataset_indices = [eval_ds.database_num + int(query_index) for query_index in valid_query_indices]
 
-    feature_times = {}
-    clean_features = {}
-    for model_tag, (model, model_args) in models.items():
-        logging.info(
-            "Extracting sampled-gallery descriptors for %s on %s (%d database, %d queries).",
-            model_tag,
-            dataset_name,
-            len(sampled_database_indices),
-            len(valid_query_indices),
-        )
-        feature_start = perf_counter()
-        clean_features[model_tag] = {
-            "database": extract_indexed_features(
-                model_args,
-                eval_ds,
-                model,
-                sampled_database_indices.tolist(),
-                desc=f"{dataset_name}:{model_tag}:sampled database",
-                test_method="hard_resize",
-            ),
-            "queries": extract_indexed_features(
-                model_args,
-                eval_ds,
-                model,
-                sampled_query_dataset_indices,
-                desc=f"{dataset_name}:{model_tag}:sampled queries",
-                test_method=args.test_method,
-            ),
-        }
-        feature_times[model_tag] = perf_counter() - feature_start
+    logging.info(
+        "Extracting shared sampled-gallery descriptors on %s (%d database, %d queries, %d models).",
+        dataset_name,
+        len(sampled_database_indices),
+        len(valid_query_indices),
+        len(models),
+    )
+    database_features, database_times, database_input_seconds = extract_features_for_models(
+        args,
+        eval_ds,
+        models,
+        sampled_database_indices.tolist(),
+        desc=f"{dataset_name}:sampled database",
+        test_method="hard_resize",
+        batch_size=args.infer_batch_size,
+    )
+    query_features, query_times, query_input_seconds = extract_features_for_models(
+        args,
+        eval_ds,
+        models,
+        sampled_query_dataset_indices,
+        desc=f"{dataset_name}:sampled queries",
+        test_method=args.test_method,
+        batch_size=query_batch_size(args),
+    )
+    clean_features = {
+        model_tag: {"database": database_features[model_tag], "queries": query_features[model_tag]}
+        for model_tag in models
+    }
+    feature_times = {
+        model_tag: database_times[model_tag] + query_times[model_tag]
+        for model_tag in models
+    }
+    feature_shared_input_seconds = database_input_seconds + query_input_seconds
 
     query_counts = {
         "total_queries": int(eval_ds.queries_num),
@@ -1628,6 +1719,7 @@ def prepare_dataset_context(
         "models": models,
         "clean_features": clean_features,
         "feature_times": feature_times,
+        "feature_shared_input_seconds": feature_shared_input_seconds,
         "positives": positives,
         "valid_query_indices": valid_query_indices,
         "valid_positives": sampled_positives,
@@ -1740,31 +1832,34 @@ def evaluate_condition_from_context(
 
     for model_tag, attacked_features in attacked_features_by_model.items():
         model_database_features = clean_features[model_tag]["database"]
-        diagnostic_rows = compute_query_diagnostic_rows(
-            model_database_features,
-            clean_features[model_tag]["queries"],
-            attacked_features,
-            valid_positives,
-            valid_query_indices,
-            targets,
-            attack_metadata["perturbation_norm"].detach().cpu().numpy(),
-            clean_query_feature_indices=clean_query_feature_indices,
-        )
-        diagnostics_path = (
-            args.diagnostics_output_dir_path
-            / (
-                f"{_filename_token(dataset_name)}_{_filename_token(model_tag)}_"
-                f"{_filename_token(args.rank_attack)}_eps_{_epsilon_label(epsilon)}.csv"
+        attacked_ranks = nearest_positive_ranks(model_database_features, attacked_features, valid_positives)
+        if args.compute_diagnostics:
+            diagnostic_rows = compute_query_diagnostic_rows(
+                model_database_features,
+                clean_features[model_tag]["queries"],
+                attacked_features,
+                valid_positives,
+                valid_query_indices,
+                targets,
+                attack_metadata["perturbation_norm"].detach().cpu().numpy(),
+                clean_query_feature_indices=clean_query_feature_indices,
+                clean_ranks=clean_ranks_by_model[model_tag],
+                attacked_ranks=attacked_ranks,
             )
-        )
-        write_diagnostics_csv(diagnostics_path, diagnostic_rows)
+            diagnostics_path = (
+                args.diagnostics_output_dir_path
+                / (
+                    f"{_filename_token(dataset_name)}_{_filename_token(model_tag)}_"
+                    f"{_filename_token(args.rank_attack)}_eps_{_epsilon_label(epsilon)}.csv"
+                )
+            )
+            write_diagnostics_csv(diagnostics_path, diagnostic_rows)
         attacked_recalls = compute_recalls_from_features(
             model_database_features,
             attacked_features,
             valid_positives,
             args.recall_values,
         )
-        attacked_ranks = nearest_positive_ranks(model_database_features, attacked_features, valid_positives)
         displacement = rank_displacement_summary(clean_ranks_by_model[model_tag], attacked_ranks)
         success = attack_success_metrics(clean_ranks_by_model[model_tag], attacked_ranks)
 
@@ -1792,6 +1887,7 @@ def evaluate_condition_from_context(
 
     runtimes = {
         "feature_seconds": context["feature_times"],
+        "feature_shared_input_seconds": context["feature_shared_input_seconds"],
         "target_seconds": target_seconds,
         "attack_seconds": {condition_name: elapsed},
     }
@@ -1806,6 +1902,7 @@ def evaluate_dataset(args, dataset_name: str, models: Mapping[str, Tuple[nn.Modu
     results: Dict[str, Dict[str, object]] = copy.deepcopy(context["clean_results"])
     runtimes = {
         "feature_seconds": context["feature_times"],
+        "feature_shared_input_seconds": context["feature_shared_input_seconds"],
         "target_seconds": 0.0,
         "attack_seconds": {},
     }
@@ -1907,7 +2004,7 @@ def main() -> None:
     output_json, output_csv, run_dir = build_output_paths(args)
     audit_output_json = build_audit_output_path(args, run_dir)
     trace_output_dir = build_trace_output_dir(args, run_dir)
-    diagnostics_output_dir = build_diagnostics_output_dir(args, run_dir)
+    diagnostics_output_dir = build_diagnostics_output_dir(args, run_dir) if args.compute_diagnostics else None
     attack_image_output_dir = build_attack_image_output_dir(args, run_dir)
     args.trace_output_dir_path = trace_output_dir
     args.diagnostics_output_dir_path = diagnostics_output_dir
@@ -1984,7 +2081,7 @@ def main() -> None:
         "output_csv": str(output_csv),
         "audit_output_json": str(audit_output_json) if audit_output_json is not None else None,
         "trace_output_dir": str(trace_output_dir),
-        "diagnostics_output_dir": str(diagnostics_output_dir),
+        "diagnostics_output_dir": str(diagnostics_output_dir) if diagnostics_output_dir is not None else None,
         "attack_image_output_dir": str(attack_image_output_dir),
         "attack_image_manifest_csv": str(attack_image_manifest_path) if attack_image_manifest else None,
         "attack_image_manifest": attack_image_manifest,
@@ -2020,7 +2117,10 @@ def main() -> None:
         logging.info("Saved JSON implementation audit to %s", audit_output_json)
     logging.info("Saved CSV rank evaluation summary to %s", output_csv)
     logging.info("Trace CSV directory: %s", trace_output_dir)
-    logging.info("Diagnostics CSV directory: %s", diagnostics_output_dir)
+    if diagnostics_output_dir is not None:
+        logging.info("Diagnostics CSV directory: %s", diagnostics_output_dir)
+    else:
+        logging.info("Per-query diagnostics disabled; use --compute_diagnostics to enable them.")
     if args.save_attack_images:
         logging.info("Attack image directory: %s", attack_image_output_dir)
     logging.info("Finished in %s", str(datetime.now() - started_at)[:-7])

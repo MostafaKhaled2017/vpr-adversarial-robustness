@@ -55,6 +55,7 @@ class SweepConfig:
     parallel_runs: int = 1
     execution_mode: str = "in_process"
     max_dataset_samples: int | None = None
+    compute_diagnostics: bool = False
     python_bin: str = sys.executable
     smoke: bool = False
     max_queries: int | None = None
@@ -149,6 +150,12 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--parallel_runs", type=int, default=None)
     parser.add_argument("--execution_mode", choices=("in_process", "subprocess"), default=None)
     parser.add_argument("--max_dataset_samples", type=int, default=None)
+    parser.add_argument(
+        "--compute_diagnostics",
+        action="store_true",
+        default=None,
+        help="Compute per-query diagnostic CSV files for every sweep condition.",
+    )
     parser.add_argument("--python_bin", default=None)
     parser.add_argument(
         "--resume_sweep_dir",
@@ -220,6 +227,7 @@ def build_config(args: argparse.Namespace) -> SweepConfig:
         "parallel_runs": args.parallel_runs,
         "execution_mode": args.execution_mode,
         "max_dataset_samples": args.max_dataset_samples,
+        "compute_diagnostics": args.compute_diagnostics,
         "python_bin": args.python_bin,
         "smoke": args.smoke,
         "max_queries": args.max_queries,
@@ -253,6 +261,7 @@ def build_config(args: argparse.Namespace) -> SweepConfig:
             if config_values["max_dataset_samples"] is None
             else int(config_values["max_dataset_samples"])
         ),
+        compute_diagnostics=bool(config_values["compute_diagnostics"]),
         python_bin=str(config_values["python_bin"]),
         smoke=bool(config_values["smoke"]),
         max_queries=(
@@ -529,6 +538,8 @@ def command_for_job(config: SweepConfig, job: SweepJob, job_dir: Path) -> list[s
         command.append(f"--max_queries={config.max_queries}")
     if config.max_dataset_samples is not None:
         command.append(f"--max_dataset_samples={config.max_dataset_samples}")
+    if config.compute_diagnostics:
+        command.append("--compute_diagnostics")
     return command
 
 
@@ -556,6 +567,10 @@ def _has_recalls(metrics: Mapping[str, Any]) -> bool:
     if not isinstance(recalls, dict):
         return False
     return all(f"R@{recall}" in recalls for recall in REQUIRED_RECALLS)
+
+
+def _filename_token(value: str) -> str:
+    return "".join(character if character.isalnum() or character in {"-", "_", "."} else "_" for character in value)
 
 
 def validate_result_report(report: Mapping[str, Any], job: SweepJob, config: SweepConfig) -> tuple[bool, str | None]:
@@ -588,6 +603,21 @@ def validate_result_report(report: Mapping[str, Any], job: SweepJob, config: Swe
         metadata = attacked_metrics.get("attack_metadata")
         if not isinstance(metadata, dict) or not isinstance(metadata.get("perturbation_norm"), dict):
             return False, f"missing perturbation metadata for {model_tag}"
+
+    if config.compute_diagnostics:
+        diagnostics_value = report.get("diagnostics_output_dir")
+        if not isinstance(diagnostics_value, str) or not diagnostics_value:
+            return False, "missing diagnostics output directory"
+        diagnostics_dir = Path(diagnostics_value)
+        epsilon_label = f"{job.condition.epsilon:g}"
+        for model_tag in config.model_tags:
+            filename = (
+                f"{_filename_token(job.dataset)}_{_filename_token(model_tag)}_"
+                f"{_filename_token(config.rank_attack)}_eps_{epsilon_label}.csv"
+            )
+            diagnostics_path = diagnostics_dir / filename
+            if not diagnostics_path.is_file() or diagnostics_path.stat().st_size == 0:
+                return False, f"missing diagnostic CSV for {model_tag}"
     return True, None
 
 
@@ -758,7 +788,7 @@ def rank_eval_args_for_job(config: SweepConfig, job: SweepJob, job_dir: Path):
 
 def configure_rank_eval_output_dirs(args, job_dir: Path) -> None:
     args.trace_output_dir_path = job_dir / "traces"
-    args.diagnostics_output_dir_path = job_dir / "diagnostics"
+    args.diagnostics_output_dir_path = job_dir / "diagnostics" if args.compute_diagnostics else None
     args.attack_image_output_dir_path = job_dir / "attack_images"
     args.save_dir = str(job_dir)
 
@@ -820,7 +850,9 @@ def write_condition_rank_eval_report(
         "output_csv": str(output_csv),
         "audit_output_json": None,
         "trace_output_dir": str(args.trace_output_dir_path),
-        "diagnostics_output_dir": str(args.diagnostics_output_dir_path),
+        "diagnostics_output_dir": (
+            str(args.diagnostics_output_dir_path) if args.diagnostics_output_dir_path is not None else None
+        ),
         "attack_image_output_dir": str(args.attack_image_output_dir_path),
         "attack_image_manifest_csv": str(attack_image_manifest_path) if attack_image_manifest else None,
         "attack_image_manifest": list(attack_image_manifest),

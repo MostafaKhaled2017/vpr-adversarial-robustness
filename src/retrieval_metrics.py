@@ -14,13 +14,41 @@ def format_recalls(recalls: Sequence[float], recall_values: Sequence[int]) -> Di
     }
 
 
-def _distance_chunk(database_features: np.ndarray, query_features: np.ndarray) -> np.ndarray:
+def prepare_distance_database(database_features: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     database = np.ascontiguousarray(database_features.astype(np.float32, copy=False))
+    database_norms = np.sum(database * database, axis=1)
+    return database, database_norms
+
+
+def squared_l2_distance_chunk(
+    database: np.ndarray,
+    database_norms: np.ndarray,
+    query_features: np.ndarray,
+) -> np.ndarray:
     queries = np.ascontiguousarray(query_features.astype(np.float32, copy=False))
     query_norms = np.sum(queries * queries, axis=1, keepdims=True)
-    database_norms = np.sum(database * database, axis=1)[None, :]
-    distances = query_norms + database_norms - 2.0 * queries @ database.T
+    distances = query_norms + database_norms[None, :] - 2.0 * queries @ database.T
     return np.maximum(distances, 0.0)
+
+
+def _distance_chunk(database_features: np.ndarray, query_features: np.ndarray) -> np.ndarray:
+    database, database_norms = prepare_distance_database(database_features)
+    return squared_l2_distance_chunk(database, database_norms, query_features)
+
+
+def nearest_positive_rank_from_distances(distances: np.ndarray, positive_indexes: Sequence[int]) -> int:
+    positives = np.asarray(positive_indexes, dtype=np.int64)
+    if positives.size == 0:
+        return -1
+
+    nearest_positive_distance = np.min(distances[positives])
+    tied_indexes = np.flatnonzero(distances == nearest_positive_distance)
+    if np.any(~np.isin(tied_indexes, positives)):
+        order = np.argsort(distances)
+        inverse_ranks = np.empty_like(order)
+        inverse_ranks[order] = np.arange(1, len(order) + 1, dtype=np.int64)
+        return int(inverse_ranks[positives].min())
+    return int(1 + np.count_nonzero(distances < nearest_positive_distance))
 
 
 def nearest_positive_ranks(
@@ -33,20 +61,15 @@ def nearest_positive_ranks(
     if len(positives_per_query) == 0:
         return ranks
 
+    database, database_norms = prepare_distance_database(database_features)
     for start in range(0, len(positives_per_query), chunk_size):
         end = min(start + chunk_size, len(positives_per_query))
-        distances = _distance_chunk(database_features, query_features[start:end])
-        order = np.argsort(distances, axis=1)
-        inverse_ranks = np.empty_like(order)
-        rank_values = np.arange(1, database_features.shape[0] + 1, dtype=np.int64)
-        rows = np.arange(order.shape[0])[:, None]
-        inverse_ranks[rows, order] = rank_values
-
+        distances = squared_l2_distance_chunk(database, database_norms, query_features[start:end])
         for local_index, positives in enumerate(positives_per_query[start:end]):
-            positive_indexes = np.asarray(positives, dtype=np.int64)
-            if positive_indexes.size == 0:
-                continue
-            ranks[start + local_index] = int(inverse_ranks[local_index, positive_indexes].min())
+            ranks[start + local_index] = nearest_positive_rank_from_distances(
+                distances[local_index],
+                positives,
+            )
     return ranks
 
 
@@ -62,9 +85,10 @@ def compute_recalls_from_features(
 
     recalls = np.zeros(len(recall_values), dtype=np.float32)
     max_k = max(recall_values)
+    database, database_norms = prepare_distance_database(database_features)
     for start in range(0, len(positives_per_query), chunk_size):
         end = min(start + chunk_size, len(positives_per_query))
-        distances = _distance_chunk(database_features, query_features[start:end])
+        distances = squared_l2_distance_chunk(database, database_norms, query_features[start:end])
         predictions = np.argsort(distances, axis=1)[:, :max_k]
         for local_index, pred in enumerate(predictions):
             positives = np.asarray(positives_per_query[start + local_index], dtype=np.int64)
