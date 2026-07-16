@@ -1,6 +1,5 @@
 from typing import Dict, Optional, Sequence
 
-import faiss
 import numpy as np
 import torch
 from torch import nn
@@ -8,6 +7,7 @@ from tqdm import tqdm
 
 from .config import unwrap_model
 from .data import extract_clean_query_features, extract_database_features
+from .faiss_utils import create_flat_l2_index
 from .targets import RetrievalAttackBatch, build_attack_targets
 
 
@@ -28,7 +28,7 @@ def compute_recalls_from_features(
     query_features: np.ndarray,
     positives_per_query,
 ) -> Dict[str, object]:
-    faiss_index = faiss.IndexFlatL2(args.features_dim)
+    faiss_index = create_flat_l2_index(args.features_dim, args.device)
     faiss_index.add(np.ascontiguousarray(database_features.astype(np.float32, copy=False)))
     _, predictions = faiss_index.search(
         np.ascontiguousarray(query_features.astype(np.float32, copy=False)),

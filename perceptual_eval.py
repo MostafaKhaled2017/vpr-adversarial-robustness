@@ -21,6 +21,7 @@ import commons
 import parser as parser_module
 from src.cli import parse_attack_names
 from src.config import validate_cuda_runtime
+from src.faiss_utils import validate_faiss_runtime
 
 
 SUPPORTED_TEST_METHODS = {"hard_resize", "central_crop", "single_query"}
@@ -120,6 +121,7 @@ def validate_arguments(args) -> None:
 
     parse_attack_names(args.attack)
     validate_cuda_runtime(args)
+    validate_faiss_runtime(args.device)
     require_file(args.base_resume, "--base_resume")
     require_file(args.trained_resume, "--trained_resume")
     if args.foundation_model_path is not None:

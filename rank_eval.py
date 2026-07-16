@@ -24,6 +24,7 @@ if str(SUPERVLAD_ROOT) not in sys.path:
 
 import parser as parser_module
 from src.config import denormalize_imagenet, normalized_epsilon_to_raw_pixels, validate_cuda_runtime
+from src.faiss_utils import validate_faiss_runtime
 from src.models import add_model_arguments, get_model_adapter, model_names
 from src.rank_attacks import RankAPGDLinfAttack, RankAttackConfig, RankPGDAttack
 from src.retrieval_metrics import (
@@ -282,6 +283,7 @@ def validate_arguments(args) -> None:
             raise ValueError("--audit_sample_database_size must be at least --adv_negatives + 1.")
 
     validate_cuda_runtime(args)
+    validate_faiss_runtime(args.device)
     for model_path in args.model_paths:
         require_file(model_path, "--model_paths")
     if args.foundation_model_path is not None:

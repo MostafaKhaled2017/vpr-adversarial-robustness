@@ -11,6 +11,7 @@ from src.checkpoints import maybe_copy_resume_checkpoint
 from src.cli import parse_arguments
 from src.components import build_training_components
 from src.config import create_summary_writer, validate_cuda_runtime
+from src.faiss_utils import validate_faiss_runtime
 from src.losses import configure_metric_learning
 from src.train_loop import run_training
 
@@ -18,6 +19,7 @@ from src.train_loop import run_training
 def main():
     args = parse_arguments()
     validate_cuda_runtime(args)
+    validate_faiss_runtime(args.device)
 
     start_time = datetime.now()
     args.save_dir = join(args.log_dir, args.save_dir, start_time.strftime("%Y-%m-%d_%H-%M-%S"))
