@@ -555,6 +555,7 @@ def run_training(
         next_not_improved = 0 if is_best else not_improved + 1
         if should_drop_lr_on_plateau(next_not_improved, args.lr_plateau_patience):
             current_lr *= args.lr_plateau_factor
+            apply_lr_schedule(optimizer, current_lr)
             logging.info(
                 "No validation improvement for %d epochs: dropping lr to %.2e for the next epoch",
                 next_not_improved,
