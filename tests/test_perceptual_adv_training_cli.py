@@ -107,6 +107,19 @@ class PerceptualTrainingCliTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "batches_per_epoch"):
             self.parse("--batches_per_epoch", "0")
 
+    def test_lr_plateau_defaults(self):
+        args = self.parse()
+        self.assertIsNone(args.lr_plateau_patience)
+        self.assertEqual(args.lr_plateau_factor, 0.1)
+
+    def test_lr_plateau_patience_rejects_zero(self):
+        with self.assertRaisesRegex(ValueError, "lr_plateau_patience"):
+            self.parse("--lr_plateau_patience", "0")
+
+    def test_lr_plateau_factor_must_be_a_fraction(self):
+        with self.assertRaisesRegex(ValueError, "lr_plateau_factor"):
+            self.parse("--lr_plateau_factor", "1.5")
+
 
 if __name__ == "__main__":
     unittest.main()

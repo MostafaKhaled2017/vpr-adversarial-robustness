@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 import test
 import util
-from .checkpoints import apply_lr_schedule, maybe_remove_old_checkpoint
+from .checkpoints import apply_lr_schedule, maybe_remove_old_checkpoint, should_drop_lr_on_plateau
 from .config import amp_autocast, unwrap_model
 from .eval import evaluate_against_attacks_retrieval, make_attack_name
 from .losses import compute_align_loss, compute_rank_loss, loss_function, query_is_correct
@@ -295,6 +295,7 @@ def run_training(
     start_time = datetime.now()
     lr_drop_epochs = [int(epoch_str) for epoch_str in args.lr_schedule.split(",") if epoch_str.strip()]
     iteration = start_epoch * len(train_loader)
+    current_lr = float(optimizer.param_groups[0]["lr"])
 
     if start_epoch == 0 and not args.skip_initial_validation:
         logging.info("Begin initial validation before training")
@@ -342,10 +343,13 @@ def run_training(
         if hasattr(train_sampler, "set_epoch"):
             train_sampler.set_epoch(epoch_num)
 
-        lr = args.lr
-        for lr_drop_epoch in lr_drop_epochs:
-            if epoch_num >= lr_drop_epoch:
-                lr *= 0.1
+        if args.lr_plateau_patience is None:
+            lr = args.lr
+            for lr_drop_epoch in lr_drop_epochs:
+                if epoch_num >= lr_drop_epoch:
+                    lr *= 0.1
+        else:
+            lr = current_lr
         apply_lr_schedule(optimizer, lr)
         logging.info("Start epoch %02d with lr %.2e", epoch_num, lr)
 
@@ -549,6 +553,13 @@ def run_training(
         is_best = selection_score > (best_score + args.early_stop_min_delta)
         next_best_score = selection_score if is_best else best_score
         next_not_improved = 0 if is_best else not_improved + 1
+        if should_drop_lr_on_plateau(next_not_improved, args.lr_plateau_patience):
+            current_lr *= args.lr_plateau_factor
+            logging.info(
+                "No validation improvement for %d epochs: dropping lr to %.2e for the next epoch",
+                next_not_improved,
+                current_lr,
+            )
 
         checkpoint_state = build_checkpoint_state(
             args,

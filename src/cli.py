@@ -100,6 +100,18 @@ def build_parser():
     parser.add_argument("--lpips_model", type=str, default=None, help="Optional LPIPS model override.")
     parser.add_argument("--lr_schedule", type=str, default=None, help="Epochs when the learning rate drops by 10x.")
     parser.add_argument(
+        "--lr_plateau_patience",
+        type=int,
+        default=None,
+        help="Drop the learning rate after this many epochs without validation improvement. Overrides --lr_schedule.",
+    )
+    parser.add_argument(
+        "--lr_plateau_factor",
+        type=float,
+        default=0.1,
+        help="Multiplicative learning-rate factor applied on plateau.",
+    )
+    parser.add_argument(
         "--resume_model_only",
         action="store_true",
         help="Load only model weights from --resume and reset optimizer and epoch state.",
@@ -179,6 +191,10 @@ def parse_arguments(argv=None):
         raise ValueError("--keep_every must be at least 1")
     if args.batches_per_epoch is not None and args.batches_per_epoch < 1:
         raise ValueError("--batches_per_epoch must be at least 1")
+    if args.lr_plateau_patience is not None and args.lr_plateau_patience < 1:
+        raise ValueError("--lr_plateau_patience must be at least 1")
+    if not 0.0 < args.lr_plateau_factor < 1.0:
+        raise ValueError("--lr_plateau_factor must be between 0 and 1 (exclusive)")
     if args.adv_negatives < 1:
         raise ValueError("--adv_negatives must be at least 1")
     if args.adv_warmup_epochs < 0:

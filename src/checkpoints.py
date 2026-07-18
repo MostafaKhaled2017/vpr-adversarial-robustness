@@ -59,6 +59,12 @@ def apply_lr_schedule(optimizer, lr: float) -> None:
         param_group["lr"] = lr
 
 
+def should_drop_lr_on_plateau(not_improved: int, plateau_patience) -> bool:
+    if plateau_patience is None:
+        return False
+    return not_improved > 0 and not_improved % plateau_patience == 0
+
+
 def maybe_remove_old_checkpoint(args, checkpoint_epoch: int) -> None:
     if args.keep_every <= 1:
         return
