@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Sampler
 from torch.utils.data.dataset import Subset
 from tqdm import tqdm
 
@@ -39,6 +39,36 @@ def resolve_gsv_cities_base_path(args) -> Path:
     )
 
 
+class SequentialChunkSampler(Sampler):
+    """Yields one contiguous chunk of dataset indices per epoch, advancing chunk by chunk.
+
+    The chunk position is a pure function of the epoch set via set_epoch(), so a
+    resumed run continues from the correct position in the dataset.
+    """
+
+    def __init__(self, dataset, num_samples: int):
+        self.dataset_length = len(dataset)
+        self.num_samples = min(num_samples, self.dataset_length)
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    def __len__(self) -> int:
+        return self.num_samples
+
+    def __iter__(self):
+        start = (self.epoch * self.num_samples) % self.dataset_length
+        for offset in range(self.num_samples):
+            yield (start + offset) % self.dataset_length
+
+
+def make_train_sampler(dataset, batches_per_epoch, batch_size):
+    if batches_per_epoch is None:
+        return None
+    return SequentialChunkSampler(dataset, batches_per_epoch * batch_size)
+
+
 def build_training_dataloader(args) -> DataLoader:
     from dataloaders.train.GSVCitiesDataset import GSVCitiesDataset
     from torchvision import transforms as T
@@ -65,12 +95,14 @@ def build_training_dataloader(args) -> DataLoader:
         base_path=gsv_cities_base_path,
     )
 
+    sampler = make_train_sampler(train_dataset, args.batches_per_epoch, args.train_batch_size)
     return DataLoader(
         dataset=train_dataset,
         batch_size=args.train_batch_size,
         num_workers=4,
         drop_last=False,
         pin_memory=True,
+        sampler=sampler,
         shuffle=False,
     )
 

@@ -338,6 +338,10 @@ def run_training(
         epoch_start = datetime.now()
         model = model.train()
 
+        train_sampler = getattr(train_loader, "sampler", None)
+        if hasattr(train_sampler, "set_epoch"):
+            train_sampler.set_epoch(epoch_num)
+
         lr = args.lr
         for lr_drop_epoch in lr_drop_epochs:
             if epoch_num >= lr_drop_epoch:

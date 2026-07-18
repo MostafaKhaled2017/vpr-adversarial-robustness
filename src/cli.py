@@ -68,6 +68,12 @@ def build_parser():
         help="Training batch size alias kept for perceptual-advex style.",
     )
     parser.add_argument("--val_batches", type=int, default=10, help="Number of validation query batches to attack.")
+    parser.add_argument(
+        "--batches_per_epoch",
+        type=int,
+        default=None,
+        help="Training batches per (virtual) epoch. Defaults to one pass over the full dataset.",
+    )
     parser.add_argument("--log_dir", type=str, default="logs", help="Base folder for perceptual adversarial training runs.")
     parser.add_argument("--parallel", type=int, default=1, help="Number of GPUs to use when CUDA is available.")
     parser.add_argument(
@@ -171,6 +177,8 @@ def parse_arguments(argv=None):
             args.lr_schedule = "120"
     if args.keep_every < 1:
         raise ValueError("--keep_every must be at least 1")
+    if args.batches_per_epoch is not None and args.batches_per_epoch < 1:
+        raise ValueError("--batches_per_epoch must be at least 1")
     if args.adv_negatives < 1:
         raise ValueError("--adv_negatives must be at least 1")
     if args.adv_warmup_epochs < 0:

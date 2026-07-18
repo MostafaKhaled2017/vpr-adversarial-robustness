@@ -96,6 +96,17 @@ class PerceptualTrainingCliTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "non-negative"):
             self.parse("--weight_decay", "-0.1")
 
+    def test_batches_per_epoch_defaults_to_full_epoch(self):
+        self.assertIsNone(self.parse().batches_per_epoch)
+
+    def test_batches_per_epoch_accepts_positive_value(self):
+        args = self.parse("--batches_per_epoch", "400")
+        self.assertEqual(args.batches_per_epoch, 400)
+
+    def test_batches_per_epoch_rejects_zero(self):
+        with self.assertRaisesRegex(ValueError, "batches_per_epoch"):
+            self.parse("--batches_per_epoch", "0")
+
 
 if __name__ == "__main__":
     unittest.main()
