@@ -68,8 +68,10 @@ def amp_enabled(mixed_precision: bool, device: str) -> bool:
 
 
 def amp_autocast(mixed_precision: bool, device: str) -> ContextManager:
-    if amp_enabled(mixed_precision, device):
-        return autocast(enabled=True)
+    # autocast(enabled=False) actively disables an enclosing autocast region;
+    # a nullcontext would silently inherit it.
+    if device == "cuda":
+        return autocast(enabled=amp_enabled(mixed_precision, device))
     return nullcontext()
 
 

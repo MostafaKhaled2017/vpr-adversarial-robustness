@@ -107,6 +107,12 @@ class PerceptualTrainingCliTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "batches_per_epoch"):
             self.parse("--batches_per_epoch", "0")
 
+    def test_shuffle_defaults_off(self):
+        self.assertFalse(self.parse().shuffle)
+
+    def test_shuffle_flag_parses(self):
+        self.assertTrue(self.parse("--shuffle").shuffle)
+
     def test_lr_plateau_defaults(self):
         args = self.parse()
         self.assertIsNone(args.lr_plateau_patience)

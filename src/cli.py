@@ -74,6 +74,14 @@ def build_parser():
         default=None,
         help="Training batches per (virtual) epoch. Defaults to one pass over the full dataset.",
     )
+    parser.add_argument(
+        "--shuffle",
+        action="store_true",
+        default=False,
+        help="Shuffle the training dataset ordering before sequential chunking. Each full pass "
+        "over the dataset uses a fresh deterministic permutation derived from --seed, so "
+        "resumed runs reproduce the same ordering.",
+    )
     parser.add_argument("--log_dir", type=str, default="logs", help="Base folder for perceptual adversarial training runs.")
     parser.add_argument("--parallel", type=int, default=1, help="Number of GPUs to use when CUDA is available.")
     parser.add_argument(

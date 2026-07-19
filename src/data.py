@@ -44,12 +44,19 @@ class SequentialChunkSampler(Sampler):
 
     The chunk position is a pure function of the epoch set via set_epoch(), so a
     resumed run continues from the correct position in the dataset.
+
+    With shuffle_seed set, chunks walk a permuted ordering instead of the raw
+    dataset order. Each full pass over the dataset gets a fresh permutation
+    seeded by (shuffle_seed, pass_index), so the ordering stays a pure function
+    of (seed, epoch) and resumed runs reproduce it exactly.
     """
 
-    def __init__(self, dataset, num_samples: int):
+    def __init__(self, dataset, num_samples: int, shuffle_seed=None):
         self.dataset_length = len(dataset)
         self.num_samples = min(num_samples, self.dataset_length)
+        self.shuffle_seed = shuffle_seed
         self.epoch = 0
+        self._pass_permutations = {}
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
@@ -57,16 +64,31 @@ class SequentialChunkSampler(Sampler):
     def __len__(self) -> int:
         return self.num_samples
 
+    def _pass_permutation(self, pass_index: int) -> np.ndarray:
+        if pass_index not in self._pass_permutations:
+            rng = np.random.default_rng((self.shuffle_seed, pass_index))
+            self._pass_permutations = {
+                key: value for key, value in self._pass_permutations.items() if key >= pass_index - 1
+            }
+            self._pass_permutations[pass_index] = rng.permutation(self.dataset_length)
+        return self._pass_permutations[pass_index]
+
     def __iter__(self):
-        start = (self.epoch * self.num_samples) % self.dataset_length
-        for offset in range(self.num_samples):
-            yield (start + offset) % self.dataset_length
+        start = self.epoch * self.num_samples
+        for position in range(start, start + self.num_samples):
+            index = position % self.dataset_length
+            if self.shuffle_seed is None:
+                yield index
+            else:
+                yield int(self._pass_permutation(position // self.dataset_length)[index])
 
 
-def make_train_sampler(dataset, batches_per_epoch, batch_size):
+def make_train_sampler(dataset, batches_per_epoch, batch_size, shuffle_seed=None):
     if batches_per_epoch is None:
-        return None
-    return SequentialChunkSampler(dataset, batches_per_epoch * batch_size)
+        if shuffle_seed is None:
+            return None
+        return SequentialChunkSampler(dataset, len(dataset), shuffle_seed=shuffle_seed)
+    return SequentialChunkSampler(dataset, batches_per_epoch * batch_size, shuffle_seed=shuffle_seed)
 
 
 def build_training_dataloader(args) -> DataLoader:
@@ -95,7 +117,12 @@ def build_training_dataloader(args) -> DataLoader:
         base_path=gsv_cities_base_path,
     )
 
-    sampler = make_train_sampler(train_dataset, args.batches_per_epoch, args.train_batch_size)
+    sampler = make_train_sampler(
+        train_dataset,
+        args.batches_per_epoch,
+        args.train_batch_size,
+        shuffle_seed=args.seed if args.shuffle else None,
+    )
     return DataLoader(
         dataset=train_dataset,
         batch_size=args.train_batch_size,

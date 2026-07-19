@@ -1,3 +1,5 @@
+import functools
+import inspect
 import math
 import sys
 from contextlib import contextmanager
@@ -87,6 +89,42 @@ def attack_generation_context(model: nn.Module):
             parameter.requires_grad_(requires_grad)
 
 
+def sync_uar_backend_resolution(backend: nn.Module, height: int, width: int) -> None:
+    """Rebuild an advex_uar-backed attack at the actual input resolution.
+
+    advex_uar hardcodes resol=224 for imagenet inside get_attack, baking it into
+    the functools.partial stored as UARAttack.attack_fn, so any other input size
+    crashes on the [1, 3, 224, 224] normalization tensors. mister_ed-backed
+    attacks (StAdv, ReColorAdv) have no attack_fn partial and need no fix.
+    """
+    attack_fn = getattr(backend, "attack_fn", None)
+    if not isinstance(attack_fn, functools.partial):
+        return
+    if height != width:
+        raise ValueError(f"advex_uar attacks require square inputs, got {height}x{width}.")
+    current_attack = getattr(backend, "attack", None)
+    if current_attack is not None and current_attack.resol == height:
+        return
+
+    parameter_names = list(inspect.signature(attack_fn.func).parameters)
+    resol_index = parameter_names.index("resol")
+    positional_args = list(attack_fn.args)
+    if resol_index < len(positional_args):
+        positional_args[resol_index] = height
+        keyword_args = attack_fn.keywords
+    else:
+        keyword_args = {**attack_fn.keywords, "resol": height}
+    backend.attack = attack_fn.func(*positional_args, **keyword_args)
+
+    # UARAttack.forward installs these lambdas only on lazy first creation, so
+    # replicate them here; the wrapper otherwise re-applies 224-sized
+    # ImagenetTransforms around the [0, 255] pixel interface.
+    from perceptual_advex.utilities import LambdaLayer
+
+    backend.attack.transform = LambdaLayer(lambda x: x / 255)
+    backend.attack.inverse_transform = LambdaLayer(lambda x: x * 255)
+
+
 class RetrievalAttackWrapper(nn.Module):
     backend_cls = None
     default_kwargs: Dict[str, object] = {}
@@ -97,6 +135,7 @@ class RetrievalAttackWrapper(nn.Module):
             raise RuntimeError("backend_cls must be defined by subclasses.")
         self.model = model
         self.margin = margin
+        self.device = device
         self.proxy_model = RetrievalAttackProxy(
             unwrap_model(model),
             margin,
@@ -111,9 +150,14 @@ class RetrievalAttackWrapper(nn.Module):
         self.proxy_model.set_targets(targets)
         fake_labels = torch.zeros(inputs.shape[0], dtype=torch.long, device=inputs.device)
         try:
-            pixel_inputs = normalized_to_pixels(inputs).clamp(0.0, 1.0)
-            with attack_generation_context(self.proxy_model.model):
-                adv_pixels = self.backend(pixel_inputs, fake_labels)
+            # The mister_ed/advex backends are not autocast-safe (e.g. StAdv's
+            # fp16 flow field crashes stAdv_norm), so force fp32 even when the
+            # caller is inside a mixed-precision training region.
+            with amp_autocast(False, self.device):
+                pixel_inputs = normalized_to_pixels(inputs.float()).clamp(0.0, 1.0)
+                sync_uar_backend_resolution(self.backend, inputs.shape[-2], inputs.shape[-1])
+                with attack_generation_context(self.proxy_model.model):
+                    adv_pixels = self.backend(pixel_inputs, fake_labels)
             adv_pixels = torch.nan_to_num(adv_pixels, nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
             return pixels_to_normalized(adv_pixels).detach()
         finally:
