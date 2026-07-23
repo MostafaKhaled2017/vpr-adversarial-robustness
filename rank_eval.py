@@ -1504,7 +1504,6 @@ def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, 
         return reference_targets[reference_tag]
 
     attack_times: Dict[str, object] = {}
-    attack_metadata_by_condition: Dict[str, object] = {}
     audit_by_condition: Dict[str, object] = {}
     image_manifest: list[Dict[str, object]] = []
     query_feature_indices = np.arange(len(valid_query_indices), dtype=np.int64)
@@ -1546,11 +1545,9 @@ def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, 
             )
             if args.shared_attacks:
                 attack_times[condition_name] = elapsed
-                attack_metadata_by_condition[condition_name] = group_metadata_summary
                 audit_by_condition[condition_name] = group_audit
             else:
                 attack_times.setdefault(condition_name, {})[reference_tag] = elapsed
-                attack_metadata_by_condition.setdefault(condition_name, {})[reference_tag] = group_metadata_summary
                 audit_by_condition.setdefault(condition_name, {})[reference_tag] = group_audit
 
             for model_tag, attacked_features in attacked_features_by_model.items():
