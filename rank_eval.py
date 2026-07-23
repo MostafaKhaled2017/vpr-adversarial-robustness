@@ -1822,6 +1822,52 @@ def get_context_targets(
     return targets, target_seconds
 
 
+def run_attack_for_group(
+    args,
+    eval_ds,
+    models: Mapping[str, Tuple[nn.Module, object]],
+    reference_tag: str,
+    group_models: Mapping[str, Tuple[nn.Module, object]],
+    reference_features: Mapping[str, np.ndarray],
+    targets: Sequence[Mapping[str, object]],
+    dataset_name: str,
+    epsilon: float,
+    condition_name: str,
+    desc: str,
+    positives_by_query: Mapping[int, Sequence[int]],
+) -> tuple[Dict[str, np.ndarray], Dict[str, torch.Tensor], list[Dict[str, object]], float]:
+    database_features_tensor = torch.from_numpy(reference_features["database"]).to(args.device)
+    clear_cuda_cache(args)
+    reseed_attack_rng(args, dataset_name, reference_tag, condition_name)
+    attack = build_rank_attack(models[reference_tag][0], args, epsilon)
+    attack_start = perf_counter()
+    attacked_features_by_model, attack_metadata, trace_rows, image_rows = generate_attacked_query_features(
+        args,
+        eval_ds,
+        attack,
+        group_models,
+        database_features_tensor,
+        reference_features["queries"],
+        targets,
+        dataset_name,
+        epsilon,
+        desc=desc,
+        attack_group_tag=None if args.shared_attacks else reference_tag,
+    )
+    elapsed = perf_counter() - attack_start
+    write_trace_csvs(
+        args.trace_output_dir_path,
+        dataset_name,
+        args.rank_attack,
+        epsilon,
+        trace_rows,
+        reference_features["database"],
+        positives_by_query,
+        model_subdir=None if args.shared_attacks else reference_tag,
+    )
+    return attacked_features_by_model, attack_metadata, image_rows, elapsed
+
+
 def evaluate_condition_from_context(
     args,
     context: MutableMapping[str, object],
@@ -1834,10 +1880,7 @@ def evaluate_condition_from_context(
     valid_query_indices = context["valid_query_indices"]
     valid_positives = context["valid_positives"]
     models = context["models"]
-    reference_tag = attack_reference_tag(args)
-    reference_features = clean_features[reference_tag]
-    reference_model = models[reference_tag][0]
-    database_features_tensor = torch.from_numpy(reference_features["database"]).to(args.device)
+    condition_name = f"{args.rank_attack}_eps_{epsilon:g}"
     audit_by_condition: Dict[str, object] = {}
     image_manifest: list[Dict[str, object]] = []
     clean_query_feature_indices = (
@@ -1845,107 +1888,117 @@ def evaluate_condition_from_context(
         if context.get("sampled_gallery")
         else None
     )
+    positives_by_query = {int(index): valid_positives[row] for row, index in enumerate(valid_query_indices)}
+    total_target_seconds = 0.0
+    attack_seconds_by_group: Dict[str, float] = {}
 
-    targets, target_seconds = get_context_targets(args, context, reference_tag=attack_reference_tag(args))
-    condition_name = f"{args.rank_attack}_eps_{epsilon:g}"
-    clear_cuda_cache(args)
-    attack = build_rank_attack(reference_model, args, epsilon)
-    attack_start = perf_counter()
-    attacked_features_by_model, attack_metadata, trace_rows, image_rows = generate_attacked_query_features(
-        args,
-        context["eval_ds"],
-        attack,
-        models,
-        database_features_tensor,
-        reference_features["queries"],
-        targets,
-        dataset_name,
-        epsilon,
-        desc=f"{dataset_name}:{condition_name}",
-    )
-    image_manifest.extend(image_rows)
-    elapsed = perf_counter() - attack_start
-    attack_metadata_summary = summarize_metadata(attack_metadata)
-    write_trace_csvs(
-        args.trace_output_dir_path,
-        dataset_name,
-        args.rank_attack,
-        epsilon,
-        trace_rows,
-        reference_features["database"],
-        {int(index): valid_positives[row] for row, index in enumerate(valid_query_indices)},
-    )
-    if args.audit_attack_implementation:
-        audit_by_condition[condition_name] = build_condition_audit(
-            args,
-            epsilon,
-            clean_features,
-            attacked_features_by_model,
-            valid_query_indices,
-            attack_metadata,
-            clean_query_feature_indices=clean_query_feature_indices,
+    for reference_tag, group_models in attack_groups(args, models):
+        reference_features = clean_features[reference_tag]
+        targets, target_seconds = get_context_targets(args, context, reference_tag)
+        total_target_seconds += target_seconds
+        desc = (
+            f"{dataset_name}:{condition_name}"
+            if args.shared_attacks
+            else f"{dataset_name}:{condition_name}:{reference_tag}"
         )
+        attacked_features_by_model, attack_metadata, image_rows, elapsed = run_attack_for_group(
+            args,
+            context["eval_ds"],
+            models,
+            reference_tag,
+            group_models,
+            reference_features,
+            targets,
+            dataset_name,
+            epsilon,
+            condition_name,
+            desc,
+            positives_by_query,
+        )
+        image_manifest.extend(image_rows)
+        attack_seconds_by_group[reference_tag] = elapsed
+        attack_metadata_summary = summarize_metadata(attack_metadata)
+        if args.audit_attack_implementation:
+            group_audit = build_condition_audit(
+                args,
+                epsilon,
+                {model_tag: clean_features[model_tag] for model_tag in group_models},
+                attacked_features_by_model,
+                valid_query_indices,
+                attack_metadata,
+                clean_query_feature_indices=clean_query_feature_indices,
+            )
+            if args.shared_attacks:
+                audit_by_condition[condition_name] = group_audit
+            else:
+                audit_by_condition.setdefault(condition_name, {})[reference_tag] = group_audit
 
-    for model_tag, attacked_features in attacked_features_by_model.items():
-        model_database_features = clean_features[model_tag]["database"]
-        attacked_ranks = nearest_positive_ranks(model_database_features, attacked_features, valid_positives)
-        if args.compute_diagnostics:
-            diagnostic_rows = compute_query_diagnostic_rows(
+        for model_tag, attacked_features in attacked_features_by_model.items():
+            model_database_features = clean_features[model_tag]["database"]
+            attacked_ranks = nearest_positive_ranks(model_database_features, attacked_features, valid_positives)
+            if args.compute_diagnostics:
+                diagnostic_rows = compute_query_diagnostic_rows(
+                    model_database_features,
+                    clean_features[model_tag]["queries"],
+                    attacked_features,
+                    valid_positives,
+                    valid_query_indices,
+                    targets,
+                    attack_metadata["perturbation_norm"].detach().cpu().numpy(),
+                    clean_query_feature_indices=clean_query_feature_indices,
+                    clean_ranks=clean_ranks_by_model[model_tag],
+                    attacked_ranks=attacked_ranks,
+                )
+                diagnostics_path = (
+                    args.diagnostics_output_dir_path
+                    / (
+                        f"{_filename_token(dataset_name)}_{_filename_token(model_tag)}_"
+                        f"{_filename_token(args.rank_attack)}_eps_{_epsilon_label(epsilon)}.csv"
+                    )
+                )
+                write_diagnostics_csv(diagnostics_path, diagnostic_rows)
+            attacked_recalls = compute_recalls_from_features(
                 model_database_features,
-                clean_features[model_tag]["queries"],
                 attacked_features,
                 valid_positives,
-                valid_query_indices,
-                targets,
-                attack_metadata["perturbation_norm"].detach().cpu().numpy(),
-                clean_query_feature_indices=clean_query_feature_indices,
-                clean_ranks=clean_ranks_by_model[model_tag],
-                attacked_ranks=attacked_ranks,
+                args.recall_values,
             )
-            diagnostics_path = (
-                args.diagnostics_output_dir_path
-                / (
-                    f"{_filename_token(dataset_name)}_{_filename_token(model_tag)}_"
-                    f"{_filename_token(args.rank_attack)}_eps_{_epsilon_label(epsilon)}.csv"
-                )
-            )
-            write_diagnostics_csv(diagnostics_path, diagnostic_rows)
-        attacked_recalls = compute_recalls_from_features(
-            model_database_features,
-            attacked_features,
-            valid_positives,
-            args.recall_values,
-        )
-        displacement = rank_displacement_summary(clean_ranks_by_model[model_tag], attacked_ranks)
-        success = attack_success_metrics(clean_ranks_by_model[model_tag], attacked_ranks)
+            displacement = rank_displacement_summary(clean_ranks_by_model[model_tag], attacked_ranks)
+            success = attack_success_metrics(clean_ranks_by_model[model_tag], attacked_ranks)
 
-        results[model_tag][condition_name] = {
-            **attacked_recalls,
-            "condition": condition_name,
-            "attack": args.rank_attack,
-            "attack_reference_model": reference_tag,
-            "epsilon": float(epsilon),
-            "rank_steps": int(args.rank_steps),
-            "rank_restarts": int(args.rank_restarts),
-            "rank_step_size": args.rank_step_size,
-            "adv_margin": float(args.adv_margin),
-            "adv_negatives": int(args.adv_negatives),
-            "attacked_queries": context["query_counts"]["attacked_queries"],
-            "sampled_gallery": bool(context.get("sampled_gallery")),
-            "benchmark_comparable": not bool(context.get("sampled_gallery")),
-            "rank_displacement": displacement,
-            "attack_success": success,
-            "runtime_seconds": elapsed,
-            "runtime_per_query_seconds": float(elapsed / max(1, len(valid_query_indices))),
-            "attack_metadata": attack_metadata_summary,
-        }
-        logging.info("%s/%s recalls: %s", model_tag, condition_name, attacked_recalls["recalls_str"])
+            results[model_tag][condition_name] = {
+                **attacked_recalls,
+                "condition": condition_name,
+                "attack": args.rank_attack,
+                "attack_reference_model": reference_tag,
+                "epsilon": float(epsilon),
+                "rank_steps": int(args.rank_steps),
+                "rank_restarts": int(args.rank_restarts),
+                "rank_step_size": args.rank_step_size,
+                "adv_margin": float(args.adv_margin),
+                "adv_negatives": int(args.adv_negatives),
+                "attacked_queries": context["query_counts"]["attacked_queries"],
+                "sampled_gallery": bool(context.get("sampled_gallery")),
+                "benchmark_comparable": not bool(context.get("sampled_gallery")),
+                "rank_displacement": displacement,
+                "attack_success": success,
+                "runtime_seconds": elapsed,
+                "runtime_per_query_seconds": float(elapsed / max(1, len(valid_query_indices))),
+                "attack_metadata": attack_metadata_summary,
+            }
+            logging.info("%s/%s recalls: %s", model_tag, condition_name, attacked_recalls["recalls_str"])
 
     runtimes = {
         "feature_seconds": context["feature_times"],
         "feature_shared_input_seconds": context["feature_shared_input_seconds"],
-        "target_seconds": target_seconds,
-        "attack_seconds": {condition_name: elapsed},
+        "target_seconds": total_target_seconds,
+        "attack_seconds": {
+            condition_name: (
+                attack_seconds_by_group[attack_reference_tag(args)]
+                if args.shared_attacks
+                else dict(attack_seconds_by_group)
+            )
+        },
     }
     return results, runtimes, context["query_counts"], audit_by_condition, image_manifest
 

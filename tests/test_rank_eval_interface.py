@@ -670,6 +670,117 @@ class RankEvalInterfaceTests(unittest.TestCase):
 
         self.assertIn("model", header.split(","))
 
+    def test_condition_evaluation_dispatches_attacks_per_mode(self):
+        def build_context():
+            database = np.array([[1, 0], [0, 1], [5, 5], [6, 6]], dtype=np.float32)
+            queries = np.array([[1, 0], [0, 1]], dtype=np.float32)
+            clean_features = {
+                "base": {"database": database, "queries": queries},
+                "adv": {"database": database.copy(), "queries": queries.copy()},
+            }
+            valid_query_indices = np.array([0, 1], dtype=np.int64)
+            valid_positives = [np.array([0], dtype=np.int64), np.array([1], dtype=np.int64)]
+            targets = [{"query_index": 0}, {"query_index": 1}]
+            return {
+                "sampled_gallery": False,
+                "eval_ds": object(),
+                "models": {"base": ("model_base", None), "adv": ("model_adv", None)},
+                "clean_features": clean_features,
+                "clean_ranks_by_model": {
+                    "base": np.array([1, 1], dtype=np.int64),
+                    "adv": np.array([1, 1], dtype=np.int64),
+                },
+                "valid_query_indices": valid_query_indices,
+                "valid_positives": valid_positives,
+                "clean_results": {"base": {}, "adv": {}},
+                "query_counts": {"attacked_queries": 2},
+                "feature_times": {},
+                "feature_shared_input_seconds": 0.0,
+                "target_cache": {
+                    ("base", 1): {"targets": targets, "target_seconds": 0.0},
+                    ("adv", 1): {"targets": targets, "target_seconds": 0.0},
+                },
+            }
+
+        def make_args(shared_attacks):
+            return Namespace(
+                shared_attacks=shared_attacks,
+                seed=0,
+                device="cpu",
+                model_tags=["base", "adv"],
+                rank_attack="rank_pgd_linf",
+                rank_steps=1,
+                rank_restarts=1,
+                rank_step_size=None,
+                adv_margin=0.1,
+                adv_negatives=1,
+                max_queries=None,
+                recall_values=[1],
+                audit_attack_implementation=False,
+                compute_diagnostics=False,
+                trace_output_dir_path=Path("unused_traces"),
+            )
+
+        generation_calls = []
+        trace_calls = []
+
+        def fake_build_rank_attack(model, _args, _epsilon):
+            return ("attack", model)
+
+        def fake_generate(args, eval_ds, attack, models, database_tensor, clean_queries, targets, dataset_name, epsilon, desc, attack_group_tag=None):
+            del args, eval_ds, database_tensor, dataset_name, epsilon, desc
+            generation_calls.append({"models": list(models), "attack": attack, "group_tag": attack_group_tag})
+            attacked = {tag: clean_queries[: len(targets)].copy() for tag in models}
+            return attacked, {"best_loss": torch.zeros(len(targets))}, [], []
+
+        def fake_write_trace_csvs(*_args, model_subdir=None, **_kwargs):
+            trace_calls.append(model_subdir)
+            return []
+
+        original = (
+            rank_eval.build_rank_attack,
+            rank_eval.generate_attacked_query_features,
+            rank_eval.write_trace_csvs,
+        )
+        try:
+            rank_eval.build_rank_attack = fake_build_rank_attack
+            rank_eval.generate_attacked_query_features = fake_generate
+            rank_eval.write_trace_csvs = fake_write_trace_csvs
+
+            results, runtimes, _, _, _ = rank_eval.evaluate_condition_from_context(
+                make_args(shared_attacks=False), build_context(), "msls", 0.01
+            )
+            per_model_calls = list(generation_calls)
+            generation_calls.clear()
+            per_model_trace_calls = list(trace_calls)
+            trace_calls.clear()
+
+            shared_results, shared_runtimes, _, _, _ = rank_eval.evaluate_condition_from_context(
+                make_args(shared_attacks=True), build_context(), "msls", 0.01
+            )
+        finally:
+            (
+                rank_eval.build_rank_attack,
+                rank_eval.generate_attacked_query_features,
+                rank_eval.write_trace_csvs,
+            ) = original
+
+        condition = "rank_pgd_linf_eps_0.01"
+        self.assertEqual([call["models"] for call in per_model_calls], [["base"], ["adv"]])
+        self.assertEqual([call["attack"][1] for call in per_model_calls], ["model_base", "model_adv"])
+        self.assertEqual([call["group_tag"] for call in per_model_calls], ["base", "adv"])
+        self.assertEqual(per_model_trace_calls, ["base", "adv"])
+        self.assertEqual(results["base"][condition]["attack_reference_model"], "base")
+        self.assertEqual(results["adv"][condition]["attack_reference_model"], "adv")
+        self.assertEqual(set(runtimes["attack_seconds"][condition]), {"base", "adv"})
+
+        self.assertEqual([call["models"] for call in generation_calls], [["base", "adv"]])
+        self.assertEqual(generation_calls[0]["attack"][1], "model_base")
+        self.assertIsNone(generation_calls[0]["group_tag"])
+        self.assertEqual(trace_calls, [None])
+        self.assertEqual(shared_results["adv"][condition]["attack_reference_model"], "base")
+        self.assertIsInstance(shared_runtimes["attack_seconds"][condition], float)
+
 
 if __name__ == "__main__":
     unittest.main()
