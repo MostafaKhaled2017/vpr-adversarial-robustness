@@ -4,6 +4,7 @@ from os.path import exists, join
 from pathlib import Path
 
 import torch
+import yaml
 
 
 def load_trusted_checkpoint(path: str, map_location=None):
@@ -36,6 +37,25 @@ def load_model_state_dict(model, checkpoint, strict: bool = True) -> None:
 def load_model_weights(model, checkpoint_path: str, map_location=None, strict: bool = True) -> None:
     checkpoint = load_trusted_checkpoint(checkpoint_path, map_location=map_location)
     load_model_state_dict(model, checkpoint, strict=strict)
+
+
+def _to_yaml_serializable(value):
+    if isinstance(value, dict):
+        return {key: _to_yaml_serializable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_yaml_serializable(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def save_training_config(args, filename: str = "training_config.yaml") -> str:
+    config = {key: _to_yaml_serializable(value) for key, value in vars(args).items()}
+    Path(args.save_dir).mkdir(parents=True, exist_ok=True)
+    config_path = join(args.save_dir, filename)
+    with open(config_path, "w") as config_file:
+        yaml.safe_dump(config, config_file, default_flow_style=False, sort_keys=True)
+    return config_path
 
 
 def maybe_copy_resume_checkpoint(args, model=None) -> None:
