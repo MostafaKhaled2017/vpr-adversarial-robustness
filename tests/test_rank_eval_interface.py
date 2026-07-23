@@ -418,14 +418,51 @@ class RankEvalInterfaceTests(unittest.TestCase):
 
         try:
             rank_eval.build_attack_targets = fake_build_attack_targets
-            rank_eval.get_context_targets(args, context)
-            rank_eval.get_context_targets(args, context)
+            rank_eval.get_context_targets(args, context, "base")
+            rank_eval.get_context_targets(args, context, "base")
             args.adv_negatives = 3
-            rank_eval.get_context_targets(args, context)
+            rank_eval.get_context_targets(args, context, "base")
         finally:
             rank_eval.build_attack_targets = original_build_attack_targets
 
         self.assertEqual(calls, [2, 3])
+
+    def test_context_targets_are_cached_per_reference_model(self):
+        args = Namespace(adv_negatives=2, max_queries=None, model_tags=["base", "adv"])
+        context = {
+            "sampled_gallery": False,
+            "eval_ds": object(),
+            "clean_features": {
+                "base": {
+                    "database": np.zeros((4, 2), dtype=np.float32),
+                    "queries": np.zeros((2, 2), dtype=np.float32),
+                },
+                "adv": {
+                    "database": np.ones((4, 2), dtype=np.float32),
+                    "queries": np.ones((2, 2), dtype=np.float32),
+                },
+            },
+            "valid_query_indices": np.array([0, 1], dtype=np.int64),
+            "target_cache": {},
+        }
+        seen_databases = []
+        original_build_attack_targets = rank_eval.build_attack_targets
+
+        def fake_build_attack_targets(_args, _eval_ds, database_features, _queries, limit_queries=None):
+            del limit_queries
+            seen_databases.append(float(database_features[0, 0]))
+            return [{"query_index": 0}], np.array([0, 1], dtype=np.int64)
+
+        try:
+            rank_eval.build_attack_targets = fake_build_attack_targets
+            rank_eval.get_context_targets(args, context, "base")
+            rank_eval.get_context_targets(args, context, "adv")
+            rank_eval.get_context_targets(args, context, "base")
+        finally:
+            rank_eval.build_attack_targets = original_build_attack_targets
+
+        self.assertEqual(seen_databases, [0.0, 1.0])
+        self.assertEqual(set(context["target_cache"]), {("base", 2), ("adv", 2)})
 
     def test_query_diagnostics_compute_margins_and_cwr_estimate(self):
         database = np.array(

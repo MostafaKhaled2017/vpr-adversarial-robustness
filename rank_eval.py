@@ -1773,15 +1773,18 @@ def prepare_dataset_context(
     }
 
 
-def get_context_targets(args, context: MutableMapping[str, object]) -> tuple[list[Dict[str, object]], float]:
+def get_context_targets(
+    args,
+    context: MutableMapping[str, object],
+    reference_tag: str,
+) -> tuple[list[Dict[str, object]], float]:
     cache = context.setdefault("target_cache", {})
     assert isinstance(cache, dict)
-    cache_key = int(args.adv_negatives)
+    cache_key = (reference_tag, int(args.adv_negatives))
     if cache_key in cache:
         return cache[cache_key]["targets"], 0.0
 
     target_start = perf_counter()
-    reference_tag = attack_reference_tag(args)
     reference_features = context["clean_features"][reference_tag]
     if context.get("sampled_gallery"):
         targets = build_sampled_attack_targets(
@@ -1831,7 +1834,7 @@ def evaluate_condition_from_context(
         else None
     )
 
-    targets, target_seconds = get_context_targets(args, context)
+    targets, target_seconds = get_context_targets(args, context, reference_tag=attack_reference_tag(args))
     condition_name = f"{args.rank_attack}_eps_{epsilon:g}"
     clear_cuda_cache(args)
     attack = build_rank_attack(reference_model, args, epsilon)
