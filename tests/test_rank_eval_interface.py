@@ -81,6 +81,34 @@ class RankEvalInterfaceTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parser.parse_args([*common, "--model", "supervlad", "--model_paths", "base.pth"])
 
+    def test_shared_attacks_flag_defaults_to_per_model(self):
+        parser = rank_eval.build_parser()
+
+        self.assertIn("--shared_attacks", parser._option_string_actions)
+        self.assertFalse(parser._option_string_actions["--shared_attacks"].default)
+
+    def test_attack_groups_default_to_one_group_per_model(self):
+        args = Namespace(shared_attacks=False, model_tags=["base", "adv"])
+        models = {"base": ("model_base", "args_base"), "adv": ("model_adv", "args_adv")}
+
+        groups = list(rank_eval.attack_groups(args, models))
+
+        self.assertEqual(
+            groups,
+            [
+                ("base", {"base": ("model_base", "args_base")}),
+                ("adv", {"adv": ("model_adv", "args_adv")}),
+            ],
+        )
+
+    def test_attack_groups_shared_mode_uses_first_model_for_all(self):
+        args = Namespace(shared_attacks=True, model_tags=["base", "adv"])
+        models = {"base": ("model_base", "args_base"), "adv": ("model_adv", "args_adv")}
+
+        groups = list(rank_eval.attack_groups(args, models))
+
+        self.assertEqual(groups, [("base", models)])
+
     def test_boq_and_mixvpr_resolve_reference_input_sizes(self):
         boq_args = Namespace(
             boq_backbone="Dinov2",

@@ -82,7 +82,7 @@ def build_parser():
         type=str,
         nargs="+",
         required=True,
-        help="One or more local checkpoint paths. The first model is used to generate shared attacks.",
+        help="One or more local checkpoint paths. Attacks are generated on each model separately unless --shared_attacks is set.",
     )
     parser.add_argument(
         "--model_tags",
@@ -90,6 +90,14 @@ def build_parser():
         nargs="+",
         default=None,
         help="Labels for --model_paths. Defaults to 'base' for one model and 'base checkpoint' for two models.",
+    )
+    parser.add_argument(
+        "--shared_attacks",
+        action="store_true",
+        help=(
+            "Generate attacks once on the first model in --model_paths and evaluate every model on the same "
+            "attacked queries (transfer protocol). By default attacks are generated separately on each model."
+        ),
     )
     parser.add_argument(
         "--rank_attack",
@@ -397,6 +405,19 @@ def build_evaluation_dataset(args, dataset_name: str):
 
 def attack_reference_tag(args) -> str:
     return args.model_tags[0]
+
+
+def attack_groups(args, models: Mapping[str, Tuple[nn.Module, object]]):
+    """Yield (reference_tag, models_to_evaluate) pairs for attack generation.
+
+    Shared mode generates one attack set on the first model and evaluates every model
+    on it. Per-model mode (the default) generates attacks on each model separately.
+    """
+    if args.shared_attacks:
+        yield attack_reference_tag(args), dict(models)
+        return
+    for model_tag, model_bundle in models.items():
+        yield model_tag, {model_tag: model_bundle}
 
 
 def query_batch_size(args) -> int:
