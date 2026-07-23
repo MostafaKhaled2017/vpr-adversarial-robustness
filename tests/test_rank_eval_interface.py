@@ -110,6 +110,10 @@ class RankEvalInterfaceTests(unittest.TestCase):
 
         self.assertEqual(groups, [("base", models)])
 
+    def test_attack_generation_mode_labels(self):
+        self.assertEqual(rank_eval.attack_generation_mode(Namespace(shared_attacks=False)), "per_model")
+        self.assertEqual(rank_eval.attack_generation_mode(Namespace(shared_attacks=True)), "shared_first_model")
+
     def test_boq_and_mixvpr_resolve_reference_input_sizes(self):
         boq_args = Namespace(
             boq_backbone="Dinov2",

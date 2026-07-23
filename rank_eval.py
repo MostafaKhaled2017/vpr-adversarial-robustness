@@ -413,6 +413,10 @@ def attack_reference_tag(args) -> str:
     return args.model_tags[0]
 
 
+def attack_generation_mode(args) -> str:
+    return "shared_first_model" if args.shared_attacks else "per_model"
+
+
 def attack_groups(args, models: Mapping[str, Tuple[nn.Module, object]]):
     """Yield (reference_tag, models_to_evaluate) pairs for attack generation.
 
@@ -2180,8 +2184,9 @@ def main() -> None:
             "epsilons": [float(epsilon) for epsilon in args.epsilons],
             "scope": "queries_only",
             "epsilon_space": "normalized_image_tensor",
-            "attack_reference_model": attack_reference_tag(args),
-            "shared_attacks_across_models": True,
+            "attack_reference_model": attack_reference_tag(args) if args.shared_attacks else None,
+            "attack_generation": attack_generation_mode(args),
+            "shared_attacks_across_models": bool(args.shared_attacks),
             "target_selection": {
                 "adv_negatives": int(args.adv_negatives),
                 "adv_margin": float(args.adv_margin),

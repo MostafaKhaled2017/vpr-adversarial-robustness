@@ -831,8 +831,9 @@ def write_condition_rank_eval_report(
             "epsilons": [float(job.condition.epsilon)],
             "scope": "queries_only",
             "epsilon_space": "normalized_image_tensor",
-            "attack_reference_model": rank_eval.attack_reference_tag(args),
-            "shared_attacks_across_models": True,
+            "attack_reference_model": rank_eval.attack_reference_tag(args) if args.shared_attacks else None,
+            "attack_generation": rank_eval.attack_generation_mode(args),
+            "shared_attacks_across_models": bool(args.shared_attacks),
             "target_selection": {
                 "adv_negatives": int(args.adv_negatives),
                 "adv_margin": float(args.adv_margin),
