@@ -537,6 +537,41 @@ class RankEvalInterfaceTests(unittest.TestCase):
             self.assertEqual(row["attack_success"], clean_rank == 1 and attacked_rank > 1)
             self.assertEqual(row["cwr_estimate"], cwr)
 
+    def test_attack_generation_seed_is_stable_and_model_dependent(self):
+        first = rank_eval.attack_generation_seed(0, "msls", "base", "rank_pgd_linf_eps_0.01")
+        second = rank_eval.attack_generation_seed(0, "msls", "base", "rank_pgd_linf_eps_0.01")
+        other_model = rank_eval.attack_generation_seed(0, "msls", "adv", "rank_pgd_linf_eps_0.01")
+
+        self.assertEqual(first, second)
+        self.assertNotEqual(first, other_model)
+        self.assertGreaterEqual(first, 0)
+        self.assertLess(first, 2**63)
+
+    def test_reseed_attack_rng_makes_draws_reproducible(self):
+        args = Namespace(shared_attacks=False, seed=0)
+
+        rank_eval.reseed_attack_rng(args, "msls", "base", "rank_pgd_linf_eps_0.01")
+        first_draw = torch.rand(4)
+        rank_eval.reseed_attack_rng(args, "msls", "base", "rank_pgd_linf_eps_0.01")
+        second_draw = torch.rand(4)
+
+        self.assertTrue(torch.equal(first_draw, second_draw))
+
+    def test_reseed_attack_rng_is_noop_in_shared_mode_and_for_seed_minus_one(self):
+        torch.manual_seed(123)
+        expected = torch.rand(4)
+
+        torch.manual_seed(123)
+        rank_eval.reseed_attack_rng(Namespace(shared_attacks=True, seed=0), "msls", "base", "c")
+        shared_draw = torch.rand(4)
+
+        torch.manual_seed(123)
+        rank_eval.reseed_attack_rng(Namespace(shared_attacks=False, seed=-1), "msls", "base", "c")
+        unseeded_draw = torch.rand(4)
+
+        self.assertTrue(torch.equal(expected, shared_draw))
+        self.assertTrue(torch.equal(expected, unseeded_draw))
+
 
 if __name__ == "__main__":
     unittest.main()

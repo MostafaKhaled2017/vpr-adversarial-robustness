@@ -543,6 +543,24 @@ def stable_sample_seed(seed: int, dataset_name: str, split_name: str) -> int:
     return int.from_bytes(hashlib.sha256(payload).digest()[:8], byteorder="little", signed=False)
 
 
+def attack_generation_seed(seed: int, dataset_name: str, model_tag: str, condition_name: str) -> int:
+    payload = f"{int(seed)}:{dataset_name}:{model_tag}:{condition_name}".encode("utf-8")
+    return int.from_bytes(hashlib.sha256(payload).digest()[:8], byteorder="little", signed=False) % (2**63)
+
+
+def reseed_attack_rng(args, dataset_name: str, model_tag: str, condition_name: str) -> None:
+    """Give each per-model attack run a stable RNG state so metrics do not depend on model order.
+
+    Shared mode keeps the legacy RNG stream untouched; seed == -1 keeps the non-deterministic convention.
+    """
+    if args.shared_attacks or args.seed == -1:
+        return
+    derived_seed = attack_generation_seed(args.seed, dataset_name, model_tag, condition_name)
+    torch.manual_seed(derived_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(derived_seed)
+
+
 def deterministic_subset(values: Sequence[int], requested_size: int, seed: int) -> np.ndarray:
     array = np.asarray([int(value) for value in values], dtype=np.int64)
     if requested_size >= len(array):
