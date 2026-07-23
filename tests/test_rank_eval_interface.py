@@ -781,6 +781,117 @@ class RankEvalInterfaceTests(unittest.TestCase):
         self.assertEqual(shared_results["adv"][condition]["attack_reference_model"], "base")
         self.assertIsInstance(shared_runtimes["attack_seconds"][condition], float)
 
+    def test_condition_evaluation_nests_audit_per_model(self):
+        def build_context():
+            database = np.array([[1, 0], [0, 1], [5, 5], [6, 6]], dtype=np.float32)
+            queries = np.array([[1, 0], [0, 1]], dtype=np.float32)
+            clean_features = {
+                "base": {"database": database, "queries": queries},
+                "adv": {"database": database.copy(), "queries": queries.copy()},
+            }
+            valid_query_indices = np.array([0, 1], dtype=np.int64)
+            valid_positives = [np.array([0], dtype=np.int64), np.array([1], dtype=np.int64)]
+            targets = [{"query_index": 0}, {"query_index": 1}]
+            return {
+                "sampled_gallery": False,
+                "eval_ds": object(),
+                "models": {"base": ("model_base", None), "adv": ("model_adv", None)},
+                "clean_features": clean_features,
+                "clean_ranks_by_model": {
+                    "base": np.array([1, 1], dtype=np.int64),
+                    "adv": np.array([1, 1], dtype=np.int64),
+                },
+                "valid_query_indices": valid_query_indices,
+                "valid_positives": valid_positives,
+                "clean_results": {"base": {}, "adv": {}},
+                "query_counts": {"attacked_queries": 2},
+                "feature_times": {},
+                "feature_shared_input_seconds": 0.0,
+                "target_cache": {
+                    ("base", 1): {"targets": targets, "target_seconds": 0.0},
+                    ("adv", 1): {"targets": targets, "target_seconds": 0.0},
+                },
+            }
+
+        def make_args(shared_attacks):
+            return Namespace(
+                shared_attacks=shared_attacks,
+                seed=0,
+                device="cpu",
+                model_tags=["base", "adv"],
+                rank_attack="rank_pgd_linf",
+                rank_steps=1,
+                rank_restarts=1,
+                rank_step_size=None,
+                adv_margin=0.1,
+                adv_negatives=1,
+                max_queries=None,
+                recall_values=[1],
+                audit_attack_implementation=True,
+                compute_diagnostics=False,
+                trace_output_dir_path=Path("unused_traces"),
+            )
+
+        def fake_build_rank_attack(model, _args, _epsilon):
+            return ("attack", model)
+
+        def fake_generate(args, eval_ds, attack, models, database_tensor, clean_queries, targets, dataset_name, epsilon, desc, attack_group_tag=None):
+            del args, eval_ds, attack, database_tensor, dataset_name, epsilon, desc, attack_group_tag
+            attacked = {tag: clean_queries[: len(targets)].copy() for tag in models}
+            zeros = torch.zeros(len(targets))
+            metadata = {
+                "initial_loss": zeros,
+                "best_loss": zeros,
+                "positive_distance_before": zeros,
+                "positive_distance_after": zeros,
+                "hard_negative_distance_before": zeros,
+                "hard_negative_distance_after": zeros,
+                "gradient_norm": zeros,
+                "denormalized_min": zeros,
+                "denormalized_max": zeros,
+            }
+            return attacked, metadata, [], []
+
+        def fake_write_trace_csvs(*_args, model_subdir=None, **_kwargs):
+            del model_subdir
+            return []
+
+        original = (
+            rank_eval.build_rank_attack,
+            rank_eval.generate_attacked_query_features,
+            rank_eval.write_trace_csvs,
+        )
+        try:
+            rank_eval.build_rank_attack = fake_build_rank_attack
+            rank_eval.generate_attacked_query_features = fake_generate
+            rank_eval.write_trace_csvs = fake_write_trace_csvs
+
+            per_model_results, _, _, per_model_audit, _ = rank_eval.evaluate_condition_from_context(
+                make_args(shared_attacks=False), build_context(), "msls", 0.01
+            )
+            _, _, _, shared_audit, _ = rank_eval.evaluate_condition_from_context(
+                make_args(shared_attacks=True), build_context(), "msls", 0.01
+            )
+        finally:
+            (
+                rank_eval.build_rank_attack,
+                rank_eval.generate_attacked_query_features,
+                rank_eval.write_trace_csvs,
+            ) = original
+
+        del per_model_results
+        condition = "rank_pgd_linf_eps_0.01"
+
+        per_model_condition_audit = per_model_audit[condition]
+        self.assertEqual(set(per_model_condition_audit), {"base", "adv"})
+        self.assertIn("epsilon", per_model_condition_audit["base"])
+        self.assertIn("epsilon", per_model_condition_audit["adv"])
+
+        shared_condition_audit = shared_audit[condition]
+        self.assertIn("epsilon", shared_condition_audit)
+        self.assertNotIn("base", shared_condition_audit)
+        self.assertNotIn("adv", shared_condition_audit)
+
 
 if __name__ == "__main__":
     unittest.main()
