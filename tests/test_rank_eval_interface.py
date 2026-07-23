@@ -1,6 +1,7 @@
 import contextlib
 import io
 import sys
+import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
@@ -608,6 +609,66 @@ class RankEvalInterfaceTests(unittest.TestCase):
 
         self.assertTrue(torch.equal(expected, shared_draw))
         self.assertTrue(torch.equal(expected, unseeded_draw))
+
+    def test_trace_csvs_support_per_model_subdirectory(self):
+        trace_rows = [
+            {
+                "query_index": 7,
+                "restart": 0,
+                "step": 0,
+                "loss": 0.5,
+                "positive_distance": 1.0,
+                "hard_negative_distance": 2.0,
+                "descriptor": np.array([1.0, 0.0], dtype=np.float32),
+                "perturbation_linf_normalized": 0.01,
+                "perturbation_linf_raw": 2.55,
+                "best_so_far": True,
+            }
+        ]
+        database_features = np.eye(2, dtype=np.float32)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            shared_paths = rank_eval.write_trace_csvs(
+                Path(temp_dir), "msls", "rank_pgd_linf", 0.01, trace_rows, database_features, {7: [0]}
+            )
+            per_model_paths = rank_eval.write_trace_csvs(
+                Path(temp_dir), "msls", "rank_pgd_linf", 0.01, trace_rows, database_features, {7: [0]},
+                model_subdir="adv_epoch_3",
+            )
+
+        self.assertEqual(shared_paths, [str(Path(temp_dir) / "msls" / "rank_pgd_linf" / "7_eps_0.01.csv")])
+        self.assertEqual(
+            per_model_paths,
+            [str(Path(temp_dir) / "msls" / "adv_epoch_3" / "rank_pgd_linf" / "7_eps_0.01.csv")],
+        )
+
+    def test_attack_image_root_adds_model_segment_in_per_model_mode(self):
+        args = Namespace(attack_image_output_dir_path=Path("run/attack_images"))
+
+        self.assertEqual(rank_eval.attack_image_root(args, None), Path("run/attack_images"))
+        self.assertEqual(rank_eval.attack_image_root(args, "adv epoch"), Path("run/attack_images/adv_epoch"))
+
+    def test_attack_image_manifest_includes_model_column(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest_path = Path(temp_dir) / "manifest.csv"
+            rank_eval.write_attack_image_manifest(
+                manifest_path,
+                [
+                    {
+                        "dataset": "msls",
+                        "model": "base",
+                        "attack": "rank_pgd_linf",
+                        "epsilon": 0.01,
+                        "query_index": 1,
+                        "clean": "a.png",
+                        "attacked": "b.png",
+                        "perturbation": "c.png",
+                        "abs_heatmap": "d.png",
+                    }
+                ],
+            )
+            header = manifest_path.read_text(encoding="utf-8").splitlines()[0]
+
+        self.assertIn("model", header.split(","))
 
 
 if __name__ == "__main__":

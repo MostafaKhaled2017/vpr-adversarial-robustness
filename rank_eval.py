@@ -360,6 +360,12 @@ def build_attack_image_output_dir(args, run_dir: Path) -> Path:
     return Path(args.attack_image_output_dir).expanduser()
 
 
+def attack_image_root(args, attack_group_tag: str | None) -> Path:
+    if attack_group_tag is None:
+        return args.attack_image_output_dir_path
+    return args.attack_image_output_dir_path / _filename_token(attack_group_tag)
+
+
 def serialize_args(args) -> Dict[str, object]:
     serialized = {}
     for key, value in vars(args).items():
@@ -1027,6 +1033,7 @@ def write_trace_csvs(
     trace_rows: Sequence[Mapping[str, object]],
     database_features: np.ndarray,
     positives_by_query: Mapping[int, Sequence[int]],
+    model_subdir: str | None = None,
 ) -> list[str]:
     if not trace_rows:
         return []
@@ -1049,7 +1056,10 @@ def write_trace_csvs(
         by_query.setdefault(int(row["query_index"]), []).append(row)
 
     written_paths = []
-    output_dir = trace_output_dir / dataset_name / attack_name
+    output_dir = trace_output_dir / dataset_name
+    if model_subdir is not None:
+        output_dir = output_dir / _filename_token(model_subdir)
+    output_dir = output_dir / attack_name
     output_dir.mkdir(parents=True, exist_ok=True)
     for query_index, rows in by_query.items():
         path = output_dir / f"{query_index}_eps_{_epsilon_label(epsilon)}.csv"
@@ -1191,7 +1201,7 @@ def write_diagnostics_csv(path: Path, rows: Sequence[Mapping[str, object]]) -> N
         writer.writerows(rows)
 
 
-def generate_shared_attacked_query_features(
+def generate_attacked_query_features(
     args,
     eval_ds,
     attack: nn.Module,
@@ -1202,6 +1212,7 @@ def generate_shared_attacked_query_features(
     dataset_name: str,
     epsilon: float,
     desc: str,
+    attack_group_tag: str | None = None,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, torch.Tensor], list[Dict[str, object]], list[Dict[str, object]]]:
     eval_ds.test_method = args.test_method
     attacked_features = {
@@ -1244,7 +1255,7 @@ def generate_shared_attacked_query_features(
                 if query_index not in image_query_indices:
                     continue
                 paths = save_attack_image_artifacts(
-                    args.attack_image_output_dir_path,
+                    attack_image_root(args, attack_group_tag),
                     dataset_name,
                     args.rank_attack,
                     epsilon,
@@ -1256,6 +1267,7 @@ def generate_shared_attacked_query_features(
                 image_rows.append(
                     {
                         "dataset": dataset_name,
+                        "model": attack_group_tag if attack_group_tag is not None else attack_reference_tag(args),
                         "attack": args.rank_attack,
                         "epsilon": float(epsilon),
                         "query_index": query_index,
@@ -1494,7 +1506,7 @@ def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, 
         condition_name = f"{args.rank_attack}_eps_{epsilon:g}"
         attack = build_rank_attack(reference_model, args, epsilon)
         attack_start = perf_counter()
-        attacked_features_by_model, attack_metadata, trace_rows, image_rows = generate_shared_attacked_query_features(
+        attacked_features_by_model, attack_metadata, trace_rows, image_rows = generate_attacked_query_features(
             args,
             eval_ds,
             attack,
@@ -1839,7 +1851,7 @@ def evaluate_condition_from_context(
     clear_cuda_cache(args)
     attack = build_rank_attack(reference_model, args, epsilon)
     attack_start = perf_counter()
-    attacked_features_by_model, attack_metadata, trace_rows, image_rows = generate_shared_attacked_query_features(
+    attacked_features_by_model, attack_metadata, trace_rows, image_rows = generate_attacked_query_features(
         args,
         context["eval_ds"],
         attack,
@@ -2028,6 +2040,7 @@ def write_attack_image_manifest(path: Path, rows: Sequence[Mapping[str, object]]
         return
     fieldnames = [
         "dataset",
+        "model",
         "attack",
         "epsilon",
         "query_index",
