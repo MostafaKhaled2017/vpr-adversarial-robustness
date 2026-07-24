@@ -126,6 +126,20 @@ class PerceptualTrainingCliTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "lr_plateau_factor"):
             self.parse("--lr_plateau_factor", "1.5")
 
+    def test_selection_robust_weight_defaults(self):
+        self.assertEqual(self.parse().selection_robust_weight, 0.75)
+
+    def test_selection_robust_weight_parses_custom_value(self):
+        self.assertEqual(self.parse("--selection_robust_weight", "1.0").selection_robust_weight, 1.0)
+
+    def test_selection_robust_weight_rejects_values_above_one(self):
+        with self.assertRaisesRegex(ValueError, "selection_robust_weight"):
+            self.parse("--selection_robust_weight", "1.5")
+
+    def test_selection_robust_weight_rejects_negative_values(self):
+        with self.assertRaisesRegex(ValueError, "selection_robust_weight"):
+            self.parse("--selection_robust_weight", "-0.1")
+
     def test_supervlad_adv_launcher_arguments_parse(self):
         args = self.parse(
             "--model=supervlad",

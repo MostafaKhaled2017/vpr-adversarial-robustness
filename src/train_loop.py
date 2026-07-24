@@ -92,7 +92,7 @@ def compute_attack_losses(
     }
 
 
-def compute_validation_selection_scores(metrics: Dict[str, object]) -> Dict[str, float]:
+def compute_validation_selection_scores(metrics: Dict[str, object], robust_weight: float = 0.75) -> Dict[str, float]:
     clean_score = compute_recall_score(metrics["NoAttack"])
 
     attacked_scores: List[float] = []
@@ -106,7 +106,7 @@ def compute_validation_selection_scores(metrics: Dict[str, object]) -> Dict[str,
     else:
         robust_score = float(np.mean(attacked_scores))
 
-    selection_score = 0.25 * clean_score + 0.75 * robust_score
+    selection_score = (1.0 - robust_weight) * clean_score + robust_weight * robust_score
     return {
         "clean_score": clean_score,
         "robust_score": robust_score,
@@ -307,7 +307,7 @@ def run_training(
             writer=writer,
             iteration=iteration,
         )
-        initial_scores = compute_validation_selection_scores(initial_metrics)
+        initial_scores = compute_validation_selection_scores(initial_metrics, args.selection_robust_weight)
         initial_record = build_validation_metrics_record(-1, initial_metrics, initial_scores)
         append_validation_metrics(args, initial_record)
         log_validation_recalls("before training", initial_metrics)
@@ -538,7 +538,7 @@ def run_training(
             writer=writer,
             iteration=iteration,
         )
-        validation_scores = compute_validation_selection_scores(metrics)
+        validation_scores = compute_validation_selection_scores(metrics, args.selection_robust_weight)
         clean_score = validation_scores["clean_score"]
         robust_score = validation_scores["robust_score"]
         selection_score = validation_scores["selection_score"]

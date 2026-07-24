@@ -155,6 +155,12 @@ def build_parser():
         help="Margin used for the retrieval adversarial objective.",
     )
     parser.add_argument(
+        "--selection_robust_weight",
+        type=float,
+        default=0.75,
+        help="Weight of the robust score in the validation selection score; clean weight is 1 minus this.",
+    )
+    parser.add_argument(
         "--early_stop_min_delta",
         type=float,
         default=0.0,
@@ -209,6 +215,8 @@ def parse_arguments(argv=None):
         raise ValueError("--adv_warmup_epochs must be non-negative")
     if args.clip_grad <= 0:
         raise ValueError("--clip_grad must be positive")
+    if not 0.0 <= args.selection_robust_weight <= 1.0:
+        raise ValueError("--selection_robust_weight must be between 0 and 1 (inclusive)")
     if args.weight_decay is not None and args.weight_decay < 0:
         raise ValueError("--weight_decay must be non-negative")
     if args.train_resize is None:
