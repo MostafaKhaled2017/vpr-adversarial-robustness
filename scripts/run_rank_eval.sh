@@ -26,18 +26,18 @@ cd "${REPO_ROOT}"
 export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/third_party/SuperVLAD:${PYTHONPATH:-}"
 
 EVAL_DATASETS_FOLDER="${EVAL_DATASETS_FOLDER:-datasets}"
-DATASETS=(${DATASETS:-msls})
-MODELS=(${MODELS:-checkpoints/SuperVLAD.pth})
-MODEL_TAGS=(${MODEL_TAGS:-})
+DATASETS=(${DATASETS:-msls sped})
+MODELS=(${MODELS:-checkpoints/SuperVLAD_adverserially_trained.pth})
+MODEL_TAGS=(${MODEL_TAGS:-trained})
 FOUNDATION_MODEL_PATH="${FOUNDATION_MODEL_PATH:-checkpoints/dinov2_vitb14_pretrain.pth}"
-INFER_BATCH_SIZE="${INFER_BATCH_SIZE:-32}"
+INFER_BATCH_SIZE="${INFER_BATCH_SIZE:-8}"
 BACKBONE="${BACKBONE:-dino}"
 SUPERVLAD_CLUSTERS="${SUPERVLAD_CLUSTERS:-4}"
 RANK_ATTACK="${RANK_ATTACK:-rank_pgd_linf}"
 RANK_STEPS="${RANK_STEPS:-20}"
 RANK_RESTARTS="${RANK_RESTARTS:-1}"
 BATCH_ID="${BATCH_ID:-$(date +%Y-%m-%d_%H-%M-%S)}"
-EPSILONS=(${EPSILONS:-0.01 0.1 0.2})
+EPSILONS=(${EPSILONS:-0.01 0.1})
 EXTRA_ARGS=("$@")
 
 for model_path in "${MODELS[@]}"; do

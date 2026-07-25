@@ -66,4 +66,3 @@ python3 train.py \
   "${ATTACKS_ITER7[@]}" \
   --freeze_te=7 \
   --lr=0.000005 \
-

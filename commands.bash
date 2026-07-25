@@ -136,3 +136,6 @@ python3 scripts/run_rank_pgd_strength_sweep.py \
 python3 scripts/run_rank_pgd_strength_sweep.py \
   --resume_sweep_dir test/rank_eval/sweeps/2026-07-06_13-17-09_full \
   --dry_run
+
+# Render the paper
+latexmk -pdf -interaction=nonstopmode -halt-on-error -cd docs/reports/paper/main.tex
