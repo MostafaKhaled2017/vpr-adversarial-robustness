@@ -36,6 +36,16 @@ class ExactFlatL2Index:
         return np.take_along_axis(distances, indexes, axis=1), indexes.astype(np.int64)
 
 
+class FakeGpuResources:
+    def __init__(self):
+        self.temp_memory_bytes = None
+        self.events = []
+
+    def setTempMemory(self, size_bytes):
+        self.temp_memory_bytes = size_bytes
+        self.events.append("setTempMemory")
+
+
 class FaissUtilsTests(unittest.TestCase):
     def test_rank_eval_fails_on_faiss_before_checking_model_paths(self):
         args = rank_eval.build_parser().parse_args(
@@ -105,7 +115,7 @@ class FaissUtilsTests(unittest.TestCase):
 
         fake_faiss = SimpleNamespace(
             IndexFlatL2=ExactFlatL2Index,
-            StandardGpuResources=object,
+            StandardGpuResources=FakeGpuResources,
             index_cpu_to_gpu=fail_initialization,
             get_num_gpus=lambda: 1,
         )
@@ -118,7 +128,7 @@ class FaissUtilsTests(unittest.TestCase):
                 faiss_utils.create_flat_l2_index(2, "cuda")
 
     def test_cuda_index_uses_current_torch_device_and_retains_resources(self):
-        resources = object()
+        resources = FakeGpuResources()
         conversion = {}
 
         def to_gpu(received_resources, device_index, cpu_index):
@@ -146,6 +156,32 @@ class FaissUtilsTests(unittest.TestCase):
         self.assertEqual(conversion["device_index"], 1)
         self.assertEqual(conversion["cpu_index"].dimension, 3)
 
+    def test_cuda_index_caps_temporary_memory_before_gpu_conversion(self):
+        resources = FakeGpuResources()
+        events = []
+
+        def to_gpu(_resources, _device_index, cpu_index):
+            events.append("index_cpu_to_gpu")
+            return ExactFlatL2Index(cpu_index.dimension)
+
+        fake_faiss = SimpleNamespace(
+            IndexFlatL2=ExactFlatL2Index,
+            StandardGpuResources=lambda: resources,
+            index_cpu_to_gpu=to_gpu,
+            get_num_gpus=lambda: 1,
+        )
+        resources.events = events
+
+        with (
+            mock.patch.object(faiss_utils, "_import_faiss", return_value=fake_faiss),
+            mock.patch.object(faiss_utils.torch.cuda, "current_device", return_value=0),
+        ):
+            faiss_utils.create_flat_l2_index(3, "cuda")
+
+        self.assertEqual(resources.temp_memory_bytes, faiss_utils.FAISS_GPU_TEMP_MEMORY_BYTES)
+        self.assertEqual(faiss_utils.FAISS_GPU_TEMP_MEMORY_BYTES, 256 * 1024 * 1024)
+        self.assertEqual(events, ["setTempMemory", "index_cpu_to_gpu"])
+
     def test_cuda_startup_probe_reports_search_failure(self):
         class FailingSearchIndex(ExactFlatL2Index):
             def search(self, features, k):
@@ -153,7 +189,7 @@ class FaissUtilsTests(unittest.TestCase):
 
         fake_faiss = SimpleNamespace(
             IndexFlatL2=ExactFlatL2Index,
-            StandardGpuResources=object,
+            StandardGpuResources=FakeGpuResources,
             index_cpu_to_gpu=lambda _resources, _device, cpu_index: FailingSearchIndex(cpu_index.dimension),
             get_num_gpus=lambda: 1,
         )
