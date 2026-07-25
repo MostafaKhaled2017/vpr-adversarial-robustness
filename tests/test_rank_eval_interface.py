@@ -8,13 +8,23 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from torch import nn
 
+from src.grad_checkpoint import CheckpointedBlock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import rank_eval
+
+
+def _dummy_dino_model():
+    backbone = nn.Module()
+    backbone.blocks = nn.ModuleList([nn.Linear(4, 4), nn.Linear(4, 4)])
+    model = nn.Module()
+    model.backbone = backbone
+    return model
 
 
 class RankEvalInterfaceTests(unittest.TestCase):
@@ -934,6 +944,29 @@ class RankEvalInterfaceTests(unittest.TestCase):
         self.assertEqual(cached_seconds, 0.0)
         call_names = [name for name, _call_args, _call_kwargs in manager.mock_calls]
         self.assertEqual(call_names, ["clear_cuda_cache", "build_attack_targets"])
+
+    def test_grad_checkpointing_flag_defaults_off(self):
+        parser = rank_eval.build_parser()
+
+        self.assertIn("--grad_checkpointing", parser._option_string_actions)
+        self.assertFalse(parser._option_string_actions["--grad_checkpointing"].default)
+
+    def test_maybe_enable_grad_checkpointing_is_noop_without_flag(self):
+        model = _dummy_dino_model()
+        original_blocks = list(model.backbone.blocks)
+
+        returned = rank_eval.maybe_enable_grad_checkpointing(model, Namespace(grad_checkpointing=False))
+
+        self.assertIs(returned, model)
+        self.assertEqual(list(model.backbone.blocks), original_blocks)
+
+    def test_maybe_enable_grad_checkpointing_wraps_blocks_with_flag(self):
+        model = _dummy_dino_model()
+
+        rank_eval.maybe_enable_grad_checkpointing(model, Namespace(grad_checkpointing=True))
+
+        for block in model.backbone.blocks:
+            self.assertIsInstance(block, CheckpointedBlock)
 
 
 if __name__ == "__main__":

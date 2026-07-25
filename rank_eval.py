@@ -25,6 +25,7 @@ if str(SUPERVLAD_ROOT) not in sys.path:
 import parser as parser_module
 from src.config import denormalize_imagenet, normalized_epsilon_to_raw_pixels, validate_cuda_runtime
 from src.faiss_utils import validate_faiss_runtime
+from src.grad_checkpoint import enable_backbone_grad_checkpointing
 from src.models import add_model_arguments, get_model_adapter, model_names
 from src.rank_attacks import RankAPGDLinfAttack, RankAttackConfig, RankPGDAttack
 from src.retrieval_metrics import (
@@ -199,6 +200,15 @@ def build_parser():
         type=float,
         default=20.0,
         help="Multiplier used for amplified signed perturbation image artifacts.",
+    )
+    parser.add_argument(
+        "--grad_checkpointing",
+        action="store_true",
+        help=(
+            "Recompute DINOv2 backbone activations during attack backward passes instead of storing them. "
+            "Cuts GPU memory sharply at the cost of slower attack generation; computed values are unchanged. "
+            "Off by default."
+        ),
     )
     parser.add_argument(
         "--output_json",
@@ -378,6 +388,12 @@ def serialize_args(args) -> Dict[str, object]:
     return serialized
 
 
+def maybe_enable_grad_checkpointing(model: nn.Module, args) -> nn.Module:
+    if getattr(args, "grad_checkpointing", False):
+        enable_backbone_grad_checkpointing(model)
+    return model
+
+
 def load_model(args, checkpoint_path: str) -> Tuple[nn.Module, object]:
     model_args = copy.deepcopy(args)
     model_args.resume = checkpoint_path
@@ -389,6 +405,7 @@ def load_model(args, checkpoint_path: str) -> Tuple[nn.Module, object]:
     model_args.features_dim = int(model_bundle.descriptor_dim)
     load_weights = adapter.load_evaluation_weights or adapter.load_weights
     load_weights(model, checkpoint_path, model_args)
+    model = maybe_enable_grad_checkpointing(model, model_args)
     model = torch.nn.DataParallel(model)
     model.eval()
     return model, model_args
