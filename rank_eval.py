@@ -1805,6 +1805,9 @@ def get_context_targets(
     if cache_key in cache:
         return cache[cache_key]["targets"], 0.0
 
+    # Return PyTorch's reserved-but-unused pool to the driver so the FAISS GPU
+    # index can cudaMalloc its own buffers next to the resident models.
+    clear_cuda_cache(args)
     target_start = perf_counter()
     reference_features = context["clean_features"][reference_tag]
     if context.get("sampled_gallery"):

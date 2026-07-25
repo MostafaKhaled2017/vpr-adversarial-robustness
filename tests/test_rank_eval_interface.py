@@ -897,5 +897,44 @@ class RankEvalInterfaceTests(unittest.TestCase):
         self.assertNotIn("adv", shared_condition_audit)
 
 
+    def test_get_context_targets_clears_cuda_cache_before_building_targets(self):
+        from unittest import mock
+
+        args = Namespace(device="cuda", adv_negatives=2, max_queries=None)
+        valid_query_indices = np.array([0, 1], dtype=np.int64)
+        context = {
+            "target_cache": {},
+            "clean_features": {
+                "base": {
+                    "database": np.zeros((4, 2), dtype=np.float32),
+                    "queries": np.zeros((2, 2), dtype=np.float32),
+                }
+            },
+            "valid_query_indices": valid_query_indices,
+            "eval_ds": object(),
+        }
+        targets = [{"query_index": 0}]
+
+        manager = mock.Mock()
+        with (
+            mock.patch.object(rank_eval, "clear_cuda_cache") as clear_cache,
+            mock.patch.object(
+                rank_eval,
+                "build_attack_targets",
+                return_value=(targets, valid_query_indices),
+            ) as build_targets,
+        ):
+            manager.attach_mock(clear_cache, "clear_cuda_cache")
+            manager.attach_mock(build_targets, "build_attack_targets")
+            built_targets, _ = rank_eval.get_context_targets(args, context, "base")
+            cached_targets, cached_seconds = rank_eval.get_context_targets(args, context, "base")
+
+        self.assertIs(built_targets, targets)
+        self.assertIs(cached_targets, targets)
+        self.assertEqual(cached_seconds, 0.0)
+        call_names = [name for name, _call_args, _call_kwargs in manager.mock_calls]
+        self.assertEqual(call_names, ["clear_cuda_cache", "build_attack_targets"])
+
+
 if __name__ == "__main__":
     unittest.main()
