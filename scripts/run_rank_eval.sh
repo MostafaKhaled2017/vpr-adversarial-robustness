@@ -38,6 +38,7 @@ RANK_STEPS="${RANK_STEPS:-20}"
 RANK_RESTARTS="${RANK_RESTARTS:-1}"
 BATCH_ID="${BATCH_ID:-$(date +%Y-%m-%d_%H-%M-%S)}"
 EPSILONS=(${EPSILONS:-0.01 0.1})
+GRAD_CHECKPOINTING="${GRAD_CHECKPOINTING:-0}"
 EXTRA_ARGS=("$@")
 
 for model_path in "${MODELS[@]}"; do
@@ -60,6 +61,11 @@ if (( ${#MODEL_TAGS[@]} > 0 )); then
     MODEL_TAG_ARGS=(--model_tags "${MODEL_TAGS[@]}")
 fi
 
+GRAD_CHECKPOINT_ARGS=()
+if [[ "${GRAD_CHECKPOINTING}" != "0" ]]; then
+    GRAD_CHECKPOINT_ARGS=(--grad_checkpointing)
+fi
+
 "${PYTHON_BIN}" "${REPO_ROOT}/rank_eval.py" \
     --eval_datasets_folder="${EVAL_DATASETS_FOLDER}" \
     --datasets "${DATASETS[@]}" \
@@ -75,6 +81,7 @@ fi
     --rank_steps="${RANK_STEPS}" \
     --rank_restarts="${RANK_RESTARTS}" \
     --epsilons "${EPSILONS[@]}" \
+    "${GRAD_CHECKPOINT_ARGS[@]}" \
     --output_json="${OUTPUT_DIR}/rank_eval_results.json" \
     --output_csv="${OUTPUT_DIR}/rank_eval_results.csv" \
     "${EXTRA_ARGS[@]}"
