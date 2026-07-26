@@ -22,7 +22,7 @@ Adversarial robustness experiments for Visual Place Recognition (VPR). The repos
 | `src/fgsm_eval.py`            | FGSM robustness evaluation script (directly runnable).                                                             |
 | `src/fgsm_train.py`           | Rank-aware adversarial training script (`python -m src.fgsm_train`).                                               |
 | `src/models/`                 | Extensible model registry and SuperVLAD/BoQ/MixVPR adapters.                                                       |
-| `scripts/`                    | Shell wrappers for training/evaluation and the Rank-PGD strength sweep runner.                                     |
+| `scripts/`                    | Shell wrappers for training/evaluation.                                                                            |
 | `third_party/`                | Vendored SuperVLAD and related VPR code.                                                                           |
 | `submodules/perceptual-advex` | Perceptual attack library (LPIPS-bounded attacks).                                                                 |
 | `tests/`                      | Unit tests (`python -m unittest discover tests`).                                                                  |
