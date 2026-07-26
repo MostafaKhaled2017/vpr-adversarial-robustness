@@ -64,7 +64,7 @@ class UnsupportedAttack(nn.Module):
 
     def forward(self, inputs: Tensor, targets) -> Tensor:
         raise NotImplementedError(
-            f"{self.attack_name} is not supported in perceptual_adv_training.py because it depends on "
+            f"{self.attack_name} is not supported in train.py because it depends on "
             "classification-specific AutoAttack behavior."
         )
 
@@ -249,7 +249,7 @@ def build_attack_namespace(model: nn.Module, args) -> Dict[str, object]:
             **kwargs,
         ):
             if lpips_model == "self":
-                raise ValueError("perceptual_adv_training.py does not support lpips_model='self' for SuperVLAD.")
+                raise ValueError("train.py does not support lpips_model='self' for SuperVLAD.")
             super().__init__(
                 model,
                 margin=margin,
@@ -270,7 +270,7 @@ def build_attack_namespace(model: nn.Module, args) -> Dict[str, object]:
             **kwargs,
         ):
             if lpips_model == "self":
-                raise ValueError("perceptual_adv_training.py does not support lpips_model='self' for SuperVLAD.")
+                raise ValueError("train.py does not support lpips_model='self' for SuperVLAD.")
             super().__init__(
                 model,
                 margin=margin,
@@ -291,7 +291,7 @@ def build_attack_namespace(model: nn.Module, args) -> Dict[str, object]:
             **kwargs,
         ):
             if lpips_model == "self":
-                raise ValueError("perceptual_adv_training.py does not support lpips_model='self' for SuperVLAD.")
+                raise ValueError("train.py does not support lpips_model='self' for SuperVLAD.")
             super().__init__(
                 model,
                 margin=margin,

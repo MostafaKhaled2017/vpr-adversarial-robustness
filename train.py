@@ -6,18 +6,20 @@ from os.path import join
 import commons
 import torch
 
-from perceptual_adv_training.attacks import instantiate_attacks
-from perceptual_adv_training.checkpoints import maybe_copy_resume_checkpoint
-from perceptual_adv_training.cli import parse_arguments
-from perceptual_adv_training.components import build_training_components
-from perceptual_adv_training.config import create_summary_writer, validate_cuda_runtime
-from perceptual_adv_training.losses import configure_metric_learning
-from perceptual_adv_training.train_loop import run_training
+from src.attacks import instantiate_attacks
+from src.checkpoints import maybe_copy_resume_checkpoint
+from src.cli import parse_arguments
+from src.components import build_training_components
+from src.config import create_summary_writer, validate_cuda_runtime
+from src.faiss_utils import validate_faiss_runtime
+from src.losses import configure_metric_learning
+from src.train_loop import run_training
 
 
 def main():
     args = parse_arguments()
     validate_cuda_runtime(args)
+    validate_faiss_runtime(args.device)
 
     start_time = datetime.now()
     args.save_dir = join(args.log_dir, args.save_dir, start_time.strftime("%Y-%m-%d_%H-%M-%S"))
@@ -37,7 +39,7 @@ def main():
         model, optimizer, scaler, train_loader, val_ds, test_ds, best_score, start_epoch, not_improved = (
             build_training_components(args)
         )
-        maybe_copy_resume_checkpoint(args)
+        maybe_copy_resume_checkpoint(args, model)
 
         train_attacks = instantiate_attacks(model, args.attack, args)
         validation_attacks = [instantiate_attacks(model, [attack_string], args)[0] for attack_string in args.attack]

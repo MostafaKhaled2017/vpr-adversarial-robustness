@@ -43,7 +43,7 @@ def build_training_dataloader(args) -> DataLoader:
     from dataloaders.train.GSVCitiesDataset import GSVCitiesDataset
     from torchvision import transforms as T
 
-    image_size = tuple(args.resize)
+    image_size = tuple(args.train_resize)
     train_transform = T.Compose(
         [
             T.Resize(image_size, interpolation=T.InterpolationMode.BILINEAR),

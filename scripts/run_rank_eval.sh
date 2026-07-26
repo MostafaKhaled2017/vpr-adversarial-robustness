@@ -63,7 +63,8 @@ fi
 "${PYTHON_BIN}" "${REPO_ROOT}/rank_eval.py" \
     --eval_datasets_folder="${EVAL_DATASETS_FOLDER}" \
     --datasets "${DATASETS[@]}" \
-    --models "${MODELS[@]}" \
+    --model_type=supervlad \
+    --model_paths "${MODELS[@]}" \
     "${MODEL_TAG_ARGS[@]}" \
     --foundation_model_path="${FOUNDATION_MODEL_PATH}" \
     --backbone="${BACKBONE}" \

@@ -75,6 +75,7 @@ class RankPgdStrengthSweepTests(unittest.TestCase):
         self.assertEqual(config.parallel_runs, 1)
         self.assertEqual(config.execution_mode, "in_process")
         self.assertIsNone(config.max_dataset_samples)
+        self.assertFalse(config.compute_diagnostics)
 
     def test_default_jobs_expand_to_twenty_sped_conditions(self):
         config = sweep.SweepConfig()
@@ -190,9 +191,36 @@ class RankPgdStrengthSweepTests(unittest.TestCase):
         self.assertIn("--datasets", command)
         self.assertIn("sped", command)
         self.assertNotIn("msls", command)
+        self.assertIn("--model_type=supervlad", command)
+        self.assertIn("--model_paths", command)
+        self.assertNotIn("--models", command)
         self.assertIn("--max_queries=5", command)
         self.assertIn("--crossimage_encoder", command)
+        self.assertNotIn("--compute_diagnostics", command)
         self.assertTrue(any(part.endswith("runs/sped/condition_01/rank_eval_results.json") for part in command))
+
+    def test_compute_diagnostics_is_propagated_to_job_command(self):
+        config = sweep.SweepConfig(compute_diagnostics=True, max_experiments_per_dataset=1)
+        job = sweep.expand_jobs(config, sweep.selected_conditions(config))[0]
+
+        command = sweep.command_for_job(config, job, Path("test/sweep/job"))
+
+        self.assertIn("--compute_diagnostics", command)
+
+    def test_compute_diagnostics_cli_is_opt_in(self):
+        config = sweep.build_config(sweep.parse_arguments(["--compute_diagnostics"]))
+
+        self.assertTrue(config.compute_diagnostics)
+
+    def test_in_process_diagnostics_path_is_none_when_disabled(self):
+        disabled_args = SimpleNamespace(compute_diagnostics=False)
+        enabled_args = SimpleNamespace(compute_diagnostics=True)
+
+        sweep.configure_rank_eval_output_dirs(disabled_args, Path("test/job"))
+        sweep.configure_rank_eval_output_dirs(enabled_args, Path("test/job"))
+
+        self.assertIsNone(disabled_args.diagnostics_output_dir_path)
+        self.assertEqual(enabled_args.diagnostics_output_dir_path, Path("test/job/diagnostics"))
 
     def test_dry_run_output_reports_count_and_parallelism(self):
         config = sweep.SweepConfig(datasets=("msls", "sped"), max_experiments_per_dataset=2, parallel_runs=2)
@@ -259,6 +287,29 @@ class RankPgdStrengthSweepTests(unittest.TestCase):
 
         self.assertEqual(states[0].status, "invalid")
         self.assertEqual(sweep.pending_jobs_from_states(states), [job])
+
+    def test_completed_job_requires_diagnostic_files_when_enabled(self):
+        config = sweep.SweepConfig(max_experiments_per_dataset=1, compute_diagnostics=True)
+        job = sweep.expand_jobs(config, sweep.selected_conditions(config))[0]
+        with tempfile.TemporaryDirectory() as directory:
+            sweep_dir = Path(directory)
+            run_dir = sweep.job_run_dir(sweep_dir, job)
+            report_path = self.write_report(run_dir, dataset=job.dataset, epsilon=job.condition.epsilon)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            diagnostics_dir = run_dir / "diagnostics"
+            report["diagnostics_output_dir"] = str(diagnostics_dir)
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            missing_state = sweep.inspect_job_state(sweep_dir, job, config)
+            diagnostics_dir.mkdir(parents=True)
+            epsilon_label = f"{job.condition.epsilon:g}"
+            for model_tag in config.model_tags:
+                path = diagnostics_dir / f"{job.dataset}_{model_tag}_{config.rank_attack}_eps_{epsilon_label}.csv"
+                path.write_text("query_index\n0\n", encoding="utf-8")
+            completed_state = sweep.inspect_job_state(sweep_dir, job, config)
+
+        self.assertEqual(missing_state.status, "invalid")
+        self.assertEqual(completed_state.status, "completed")
 
     def test_legacy_combined_layout_can_satisfy_dataset_job(self):
         config = sweep.SweepConfig(max_experiments_per_dataset=1)

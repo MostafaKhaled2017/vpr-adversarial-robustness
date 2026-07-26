@@ -19,8 +19,9 @@ from tqdm import tqdm
 
 import commons
 import parser as parser_module
-from perceptual_adv_training.cli import parse_attack_names
-from perceptual_adv_training.config import validate_cuda_runtime
+from src.cli import parse_attack_names
+from src.config import validate_cuda_runtime
+from src.faiss_utils import validate_faiss_runtime
 
 
 SUPPORTED_TEST_METHODS = {"hard_resize", "central_crop", "single_query"}
@@ -120,6 +121,7 @@ def validate_arguments(args) -> None:
 
     parse_attack_names(args.attack)
     validate_cuda_runtime(args)
+    validate_faiss_runtime(args.device)
     require_file(args.base_resume, "--base_resume")
     require_file(args.trained_resume, "--trained_resume")
     if args.foundation_model_path is not None:
@@ -257,7 +259,7 @@ def make_attack_batch(
     database_features: torch.Tensor,
     query_features: np.ndarray,
 ):
-    from perceptual_adv_training.targets import RetrievalAttackBatch
+    from src.targets import RetrievalAttackBatch
 
     query_tensors = []
     positive_descriptors = []
@@ -324,7 +326,7 @@ def clean_results(
     features_by_model: Mapping[str, Mapping[str, np.ndarray]],
     positives_per_query,
 ) -> Dict[str, Dict[str, object]]:
-    from perceptual_adv_training.eval import compute_recalls_from_features
+    from src.eval import compute_recalls_from_features
 
     results = {}
     for model_label, features in features_by_model.items():
@@ -348,7 +350,7 @@ def add_attack_results(
     positives_per_query,
     query_counts: Mapping[str, int],
 ) -> None:
-    from perceptual_adv_training.eval import compute_recalls_from_features
+    from src.eval import compute_recalls_from_features
 
     for model_label, query_features in attacked_features.items():
         metrics = compute_recalls_from_features(
@@ -364,7 +366,7 @@ def add_attack_results(
 
 def evaluate_dataset(args, dataset_name: str, models: Mapping[str, Tuple[nn.Module, object]], attacks: Sequence[nn.Module]):
     import datasets_ws
-    from perceptual_adv_training.targets import build_attack_targets
+    from src.targets import build_attack_targets
 
     eval_ds = datasets_ws.BaseDataset(args, args.eval_datasets_folder, dataset_name, "test")
     logging.info("Test set: %s", eval_ds)
@@ -476,7 +478,7 @@ def main() -> None:
         "base": (base_model, base_args),
         "trained": (trained_model, trained_args),
     }
-    from perceptual_adv_training.attacks import instantiate_attacks
+    from src.attacks import instantiate_attacks
 
     attacks = instantiate_attacks(base_model, args.attack, base_args)
 

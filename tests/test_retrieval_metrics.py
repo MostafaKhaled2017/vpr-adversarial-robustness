@@ -2,11 +2,14 @@ import unittest
 
 import numpy as np
 
-from perceptual_adv_training.retrieval_metrics import (
+from src.retrieval_metrics import (
     attack_success_metrics,
     compute_recalls_from_features,
     nearest_positive_ranks,
+    nearest_positive_rank_from_distances,
+    prepare_distance_database,
     rank_displacement_summary,
+    squared_l2_distance_chunk,
 )
 
 
@@ -46,6 +49,38 @@ class RetrievalMetricsTests(unittest.TestCase):
         ranks = nearest_positive_ranks(self.database, self.clean_queries, self.positives)
 
         np.testing.assert_array_equal(ranks, np.array([1, 2]))
+
+    def test_nearest_positive_ranks_match_legacy_sort_across_chunks(self):
+        rng = np.random.default_rng(5)
+        database = rng.normal(size=(19, 7)).astype(np.float32)
+        queries = rng.normal(size=(5, 7)).astype(np.float32)
+        positives = [np.array([index, index + 5], dtype=np.int64) for index in range(5)]
+
+        ranks = nearest_positive_ranks(database, queries, positives, chunk_size=2)
+        prepared_database, database_norms = prepare_distance_database(database)
+        all_distances = squared_l2_distance_chunk(prepared_database, database_norms, queries)
+        legacy_ranks = []
+        for distances, positive_indexes in zip(all_distances, positives):
+            order = np.argsort(distances)
+            inverse_ranks = np.empty_like(order)
+            inverse_ranks[order] = np.arange(1, len(order) + 1)
+            legacy_ranks.append(int(inverse_ranks[positive_indexes].min()))
+
+        np.testing.assert_array_equal(ranks, np.asarray(legacy_ranks))
+
+    def test_rank_helper_preserves_non_positive_tie_order(self):
+        distances = np.array([0.0, 1.0, 1.0], dtype=np.float32)
+        positives = np.array([2], dtype=np.int64)
+        order = np.argsort(distances)
+        inverse_ranks = np.empty_like(order)
+        inverse_ranks[order] = np.arange(1, len(order) + 1)
+
+        rank = nearest_positive_rank_from_distances(distances, positives)
+
+        self.assertEqual(rank, int(inverse_ranks[positives].min()))
+
+    def test_rank_helper_returns_minus_one_without_positives(self):
+        self.assertEqual(nearest_positive_rank_from_distances(np.array([0.0, 1.0]), []), -1)
 
     def test_rank_displacement(self):
         clean_ranks = nearest_positive_ranks(self.database, self.clean_queries, self.positives)

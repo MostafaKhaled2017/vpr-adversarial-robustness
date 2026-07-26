@@ -7,7 +7,7 @@ EPSILONS=(
 )
 
 for epsilon in "${EPSILONS[@]}"; do
-  python adv_train.py \
+  python -m src.fgsm_train \
     --eval_datasets_folder=datasets \
     --gsv_cities_base_path=datasets/gsv_cities \
     --eval_dataset_name=msls \

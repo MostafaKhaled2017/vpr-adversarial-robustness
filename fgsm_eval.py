@@ -16,6 +16,7 @@ from torch.utils.data.dataset import Subset
 from tqdm import tqdm
 
 import parser as parser_module
+from src.faiss_utils import create_flat_l2_index, validate_faiss_runtime
 
 
 SUPPORTED_ATTACK_TEST_METHODS = {"hard_resize", "single_query", "central_crop"}
@@ -84,6 +85,8 @@ def parse_arguments():
         raise ValueError("--fgsm_negatives must be at least 1")
     if any(eps < 0 for eps in args.epsilons):
         raise ValueError("--epsilons must be non-negative")
+
+    validate_faiss_runtime(args.device)
 
     return args
 
@@ -189,9 +192,7 @@ def infer_query_counts(results, eval_ds):
 
 
 def compute_recalls(args, database_features, query_features, positives_per_query):
-    import faiss
-
-    faiss_index = faiss.IndexFlatL2(args.features_dim)
+    faiss_index = create_flat_l2_index(args.features_dim, args.device)
     faiss_index.add(database_features)
     _, predictions = faiss_index.search(query_features, max(args.recall_values))
 
@@ -247,9 +248,7 @@ def extract_clean_query_features(args, eval_ds, model):
     return features
 
 
-def build_attack_targets(eval_ds, database_features, clean_query_features, fgsm_loss, fgsm_negatives):
-    import faiss
-
+def build_attack_targets(eval_ds, database_features, clean_query_features, fgsm_loss, fgsm_negatives, device):
     targets = []
     positives_per_query = eval_ds.get_positives()
     valid_query_indices = np.flatnonzero(
@@ -267,7 +266,7 @@ def build_attack_targets(eval_ds, database_features, clean_query_features, fgsm_
         eval_ds.database_num,
         max(128, negative_count + 32),
     )
-    faiss_index = faiss.IndexFlatL2(database_features.shape[1])
+    faiss_index = create_flat_l2_index(database_features.shape[1], device)
     faiss_index.add(database_features)
     _, ranked_neighbors = faiss_index.search(valid_query_features, search_k)
 
@@ -446,6 +445,7 @@ def main():
                 clean_query_features,
                 args.fgsm_loss,
                 args.fgsm_negatives,
+                args.device,
             )
             logging.info("Built FGSM attack targets in %.1f seconds.", perf_counter() - target_build_start)
             attack_positives_per_query = [positives_per_query[index] for index in valid_query_indices]

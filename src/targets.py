@@ -5,6 +5,8 @@ import numpy as np
 import torch
 from torch import Tensor
 
+from .faiss_utils import create_flat_l2_index
+
 
 @dataclass
 class RetrievalAttackBatch:
@@ -110,7 +112,7 @@ def build_attack_targets(
     query_features = np.ascontiguousarray(clean_query_features[valid_query_indices].astype(np.float32, copy=False))
 
     search_k = min(eval_ds.database_num, max(128, args.adv_negatives + 32))
-    faiss_index = faiss.IndexFlatL2(database_features.shape[1])
+    faiss_index = create_flat_l2_index(database_features.shape[1], args.device)
     faiss_index.add(database_features)
     _, ranked_neighbors = faiss_index.search(query_features, search_k)
 
