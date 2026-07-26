@@ -28,7 +28,7 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Create figures from saved rank_eval outputs."
     )
-    parser.add_argument("--rank_csv", required=True, help="Rank evaluation summary CSV from rank_eval.py.")
+    parser.add_argument("--rank_csv", required=True, help="Rank evaluation summary CSV from src/rank_eval.py.")
     parser.add_argument("--diagnostics_dir", required=True, help="Directory containing diagnostics CSV files.")
     parser.add_argument("--traces_dir", required=True, help="Directory containing trace CSV files.")
     parser.add_argument(

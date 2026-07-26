@@ -1356,7 +1356,7 @@ def print_dry_run(
         pending_dataset_count = len(set(job.dataset for job in pending_jobs))
         print(f"Dataset passes: {pending_dataset_count}")
     else:
-        print(f"rank_eval.py subprocess job count: {len(pending_jobs)}")
+        print(f"src/rank_eval.py subprocess job count: {len(pending_jobs)}")
     if config.max_dataset_samples is None:
         print("Dataset mode: full_dataset")
     else:

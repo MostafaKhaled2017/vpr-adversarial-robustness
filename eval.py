@@ -21,8 +21,11 @@ def resolve_mode(argv):
 
 
 def main() -> None:
-    mode, forwarded = resolve_mode(sys.argv[1:])
-    sys.argv = [sys.argv[0], *forwarded]
+    argv = sys.argv[1:]
+    mode, forwarded = resolve_mode(argv)
+    token_consumed = len(forwarded) != len(argv)
+    prog = f"{sys.argv[0]} {mode}" if token_consumed else sys.argv[0]
+    sys.argv = [prog, *forwarded]
     if mode == "perceptual":
         from src.perceptual_eval import main as run_eval
     else:
