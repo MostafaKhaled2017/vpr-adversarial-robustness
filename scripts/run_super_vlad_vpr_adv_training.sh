@@ -21,48 +21,63 @@ COMMON_ARGS=(
   --crossimage_encoder
   --lr_plateau_patience=5
   --num_epochs=150
-  --patience=15
+  --patience=12
   --batch_size=16
   --batches_per_epoch=400
   --mixed_precision
   --randomize_attack
   --adv_negatives=5
-  --keep_every=3
+  --keep_every=6
   --val_batches=200
 )
 
 ATTACKS_ITER5=(
   --attack "FastLagrangePerceptualAttack(model, bound=0.1, num_iterations=5)"
   --attack "PerceptualPGDAttack(model, bound=0.1, num_iterations=5)"
-  --attack "StAdvAttack(model, num_iterations=5)"
-  --attack "ReColorAdvAttack(model, num_iterations=5)"
 )
 
 ATTACKS_ITER7=(
   --attack "FastLagrangePerceptualAttack(model, bound=0.1, num_iterations=7)"
   --attack "PerceptualPGDAttack(model, bound=0.1, num_iterations=7)"
-  --attack "StAdvAttack(model, num_iterations=7)"
-  --attack "ReColorAdvAttack(model, num_iterations=7)"
 )
 
-# Run 1: baseline configuration.
+ATTACKS_ITER10=(
+  --attack "FastLagrangePerceptualAttack(model, bound=0.1, num_iterations=10)"
+  --attack "PerceptualPGDAttack(model, bound=0.1, num_iterations=10)"
+)
+
+# Compare between this run and next one to see effect of changing learning rate
+# If this lead to improvement, try 2e-5
+# python3 train.py \
+#   "${COMMON_ARGS[@]}" \
+#   "${ATTACKS_ITER5[@]}" \
+#   --lr=1e-5  \
+#   --freeze_te=8 \
+
+# python3 train.py \
+#   "${COMMON_ARGS[@]}" \
+#   "${ATTACKS_ITER5[@]}" \
+#   --lr=0.000005 \
+#   --freeze_te=8 \
+
+# Comparing this run with the previous one shows the effect of relying on robust loss only
 python3 train.py \
   "${COMMON_ARGS[@]}" \
   "${ATTACKS_ITER5[@]}" \
-  --freeze_te=7 \
   --lr=0.000005 \
+  --freeze_te=8 \
+  --selection_robust_weight=1.0 \
 
-# Run 2: same as Run 1 but with a shuffled dataset ordering.
+# Compare this run with the run that had similar arguments except for attacks generation
+python3 train.py \
+  "${COMMON_ARGS[@]}" \
+  "${ATTACKS_ITER10[@]}" \
+  --lr=0.000005 \
+  --freeze_te=8 \
+
+# Compare this run with the one that has similar arguments except for number of frozen layers
 python3 train.py \
   "${COMMON_ARGS[@]}" \
   "${ATTACKS_ITER5[@]}" \
-  --freeze_te=7 \
   --lr=0.000005 \
-  --shuffle \
-
-# Run 3
-python3 train.py \
-  "${COMMON_ARGS[@]}" \
-  "${ATTACKS_ITER7[@]}" \
-  --freeze_te=7 \
-  --lr=0.000005 \
+  --freeze_te=9 \
