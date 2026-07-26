@@ -12,7 +12,7 @@ import torch
 from PIL import Image
 from torch import nn
 
-import rank_eval
+from src import rank_eval
 from src.evaluation_data import build_vpr_evaluation_dataset, load_vpr_test_dataset_module
 from src.models import ModelBundle
 from src.rank_attacks import RankAttackConfig, RankPGDAttack

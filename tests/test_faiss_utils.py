@@ -18,7 +18,7 @@ if str(SUPERVLAD_ROOT) not in sys.path:
 from src import faiss_utils
 from src.eval import compute_recalls_from_features
 from src.targets import build_attack_targets
-import rank_eval
+from src import rank_eval
 
 
 class ExactFlatL2Index:

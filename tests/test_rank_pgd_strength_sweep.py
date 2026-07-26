@@ -19,7 +19,7 @@ assert SPEC.loader is not None
 sys.modules[SPEC.name] = sweep
 SPEC.loader.exec_module(sweep)
 
-import rank_eval
+from src import rank_eval
 
 
 class RankPgdStrengthSweepTests(unittest.TestCase):

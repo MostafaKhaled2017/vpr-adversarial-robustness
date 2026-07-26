@@ -505,7 +505,7 @@ def command_for_job(config: SweepConfig, job: SweepJob, job_dir: Path) -> list[s
     condition = job.condition
     command = [
         config.python_bin,
-        str(REPO_ROOT / "rank_eval.py"),
+        str(REPO_ROOT / "src" / "rank_eval.py"),
         f"--eval_datasets_folder={config.eval_datasets_folder}",
         "--datasets",
         job.dataset,
@@ -719,7 +719,7 @@ def run_job(config: SweepConfig, sweep_dir: Path, job: SweepJob) -> JobResult:
             if completed.returncode == 0 and output_json is None
             else None
             if completed.returncode == 0
-            else f"rank_eval.py exited with code {completed.returncode}"
+            else f"src/rank_eval.py exited with code {completed.returncode}"
         ),
     )
 
@@ -779,7 +779,7 @@ def run_jobs(
 
 
 def rank_eval_args_for_job(config: SweepConfig, job: SweepJob, job_dir: Path):
-    import rank_eval
+    from src import rank_eval
 
     argv = command_for_job(config, job, job_dir)[2:]
     args = rank_eval.build_parser().parse_args(argv)
@@ -806,7 +806,7 @@ def write_condition_rank_eval_report(
     output_csv: Path,
     started_at: datetime,
 ) -> None:
-    import rank_eval
+    from src import rank_eval
 
     results = {job.dataset: dataset_results}
     rows = rank_eval.flatten_rows(results, args.recall_values)
@@ -886,7 +886,7 @@ def run_condition_in_context(
     job: SweepJob,
     context: MutableMapping[str, object],
 ) -> JobResult:
-    import rank_eval
+    from src import rank_eval
 
     job_dir = job_run_dir(sweep_dir, job)
     attempt_dir = job_dir / "attempts" / datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
@@ -954,7 +954,7 @@ def run_condition_in_context(
 
 def run_dataset_pass(config: SweepConfig, sweep_dir: Path, dataset: str, jobs: Sequence[SweepJob]) -> list[JobResult]:
     import commons
-    import rank_eval
+    from src import rank_eval
 
     dataset_jobs = [job for job in jobs if job.dataset == dataset]
     if not dataset_jobs:
