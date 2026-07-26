@@ -1326,7 +1326,7 @@ def write_manifest(
         "summary_csv": str(summary_csv) if summary_csv is not None else None,
         "selected_setting": selected_setting,
         "failed_jobs": [asdict(result) for result in job_results if result.returncode != 0],
-        "plotting_script": "scripts/visualizations.py",
+        "plotting_script": "src/visualizations.py",
         "previous_manifest_created_at": existing_manifest.get("created_at") if existing_manifest else None,
         "previous_config": existing_manifest.get("config") if existing_manifest else None,
     }
