@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-python3 rank_eval.py \
+python3 eval.py \
   --eval_datasets_folder=datasets \
   --datasets msls \
   --model_type=boq \
@@ -20,7 +20,7 @@ python3 rank_eval.py \
   --output_json=test/rank_eval/boq_msls_eps_0.01_rank_comparison.json \
   --output_csv=test/rank_eval/boq_msls_eps_0.01_rank_comparison.csv
 
-python3 rank_eval.py \
+python3 eval.py \
   --eval_datasets_folder=datasets \
   --datasets sped \
   --model_type=mixvpr \

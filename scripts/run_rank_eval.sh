@@ -66,7 +66,7 @@ if [[ "${GRAD_CHECKPOINTING}" != "0" ]]; then
     GRAD_CHECKPOINT_ARGS=(--grad_checkpointing)
 fi
 
-"${PYTHON_BIN}" "${REPO_ROOT}/rank_eval.py" \
+"${PYTHON_BIN}" "${REPO_ROOT}/eval.py" \
     --eval_datasets_folder="${EVAL_DATASETS_FOLDER}" \
     --datasets "${DATASETS[@]}" \
     --model_type=supervlad \

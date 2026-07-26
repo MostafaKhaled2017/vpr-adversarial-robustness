@@ -33,7 +33,7 @@ python3 fgsm_eval.py --eval_datasets_folder=datasets --eval_dataset_name=msls \
   --backbone=dino --supervlad_clusters=4 --crossimage_encoder \
   --infer_batch_size=32 --epsilons 0.01 0.1 0.2 --fgsm_loss positive_distance
 
-python3 perceptual_eval.py \
+python3 eval.py perceptual \
   --eval_datasets_folder=datasets \
   --datasets msls sped nordland \
   --base_resume=checkpoints/SuperVLAD.pth \
@@ -48,7 +48,7 @@ python3 perceptual_eval.py \
   --output_json=test/perceptual_eval/msls_sped_nordland_comparison.json \
   --output_csv=test/perceptual_eval/msls_sped_nordland_comparison.csv
 
-python3 rank_eval.py \
+python3 eval.py \
   --eval_datasets_folder=datasets \
   --datasets msls sped nordland \
   --model_type=supervlad \
@@ -69,7 +69,7 @@ python3 rank_eval.py \
   --output_csv=test/rank_eval/msls_sped_nordland_rank_comparison.csv
 
 # BoQ base checkpoint versus an adversarially trained checkpoint.
-python3 rank_eval.py \
+python3 eval.py \
   --eval_datasets_folder=datasets \
   --datasets msls sped \
   --model_type=boq \
@@ -87,7 +87,7 @@ python3 rank_eval.py \
   --output_csv=test/rank_eval/boq_msls_sped_nordland_rank_comparison.csv
 
 # MixVPR base checkpoint versus an adversarially trained checkpoint.
-python3 rank_eval.py \
+python3 eval.py \
   --eval_datasets_folder=datasets \
   --datasets msls sped \
   --model_type=mixvpr \
@@ -104,7 +104,7 @@ python3 rank_eval.py \
   --output_csv=test/rank_eval/mixvpr_msls_sped_nordland_rank_comparison.csv
 
 # Smoke test
-python rank_eval.py \
+python eval.py \
   --eval_datasets_folder=datasets \
   --datasets msls \
   --model_type=supervlad \
