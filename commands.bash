@@ -28,7 +28,7 @@ python -m src.fgsm_train \
   --adv_warmup_epochs=2 \
   --adv_negatives=5
 
-python3 fgsm_eval.py --eval_datasets_folder=datasets --eval_dataset_name=msls \
+python3 src/fgsm_eval.py --eval_datasets_folder=datasets --eval_dataset_name=msls \
   --resume=logs/default/2026-04-19_14-15-55/checkpoint_epoch_0002.pth \
   --backbone=dino --supervlad_clusters=4 --crossimage_encoder \
   --infer_batch_size=32 --epsilons 0.01 0.1 0.2 --fgsm_loss positive_distance

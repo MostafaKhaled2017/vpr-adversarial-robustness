@@ -92,7 +92,7 @@ run_eval() {
     local save_dir="batch_fgsm/${BATCH_ID}/${FGSM_LOSS}/${checkpoint_label}"
     local resume_eval_dir=""
     local cmd=(
-        "${PYTHON_BIN}" "${REPO_ROOT}/fgsm_eval.py"
+        "${PYTHON_BIN}" "${REPO_ROOT}/src/fgsm_eval.py"
         --eval_datasets_folder="${EVAL_DATASETS_FOLDER}"
         --eval_dataset_name="${EVAL_DATASET_NAME}"
         --resume="${checkpoint_path}"
