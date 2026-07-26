@@ -4,6 +4,7 @@ from os.path import exists, join
 from pathlib import Path
 
 import torch
+import yaml
 
 
 def load_trusted_checkpoint(path: str, map_location=None):
@@ -38,6 +39,25 @@ def load_model_weights(model, checkpoint_path: str, map_location=None, strict: b
     load_model_state_dict(model, checkpoint, strict=strict)
 
 
+def _to_yaml_serializable(value):
+    if isinstance(value, dict):
+        return {key: _to_yaml_serializable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_yaml_serializable(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def save_training_config(args, filename: str = "training_config.yaml") -> str:
+    config = {key: _to_yaml_serializable(value) for key, value in vars(args).items()}
+    Path(args.save_dir).mkdir(parents=True, exist_ok=True)
+    config_path = join(args.save_dir, filename)
+    with open(config_path, "w") as config_file:
+        yaml.safe_dump(config, config_file, default_flow_style=False, sort_keys=True)
+    return config_path
+
+
 def maybe_copy_resume_checkpoint(args, model=None) -> None:
     if args.resume is None and not args.download_pretrained:
         return
@@ -57,6 +77,12 @@ def maybe_copy_resume_checkpoint(args, model=None) -> None:
 def apply_lr_schedule(optimizer, lr: float) -> None:
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr
+
+
+def should_drop_lr_on_plateau(not_improved: int, plateau_patience) -> bool:
+    if plateau_patience is None:
+        return False
+    return not_improved > 0 and not_improved % plateau_patience == 0
 
 
 def maybe_remove_old_checkpoint(args, checkpoint_epoch: int) -> None:

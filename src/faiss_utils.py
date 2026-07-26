@@ -8,6 +8,11 @@ import torch
 
 GPU_FAISS_PACKAGE = "faiss-gpu-cu12==1.14.1.post1"
 
+# StandardGpuResources defaults to a 1.5 GiB contiguous scratch allocation,
+# which fails alongside PyTorch's reserved pools on smaller GPUs. Flat L2
+# searches at our batch sizes tile fine within a much smaller scratch buffer.
+FAISS_GPU_TEMP_MEMORY_BYTES = 256 * 1024 * 1024
+
 
 @dataclass
 class FlatL2Index:
@@ -77,6 +82,7 @@ def _create_gpu_flat_l2_index(faiss, dimension: int) -> FlatL2Index:
 
     try:
         resources = faiss.StandardGpuResources()
+        resources.setTempMemory(FAISS_GPU_TEMP_MEMORY_BYTES)
         cpu_index = faiss.IndexFlatL2(dimension)
         gpu_index = faiss.index_cpu_to_gpu(resources, device_index, cpu_index)
     except Exception as exc:

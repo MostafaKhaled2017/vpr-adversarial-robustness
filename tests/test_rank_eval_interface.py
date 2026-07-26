@@ -1,19 +1,30 @@
 import contextlib
 import io
 import sys
+import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
 
 import numpy as np
 import torch
+from torch import nn
 
+from src.grad_checkpoint import CheckpointedBlock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import rank_eval
+from src import rank_eval
+
+
+def _dummy_dino_model():
+    backbone = nn.Module()
+    backbone.blocks = nn.ModuleList([nn.Linear(4, 4), nn.Linear(4, 4)])
+    model = nn.Module()
+    model.backbone = backbone
+    return model
 
 
 class RankEvalInterfaceTests(unittest.TestCase):
@@ -80,6 +91,38 @@ class RankEvalInterfaceTests(unittest.TestCase):
             parser.parse_args([*common, "--model_type", "supervlad", "--models", "base.pth"])
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parser.parse_args([*common, "--model", "supervlad", "--model_paths", "base.pth"])
+
+    def test_shared_attacks_flag_defaults_to_per_model(self):
+        parser = rank_eval.build_parser()
+
+        self.assertIn("--shared_attacks", parser._option_string_actions)
+        self.assertFalse(parser._option_string_actions["--shared_attacks"].default)
+
+    def test_attack_groups_default_to_one_group_per_model(self):
+        args = Namespace(shared_attacks=False, model_tags=["base", "adv"])
+        models = {"base": ("model_base", "args_base"), "adv": ("model_adv", "args_adv")}
+
+        groups = list(rank_eval.attack_groups(args, models))
+
+        self.assertEqual(
+            groups,
+            [
+                ("base", {"base": ("model_base", "args_base")}),
+                ("adv", {"adv": ("model_adv", "args_adv")}),
+            ],
+        )
+
+    def test_attack_groups_shared_mode_uses_first_model_for_all(self):
+        args = Namespace(shared_attacks=True, model_tags=["base", "adv"])
+        models = {"base": ("model_base", "args_base"), "adv": ("model_adv", "args_adv")}
+
+        groups = list(rank_eval.attack_groups(args, models))
+
+        self.assertEqual(groups, [("base", models)])
+
+    def test_attack_generation_mode_labels(self):
+        self.assertEqual(rank_eval.attack_generation_mode(Namespace(shared_attacks=False)), "per_model")
+        self.assertEqual(rank_eval.attack_generation_mode(Namespace(shared_attacks=True)), "shared_first_model")
 
     def test_boq_and_mixvpr_resolve_reference_input_sizes(self):
         boq_args = Namespace(
@@ -390,14 +433,51 @@ class RankEvalInterfaceTests(unittest.TestCase):
 
         try:
             rank_eval.build_attack_targets = fake_build_attack_targets
-            rank_eval.get_context_targets(args, context)
-            rank_eval.get_context_targets(args, context)
+            rank_eval.get_context_targets(args, context, "base")
+            rank_eval.get_context_targets(args, context, "base")
             args.adv_negatives = 3
-            rank_eval.get_context_targets(args, context)
+            rank_eval.get_context_targets(args, context, "base")
         finally:
             rank_eval.build_attack_targets = original_build_attack_targets
 
         self.assertEqual(calls, [2, 3])
+
+    def test_context_targets_are_cached_per_reference_model(self):
+        args = Namespace(adv_negatives=2, max_queries=None, model_tags=["base", "adv"])
+        context = {
+            "sampled_gallery": False,
+            "eval_ds": object(),
+            "clean_features": {
+                "base": {
+                    "database": np.zeros((4, 2), dtype=np.float32),
+                    "queries": np.zeros((2, 2), dtype=np.float32),
+                },
+                "adv": {
+                    "database": np.ones((4, 2), dtype=np.float32),
+                    "queries": np.ones((2, 2), dtype=np.float32),
+                },
+            },
+            "valid_query_indices": np.array([0, 1], dtype=np.int64),
+            "target_cache": {},
+        }
+        seen_databases = []
+        original_build_attack_targets = rank_eval.build_attack_targets
+
+        def fake_build_attack_targets(_args, _eval_ds, database_features, _queries, limit_queries=None):
+            del limit_queries
+            seen_databases.append(float(database_features[0, 0]))
+            return [{"query_index": 0}], np.array([0, 1], dtype=np.int64)
+
+        try:
+            rank_eval.build_attack_targets = fake_build_attack_targets
+            rank_eval.get_context_targets(args, context, "base")
+            rank_eval.get_context_targets(args, context, "adv")
+            rank_eval.get_context_targets(args, context, "base")
+        finally:
+            rank_eval.build_attack_targets = original_build_attack_targets
+
+        self.assertEqual(seen_databases, [0.0, 1.0])
+        self.assertEqual(set(context["target_cache"]), {("base", 2), ("adv", 2)})
 
     def test_query_diagnostics_compute_margins_and_cwr_estimate(self):
         database = np.array(
@@ -508,6 +588,385 @@ class RankEvalInterfaceTests(unittest.TestCase):
             self.assertEqual(row["attacked_nearest_positive_rank"], attacked_rank)
             self.assertEqual(row["attack_success"], clean_rank == 1 and attacked_rank > 1)
             self.assertEqual(row["cwr_estimate"], cwr)
+
+    def test_attack_generation_seed_is_stable_and_model_dependent(self):
+        first = rank_eval.attack_generation_seed(0, "msls", "base", "rank_pgd_linf_eps_0.01")
+        second = rank_eval.attack_generation_seed(0, "msls", "base", "rank_pgd_linf_eps_0.01")
+        other_model = rank_eval.attack_generation_seed(0, "msls", "adv", "rank_pgd_linf_eps_0.01")
+
+        self.assertEqual(first, second)
+        self.assertNotEqual(first, other_model)
+        self.assertGreaterEqual(first, 0)
+        self.assertLess(first, 2**63)
+
+    def test_reseed_attack_rng_makes_draws_reproducible(self):
+        args = Namespace(shared_attacks=False, seed=0)
+
+        rank_eval.reseed_attack_rng(args, "msls", "base", "rank_pgd_linf_eps_0.01")
+        first_draw = torch.rand(4)
+        rank_eval.reseed_attack_rng(args, "msls", "base", "rank_pgd_linf_eps_0.01")
+        second_draw = torch.rand(4)
+
+        self.assertTrue(torch.equal(first_draw, second_draw))
+
+    def test_reseed_attack_rng_is_noop_in_shared_mode_and_for_seed_minus_one(self):
+        torch.manual_seed(123)
+        expected = torch.rand(4)
+
+        torch.manual_seed(123)
+        rank_eval.reseed_attack_rng(Namespace(shared_attacks=True, seed=0), "msls", "base", "c")
+        shared_draw = torch.rand(4)
+
+        torch.manual_seed(123)
+        rank_eval.reseed_attack_rng(Namespace(shared_attacks=False, seed=-1), "msls", "base", "c")
+        unseeded_draw = torch.rand(4)
+
+        self.assertTrue(torch.equal(expected, shared_draw))
+        self.assertTrue(torch.equal(expected, unseeded_draw))
+
+    def test_trace_csvs_support_per_model_subdirectory(self):
+        trace_rows = [
+            {
+                "query_index": 7,
+                "restart": 0,
+                "step": 0,
+                "loss": 0.5,
+                "positive_distance": 1.0,
+                "hard_negative_distance": 2.0,
+                "descriptor": np.array([1.0, 0.0], dtype=np.float32),
+                "perturbation_linf_normalized": 0.01,
+                "perturbation_linf_raw": 2.55,
+                "best_so_far": True,
+            }
+        ]
+        database_features = np.eye(2, dtype=np.float32)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            shared_paths = rank_eval.write_trace_csvs(
+                Path(temp_dir), "msls", "rank_pgd_linf", 0.01, trace_rows, database_features, {7: [0]}
+            )
+            per_model_paths = rank_eval.write_trace_csvs(
+                Path(temp_dir), "msls", "rank_pgd_linf", 0.01, trace_rows, database_features, {7: [0]},
+                model_subdir="adv_epoch_3",
+            )
+
+        self.assertEqual(shared_paths, [str(Path(temp_dir) / "msls" / "rank_pgd_linf" / "7_eps_0.01.csv")])
+        self.assertEqual(
+            per_model_paths,
+            [str(Path(temp_dir) / "msls" / "adv_epoch_3" / "rank_pgd_linf" / "7_eps_0.01.csv")],
+        )
+
+    def test_attack_image_root_adds_model_segment_in_per_model_mode(self):
+        args = Namespace(attack_image_output_dir_path=Path("run/attack_images"))
+
+        self.assertEqual(rank_eval.attack_image_root(args, None), Path("run/attack_images"))
+        self.assertEqual(rank_eval.attack_image_root(args, "adv epoch"), Path("run/attack_images/adv_epoch"))
+
+    def test_attack_image_manifest_includes_model_column(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest_path = Path(temp_dir) / "manifest.csv"
+            rank_eval.write_attack_image_manifest(
+                manifest_path,
+                [
+                    {
+                        "dataset": "msls",
+                        "model": "base",
+                        "attack": "rank_pgd_linf",
+                        "epsilon": 0.01,
+                        "query_index": 1,
+                        "clean": "a.png",
+                        "attacked": "b.png",
+                        "perturbation": "c.png",
+                        "abs_heatmap": "d.png",
+                    }
+                ],
+            )
+            header = manifest_path.read_text(encoding="utf-8").splitlines()[0]
+
+        self.assertIn("model", header.split(","))
+
+    def test_condition_evaluation_dispatches_attacks_per_mode(self):
+        def build_context():
+            database = np.array([[1, 0], [0, 1], [5, 5], [6, 6]], dtype=np.float32)
+            queries = np.array([[1, 0], [0, 1]], dtype=np.float32)
+            clean_features = {
+                "base": {"database": database, "queries": queries},
+                "adv": {"database": database.copy(), "queries": queries.copy()},
+            }
+            valid_query_indices = np.array([0, 1], dtype=np.int64)
+            valid_positives = [np.array([0], dtype=np.int64), np.array([1], dtype=np.int64)]
+            targets = [{"query_index": 0}, {"query_index": 1}]
+            return {
+                "sampled_gallery": False,
+                "eval_ds": object(),
+                "models": {"base": ("model_base", None), "adv": ("model_adv", None)},
+                "clean_features": clean_features,
+                "clean_ranks_by_model": {
+                    "base": np.array([1, 1], dtype=np.int64),
+                    "adv": np.array([1, 1], dtype=np.int64),
+                },
+                "valid_query_indices": valid_query_indices,
+                "valid_positives": valid_positives,
+                "clean_results": {"base": {}, "adv": {}},
+                "query_counts": {"attacked_queries": 2},
+                "feature_times": {},
+                "feature_shared_input_seconds": 0.0,
+                "target_cache": {
+                    ("base", 1): {"targets": targets, "target_seconds": 0.0},
+                    ("adv", 1): {"targets": targets, "target_seconds": 0.0},
+                },
+            }
+
+        def make_args(shared_attacks):
+            return Namespace(
+                shared_attacks=shared_attacks,
+                seed=0,
+                device="cpu",
+                model_tags=["base", "adv"],
+                rank_attack="rank_pgd_linf",
+                rank_steps=1,
+                rank_restarts=1,
+                rank_step_size=None,
+                adv_margin=0.1,
+                adv_negatives=1,
+                max_queries=None,
+                recall_values=[1],
+                audit_attack_implementation=False,
+                compute_diagnostics=False,
+                trace_output_dir_path=Path("unused_traces"),
+            )
+
+        generation_calls = []
+        trace_calls = []
+
+        def fake_build_rank_attack(model, _args, _epsilon):
+            return ("attack", model)
+
+        def fake_generate(args, eval_ds, attack, models, database_tensor, clean_queries, targets, dataset_name, epsilon, desc, attack_group_tag=None):
+            del args, eval_ds, database_tensor, dataset_name, epsilon, desc
+            generation_calls.append({"models": list(models), "attack": attack, "group_tag": attack_group_tag})
+            attacked = {tag: clean_queries[: len(targets)].copy() for tag in models}
+            return attacked, {"best_loss": torch.zeros(len(targets))}, [], []
+
+        def fake_write_trace_csvs(*_args, model_subdir=None, **_kwargs):
+            trace_calls.append(model_subdir)
+            return []
+
+        original = (
+            rank_eval.build_rank_attack,
+            rank_eval.generate_attacked_query_features,
+            rank_eval.write_trace_csvs,
+        )
+        try:
+            rank_eval.build_rank_attack = fake_build_rank_attack
+            rank_eval.generate_attacked_query_features = fake_generate
+            rank_eval.write_trace_csvs = fake_write_trace_csvs
+
+            results, runtimes, _, _, _ = rank_eval.evaluate_condition_from_context(
+                make_args(shared_attacks=False), build_context(), "msls", 0.01
+            )
+            per_model_calls = list(generation_calls)
+            generation_calls.clear()
+            per_model_trace_calls = list(trace_calls)
+            trace_calls.clear()
+
+            shared_results, shared_runtimes, _, _, _ = rank_eval.evaluate_condition_from_context(
+                make_args(shared_attacks=True), build_context(), "msls", 0.01
+            )
+        finally:
+            (
+                rank_eval.build_rank_attack,
+                rank_eval.generate_attacked_query_features,
+                rank_eval.write_trace_csvs,
+            ) = original
+
+        condition = "rank_pgd_linf_eps_0.01"
+        self.assertEqual([call["models"] for call in per_model_calls], [["base"], ["adv"]])
+        self.assertEqual([call["attack"][1] for call in per_model_calls], ["model_base", "model_adv"])
+        self.assertEqual([call["group_tag"] for call in per_model_calls], ["base", "adv"])
+        self.assertEqual(per_model_trace_calls, ["base", "adv"])
+        self.assertEqual(results["base"][condition]["attack_reference_model"], "base")
+        self.assertEqual(results["adv"][condition]["attack_reference_model"], "adv")
+        self.assertEqual(set(runtimes["attack_seconds"][condition]), {"base", "adv"})
+
+        self.assertEqual([call["models"] for call in generation_calls], [["base", "adv"]])
+        self.assertEqual(generation_calls[0]["attack"][1], "model_base")
+        self.assertIsNone(generation_calls[0]["group_tag"])
+        self.assertEqual(trace_calls, [None])
+        self.assertEqual(shared_results["adv"][condition]["attack_reference_model"], "base")
+        self.assertIsInstance(shared_runtimes["attack_seconds"][condition], float)
+
+    def test_condition_evaluation_nests_audit_per_model(self):
+        def build_context():
+            database = np.array([[1, 0], [0, 1], [5, 5], [6, 6]], dtype=np.float32)
+            queries = np.array([[1, 0], [0, 1]], dtype=np.float32)
+            clean_features = {
+                "base": {"database": database, "queries": queries},
+                "adv": {"database": database.copy(), "queries": queries.copy()},
+            }
+            valid_query_indices = np.array([0, 1], dtype=np.int64)
+            valid_positives = [np.array([0], dtype=np.int64), np.array([1], dtype=np.int64)]
+            targets = [{"query_index": 0}, {"query_index": 1}]
+            return {
+                "sampled_gallery": False,
+                "eval_ds": object(),
+                "models": {"base": ("model_base", None), "adv": ("model_adv", None)},
+                "clean_features": clean_features,
+                "clean_ranks_by_model": {
+                    "base": np.array([1, 1], dtype=np.int64),
+                    "adv": np.array([1, 1], dtype=np.int64),
+                },
+                "valid_query_indices": valid_query_indices,
+                "valid_positives": valid_positives,
+                "clean_results": {"base": {}, "adv": {}},
+                "query_counts": {"attacked_queries": 2},
+                "feature_times": {},
+                "feature_shared_input_seconds": 0.0,
+                "target_cache": {
+                    ("base", 1): {"targets": targets, "target_seconds": 0.0},
+                    ("adv", 1): {"targets": targets, "target_seconds": 0.0},
+                },
+            }
+
+        def make_args(shared_attacks):
+            return Namespace(
+                shared_attacks=shared_attacks,
+                seed=0,
+                device="cpu",
+                model_tags=["base", "adv"],
+                rank_attack="rank_pgd_linf",
+                rank_steps=1,
+                rank_restarts=1,
+                rank_step_size=None,
+                adv_margin=0.1,
+                adv_negatives=1,
+                max_queries=None,
+                recall_values=[1],
+                audit_attack_implementation=True,
+                compute_diagnostics=False,
+                trace_output_dir_path=Path("unused_traces"),
+            )
+
+        def fake_build_rank_attack(model, _args, _epsilon):
+            return ("attack", model)
+
+        def fake_generate(args, eval_ds, attack, models, database_tensor, clean_queries, targets, dataset_name, epsilon, desc, attack_group_tag=None):
+            del args, eval_ds, attack, database_tensor, dataset_name, epsilon, desc, attack_group_tag
+            attacked = {tag: clean_queries[: len(targets)].copy() for tag in models}
+            zeros = torch.zeros(len(targets))
+            metadata = {
+                "initial_loss": zeros,
+                "best_loss": zeros,
+                "positive_distance_before": zeros,
+                "positive_distance_after": zeros,
+                "hard_negative_distance_before": zeros,
+                "hard_negative_distance_after": zeros,
+                "gradient_norm": zeros,
+                "denormalized_min": zeros,
+                "denormalized_max": zeros,
+            }
+            return attacked, metadata, [], []
+
+        def fake_write_trace_csvs(*_args, model_subdir=None, **_kwargs):
+            del model_subdir
+            return []
+
+        original = (
+            rank_eval.build_rank_attack,
+            rank_eval.generate_attacked_query_features,
+            rank_eval.write_trace_csvs,
+        )
+        try:
+            rank_eval.build_rank_attack = fake_build_rank_attack
+            rank_eval.generate_attacked_query_features = fake_generate
+            rank_eval.write_trace_csvs = fake_write_trace_csvs
+
+            per_model_results, _, _, per_model_audit, _ = rank_eval.evaluate_condition_from_context(
+                make_args(shared_attacks=False), build_context(), "msls", 0.01
+            )
+            _, _, _, shared_audit, _ = rank_eval.evaluate_condition_from_context(
+                make_args(shared_attacks=True), build_context(), "msls", 0.01
+            )
+        finally:
+            (
+                rank_eval.build_rank_attack,
+                rank_eval.generate_attacked_query_features,
+                rank_eval.write_trace_csvs,
+            ) = original
+
+        del per_model_results
+        condition = "rank_pgd_linf_eps_0.01"
+
+        per_model_condition_audit = per_model_audit[condition]
+        self.assertEqual(set(per_model_condition_audit), {"base", "adv"})
+        self.assertIn("epsilon", per_model_condition_audit["base"])
+        self.assertIn("epsilon", per_model_condition_audit["adv"])
+
+        shared_condition_audit = shared_audit[condition]
+        self.assertIn("epsilon", shared_condition_audit)
+        self.assertNotIn("base", shared_condition_audit)
+        self.assertNotIn("adv", shared_condition_audit)
+
+
+    def test_get_context_targets_clears_cuda_cache_before_building_targets(self):
+        from unittest import mock
+
+        args = Namespace(device="cuda", adv_negatives=2, max_queries=None)
+        valid_query_indices = np.array([0, 1], dtype=np.int64)
+        context = {
+            "target_cache": {},
+            "clean_features": {
+                "base": {
+                    "database": np.zeros((4, 2), dtype=np.float32),
+                    "queries": np.zeros((2, 2), dtype=np.float32),
+                }
+            },
+            "valid_query_indices": valid_query_indices,
+            "eval_ds": object(),
+        }
+        targets = [{"query_index": 0}]
+
+        manager = mock.Mock()
+        with (
+            mock.patch.object(rank_eval, "clear_cuda_cache") as clear_cache,
+            mock.patch.object(
+                rank_eval,
+                "build_attack_targets",
+                return_value=(targets, valid_query_indices),
+            ) as build_targets,
+        ):
+            manager.attach_mock(clear_cache, "clear_cuda_cache")
+            manager.attach_mock(build_targets, "build_attack_targets")
+            built_targets, _ = rank_eval.get_context_targets(args, context, "base")
+            cached_targets, cached_seconds = rank_eval.get_context_targets(args, context, "base")
+
+        self.assertIs(built_targets, targets)
+        self.assertIs(cached_targets, targets)
+        self.assertEqual(cached_seconds, 0.0)
+        call_names = [name for name, _call_args, _call_kwargs in manager.mock_calls]
+        self.assertEqual(call_names, ["clear_cuda_cache", "build_attack_targets"])
+
+    def test_grad_checkpointing_flag_defaults_off(self):
+        parser = rank_eval.build_parser()
+
+        self.assertIn("--grad_checkpointing", parser._option_string_actions)
+        self.assertFalse(parser._option_string_actions["--grad_checkpointing"].default)
+
+    def test_maybe_enable_grad_checkpointing_is_noop_without_flag(self):
+        model = _dummy_dino_model()
+        original_blocks = list(model.backbone.blocks)
+
+        returned = rank_eval.maybe_enable_grad_checkpointing(model, Namespace(grad_checkpointing=False))
+
+        self.assertIs(returned, model)
+        self.assertEqual(list(model.backbone.blocks), original_blocks)
+
+    def test_maybe_enable_grad_checkpointing_wraps_blocks_with_flag(self):
+        model = _dummy_dino_model()
+
+        rank_eval.maybe_enable_grad_checkpointing(model, Namespace(grad_checkpointing=True))
+
+        for block in model.backbone.blocks:
+            self.assertIsInstance(block, CheckpointedBlock)
 
 
 if __name__ == "__main__":

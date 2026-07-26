@@ -96,6 +96,87 @@ class PerceptualTrainingCliTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "non-negative"):
             self.parse("--weight_decay", "-0.1")
 
+    def test_batches_per_epoch_defaults_to_full_epoch(self):
+        self.assertIsNone(self.parse().batches_per_epoch)
+
+    def test_batches_per_epoch_accepts_positive_value(self):
+        args = self.parse("--batches_per_epoch", "400")
+        self.assertEqual(args.batches_per_epoch, 400)
+
+    def test_batches_per_epoch_rejects_zero(self):
+        with self.assertRaisesRegex(ValueError, "batches_per_epoch"):
+            self.parse("--batches_per_epoch", "0")
+
+    def test_shuffle_defaults_off(self):
+        self.assertFalse(self.parse().shuffle)
+
+    def test_shuffle_flag_parses(self):
+        self.assertTrue(self.parse("--shuffle").shuffle)
+
+    def test_lr_plateau_defaults(self):
+        args = self.parse()
+        self.assertIsNone(args.lr_plateau_patience)
+        self.assertEqual(args.lr_plateau_factor, 0.1)
+
+    def test_lr_plateau_patience_rejects_zero(self):
+        with self.assertRaisesRegex(ValueError, "lr_plateau_patience"):
+            self.parse("--lr_plateau_patience", "0")
+
+    def test_lr_plateau_factor_must_be_a_fraction(self):
+        with self.assertRaisesRegex(ValueError, "lr_plateau_factor"):
+            self.parse("--lr_plateau_factor", "1.5")
+
+    def test_selection_robust_weight_defaults(self):
+        self.assertEqual(self.parse().selection_robust_weight, 0.75)
+
+    def test_selection_robust_weight_parses_custom_value(self):
+        self.assertEqual(self.parse("--selection_robust_weight", "1.0").selection_robust_weight, 1.0)
+
+    def test_selection_robust_weight_rejects_values_above_one(self):
+        with self.assertRaisesRegex(ValueError, "selection_robust_weight"):
+            self.parse("--selection_robust_weight", "1.5")
+
+    def test_selection_robust_weight_rejects_negative_values(self):
+        with self.assertRaisesRegex(ValueError, "selection_robust_weight"):
+            self.parse("--selection_robust_weight", "-0.1")
+
+    def test_supervlad_adv_launcher_arguments_parse(self):
+        args = self.parse(
+            "--model=supervlad",
+            "--backbone=dino",
+            "--supervlad_clusters=4",
+            "--crossimage_encoder",
+            "--freeze_te=7",
+            "--lr=0.000005",
+            "--lr_plateau_patience=5",
+            "--num_epochs=150",
+            "--patience=15",
+            "--batch_size=16",
+            "--batches_per_epoch=400",
+            "--mixed_precision",
+            "--attack", "FastLagrangePerceptualAttack(model, bound=0.1, num_iterations=5)",
+            "--attack", "PerceptualPGDAttack(model, bound=0.1, num_iterations=5)",
+            "--attack", "LinfAttack(model, num_iterations=10)",
+            "--attack", "StAdvAttack(model, num_iterations=10)",
+            "--attack", "ReColorAdvAttack(model, num_iterations=10)",
+            "--randomize_attack",
+            "--adv_loss_weight=0.25",
+            "--adv_align_weight=0.2",
+            "--adv_negatives=5",
+            "--adv_warmup_epochs=5",
+            "--keep_every=3",
+            "--val_batches=40",
+        )
+        self.assertEqual(len(args.attack), 5)
+        self.assertTrue(args.randomize_attack)
+        self.assertTrue(args.mixed_precision)
+        self.assertEqual(args.freeze_te, 7)
+        self.assertEqual(args.batches_per_epoch, 400)
+        self.assertEqual(args.lr_plateau_patience, 5)
+        self.assertEqual(args.patience, 15)
+        self.assertEqual(args.keep_every, 3)
+        self.assertEqual(args.val_batches, 40)
+
 
 if __name__ == "__main__":
     unittest.main()

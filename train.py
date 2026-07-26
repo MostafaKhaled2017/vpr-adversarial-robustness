@@ -7,7 +7,7 @@ import commons
 import torch
 
 from src.attacks import instantiate_attacks
-from src.checkpoints import maybe_copy_resume_checkpoint
+from src.checkpoints import maybe_copy_resume_checkpoint, save_training_config
 from src.cli import parse_arguments
 from src.components import build_training_components
 from src.config import create_summary_writer, validate_cuda_runtime
@@ -29,8 +29,11 @@ def main():
     commons.make_deterministic(args.seed)
     configure_metric_learning()
 
+    config_path = save_training_config(args)
+
     logging.info("Arguments: %s", args)
     logging.info("The outputs are being saved in %s", args.save_dir)
+    logging.info("Training configuration saved to %s", config_path)
     logging.info("TensorBoard logs will be written to %s", args.tensorboard_dir)
     logging.info("Using %d GPUs and %d CPUs", torch.cuda.device_count(), multiprocessing.cpu_count())
 

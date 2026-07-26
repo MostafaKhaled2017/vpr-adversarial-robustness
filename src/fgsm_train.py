@@ -18,7 +18,7 @@ import datasets_ws
 import parser as parser_module
 import test
 import util
-from fgsm_eval import get_normalized_bounds
+from src.fgsm_eval import get_normalized_bounds
 from torchvision import transforms as T
 
 torch.backends.cudnn.benchmark = True

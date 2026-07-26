@@ -68,6 +68,20 @@ def build_parser():
         help="Training batch size alias kept for perceptual-advex style.",
     )
     parser.add_argument("--val_batches", type=int, default=10, help="Number of validation query batches to attack.")
+    parser.add_argument(
+        "--batches_per_epoch",
+        type=int,
+        default=None,
+        help="Training batches per (virtual) epoch. Defaults to one pass over the full dataset.",
+    )
+    parser.add_argument(
+        "--shuffle",
+        action="store_true",
+        default=False,
+        help="Shuffle the training dataset ordering before sequential chunking. Each full pass "
+        "over the dataset uses a fresh deterministic permutation derived from --seed, so "
+        "resumed runs reproduce the same ordering.",
+    )
     parser.add_argument("--log_dir", type=str, default="logs", help="Base folder for perceptual adversarial training runs.")
     parser.add_argument("--parallel", type=int, default=1, help="Number of GPUs to use when CUDA is available.")
     parser.add_argument(
@@ -93,6 +107,18 @@ def build_parser():
     parser.add_argument("--clip_grad", type=float, default=1.0, help="Clip gradients to this absolute value.")
     parser.add_argument("--lpips_model", type=str, default=None, help="Optional LPIPS model override.")
     parser.add_argument("--lr_schedule", type=str, default=None, help="Epochs when the learning rate drops by 10x.")
+    parser.add_argument(
+        "--lr_plateau_patience",
+        type=int,
+        default=None,
+        help="Drop the learning rate after this many epochs without validation improvement. Overrides --lr_schedule.",
+    )
+    parser.add_argument(
+        "--lr_plateau_factor",
+        type=float,
+        default=0.1,
+        help="Multiplicative learning-rate factor applied on plateau.",
+    )
     parser.add_argument(
         "--resume_model_only",
         action="store_true",
@@ -127,6 +153,12 @@ def build_parser():
         type=float,
         default=0.1,
         help="Margin used for the retrieval adversarial objective.",
+    )
+    parser.add_argument(
+        "--selection_robust_weight",
+        type=float,
+        default=0.75,
+        help="Weight of the robust score in the validation selection score; clean weight is 1 minus this.",
     )
     parser.add_argument(
         "--early_stop_min_delta",
@@ -171,12 +203,20 @@ def parse_arguments(argv=None):
             args.lr_schedule = "120"
     if args.keep_every < 1:
         raise ValueError("--keep_every must be at least 1")
+    if args.batches_per_epoch is not None and args.batches_per_epoch < 1:
+        raise ValueError("--batches_per_epoch must be at least 1")
+    if args.lr_plateau_patience is not None and args.lr_plateau_patience < 1:
+        raise ValueError("--lr_plateau_patience must be at least 1")
+    if not 0.0 < args.lr_plateau_factor < 1.0:
+        raise ValueError("--lr_plateau_factor must be between 0 and 1 (exclusive)")
     if args.adv_negatives < 1:
         raise ValueError("--adv_negatives must be at least 1")
     if args.adv_warmup_epochs < 0:
         raise ValueError("--adv_warmup_epochs must be non-negative")
     if args.clip_grad <= 0:
         raise ValueError("--clip_grad must be positive")
+    if not 0.0 <= args.selection_robust_weight <= 1.0:
+        raise ValueError("--selection_robust_weight must be between 0 and 1 (inclusive)")
     if args.weight_decay is not None and args.weight_decay < 0:
         raise ValueError("--weight_decay must be non-negative")
     if args.train_resize is None:

@@ -15,6 +15,13 @@ from torch.utils.data import DataLoader
 from torch.utils.data.dataset import Subset
 from tqdm import tqdm
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+SUPERVLAD_ROOT = REPO_ROOT / "third_party" / "SuperVLAD"
+if str(SUPERVLAD_ROOT) not in sys.path:
+    sys.path.insert(0, str(SUPERVLAD_ROOT))
+
 import parser as parser_module
 from src.faiss_utils import create_flat_l2_index, validate_faiss_runtime
 

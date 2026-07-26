@@ -12,10 +12,12 @@ logs/default
 checkpoints/
 
 venv
-reports
 datasets
 checkpoints
 logs
 docs
 test
 datasets
+reports
+
+tmp*

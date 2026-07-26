@@ -505,7 +505,7 @@ def command_for_job(config: SweepConfig, job: SweepJob, job_dir: Path) -> list[s
     condition = job.condition
     command = [
         config.python_bin,
-        str(REPO_ROOT / "rank_eval.py"),
+        str(REPO_ROOT / "src" / "rank_eval.py"),
         f"--eval_datasets_folder={config.eval_datasets_folder}",
         "--datasets",
         job.dataset,
@@ -719,7 +719,7 @@ def run_job(config: SweepConfig, sweep_dir: Path, job: SweepJob) -> JobResult:
             if completed.returncode == 0 and output_json is None
             else None
             if completed.returncode == 0
-            else f"rank_eval.py exited with code {completed.returncode}"
+            else f"src/rank_eval.py exited with code {completed.returncode}"
         ),
     )
 
@@ -779,7 +779,7 @@ def run_jobs(
 
 
 def rank_eval_args_for_job(config: SweepConfig, job: SweepJob, job_dir: Path):
-    import rank_eval
+    from src import rank_eval
 
     argv = command_for_job(config, job, job_dir)[2:]
     args = rank_eval.build_parser().parse_args(argv)
@@ -806,7 +806,7 @@ def write_condition_rank_eval_report(
     output_csv: Path,
     started_at: datetime,
 ) -> None:
-    import rank_eval
+    from src import rank_eval
 
     results = {job.dataset: dataset_results}
     rows = rank_eval.flatten_rows(results, args.recall_values)
@@ -831,8 +831,9 @@ def write_condition_rank_eval_report(
             "epsilons": [float(job.condition.epsilon)],
             "scope": "queries_only",
             "epsilon_space": "normalized_image_tensor",
-            "attack_reference_model": rank_eval.attack_reference_tag(args),
-            "shared_attacks_across_models": True,
+            "attack_reference_model": rank_eval.attack_reference_tag(args) if args.shared_attacks else None,
+            "attack_generation": rank_eval.attack_generation_mode(args),
+            "shared_attacks_across_models": bool(args.shared_attacks),
             "target_selection": {
                 "adv_negatives": int(args.adv_negatives),
                 "adv_margin": float(args.adv_margin),
@@ -885,7 +886,7 @@ def run_condition_in_context(
     job: SweepJob,
     context: MutableMapping[str, object],
 ) -> JobResult:
-    import rank_eval
+    from src import rank_eval
 
     job_dir = job_run_dir(sweep_dir, job)
     attempt_dir = job_dir / "attempts" / datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
@@ -953,7 +954,7 @@ def run_condition_in_context(
 
 def run_dataset_pass(config: SweepConfig, sweep_dir: Path, dataset: str, jobs: Sequence[SweepJob]) -> list[JobResult]:
     import commons
-    import rank_eval
+    from src import rank_eval
 
     dataset_jobs = [job for job in jobs if job.dataset == dataset]
     if not dataset_jobs:
@@ -1325,7 +1326,7 @@ def write_manifest(
         "summary_csv": str(summary_csv) if summary_csv is not None else None,
         "selected_setting": selected_setting,
         "failed_jobs": [asdict(result) for result in job_results if result.returncode != 0],
-        "plotting_script": "scripts/visualizations.py",
+        "plotting_script": "src/visualizations.py",
         "previous_manifest_created_at": existing_manifest.get("created_at") if existing_manifest else None,
         "previous_config": existing_manifest.get("config") if existing_manifest else None,
     }
@@ -1355,7 +1356,7 @@ def print_dry_run(
         pending_dataset_count = len(set(job.dataset for job in pending_jobs))
         print(f"Dataset passes: {pending_dataset_count}")
     else:
-        print(f"rank_eval.py subprocess job count: {len(pending_jobs)}")
+        print(f"src/rank_eval.py subprocess job count: {len(pending_jobs)}")
     if config.max_dataset_samples is None:
         print("Dataset mode: full_dataset")
     else:
