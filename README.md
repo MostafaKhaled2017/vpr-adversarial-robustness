@@ -58,8 +58,6 @@ The commands below show the shape of each workflow with `<placeholders>`. Ready-
 
 ### Training
 
-Perceptual adversarial training (wrappers: `scripts/run_super_vlad_vpr_adv_training.sh`, `scripts/run_boq_vpr_adv_training.sh`, `scripts/run_mix_vpr_adv_training.sh`):
-
 ```bash
 python train.py \
   --eval_datasets_folder=<datasets-folder> --eval_dataset_name=<dataset> \
@@ -78,8 +76,6 @@ python -m src.fgsm_train \
 ```
 
 ### Rank attack evaluation
-
-Wrapper: `scripts/run_rank_eval.sh` (see also `scripts/boq_mixvpr_eval.sh`).
 
 ```bash
 python eval.py \
@@ -102,8 +98,6 @@ python eval.py perceptual \
 ```
 
 ### FGSM evaluation
-
-Wrappers: `scripts/run_fgsm_dual_eval.sh`, `scripts/run_fgsm_checkpoint_list_eval.sh`.
 
 ```bash
 python src/fgsm_eval.py \
