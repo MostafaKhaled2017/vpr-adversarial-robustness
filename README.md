@@ -48,7 +48,9 @@ python -m pip install git+https://github.com/fra31/auto-attack.git
 
 ## Data and checkpoints
 
-Evaluation datasets live under `datasets/<name>/images/test/` with `database/` and `queries/` splits (e.g. `msls`, `sped`, `nordland`). Checkpoints must exist locally under `checkpoints/` — evaluation scripts validate paths up front and never download weights. SuperVLAD additionally needs the DINOv2 foundation weights (`checkpoints/dinov2_vitb14_pretrain.pth`).
+Evaluation datasets live under `datasets/<name>/images/test/` with `database/` and `queries/` splits (e.g. `msls`, `sped`, `nordland`). Checkpoints for the adversarially trained models are available in the [Google Drive checkpoint folder](https://drive.google.com/drive/folders/1dP61euhUI2I5e9e-FE1A_Vvf09b-fLQ1?usp=sharing).
+
+Download the required checkpoints to `checkpoints/` before running an evaluation; the evaluation scripts validate paths up front and never download weights automatically. SuperVLAD additionally needs the DINOv2 foundation weights (`checkpoints/dinov2_vitb14_pretrain.pth`).
 
 ## Usage
 
