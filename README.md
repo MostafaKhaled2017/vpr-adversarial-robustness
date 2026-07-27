@@ -35,6 +35,7 @@ Python 3.12 on Linux x86-64 is the reference environment.
 
 ```bash
 python -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -115,4 +116,4 @@ python -m unittest discover tests
 
 ## Outputs
 
-Evaluation runs write timestamped JSON/CSV reports and logs under `test/rank_eval/` and `test/perceptual_eval/`; training runs write logs, checkpoints, and TensorBoard files under `logs/`.
+Evaluation runs write timestamped JSON/CSV reports and logs under `output/` directory; training runs write logs, checkpoints, and TensorBoard files under `logs/`.
