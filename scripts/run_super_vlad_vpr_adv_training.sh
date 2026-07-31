@@ -24,11 +24,11 @@ COMMON_ARGS=(
   --patience=12
   --batch_size=16
   --batches_per_epoch=400
-  --mixed_precision
   --randomize_attack
   --adv_negatives=5
   --keep_every=6
   --val_batches=200
+  # --mixed_precision
 )
 
 ATTACKS_ITER5=(
