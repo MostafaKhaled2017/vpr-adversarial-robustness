@@ -68,7 +68,10 @@ run_condition() {
         --supervlad_clusters=4
         --crossimage_encoder
         --freeze_te=8
-        --infer_batch_size=16
+        # The original run used batch 16 on a larger GPU; SuperVLAD's attack phase does not
+        # fit in 10 GB at that size. Batch size and checkpointing affect memory, not metrics.
+        --infer_batch_size=8
+        --grad_checkpointing
       )
       ;;
     boq)
