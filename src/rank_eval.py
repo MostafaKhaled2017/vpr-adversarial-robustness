@@ -32,11 +32,11 @@ from src.grad_checkpoint import enable_backbone_grad_checkpointing
 from src.models import add_model_arguments, get_model_adapter, model_names
 from src.rank_attacks import RankAPGDLinfAttack, RankAttackConfig, RankPGDAttack
 from src.retrieval_metrics import (
-    attack_success_metrics,
     compute_recalls_from_features,
     nearest_positive_ranks,
+    per_query_rank_records,
     prepare_distance_database,
-    rank_displacement_summary,
+    rank_metric_bundle,
     squared_l2_distance_chunk,
 )
 from src.targets import RetrievalAttackBatch, build_attack_targets
@@ -46,6 +46,18 @@ SUPPORTED_TEST_METHODS = {"hard_resize", "central_crop", "single_query"}
 SUPPORTED_RANK_ATTACKS = {"rank_pgd_linf", "rank_pgd_l2", "rank_apgd_linf"}
 REQUIRED_RECALL_VALUES = (1, 5, 10, 100)
 DEFAULT_MODEL_TAGS = ("base", "checkpoint")
+PER_QUERY_RANK_FIELDNAMES = (
+    "query_id",
+    "dataset",
+    "model_tag",
+    "checkpoint_tag",
+    "condition",
+    "epsilon",
+    "clean_rank",
+    "attacked_rank",
+    "clean_correct_at_1",
+    "attacked_correct_at_1",
+)
 
 
 def remove_parser_argument(parser, *option_strings: str) -> None:
@@ -371,6 +383,49 @@ def build_attack_image_output_dir(args, run_dir: Path) -> Path:
     if args.attack_image_output_dir is None:
         return run_dir / "attack_images"
     return Path(args.attack_image_output_dir).expanduser()
+
+
+def build_per_query_ranks_path(run_dir: Path) -> Path:
+    return run_dir / "per_query_ranks.csv"
+
+
+def checkpoint_tag_for_model(args, model_tag: str) -> str:
+    for tag, model_path in zip(args.model_tags, args.model_paths):
+        if tag == model_tag:
+            return str(model_path)
+    return ""
+
+
+def build_per_query_rank_rows(
+    dataset_name: str,
+    model_tag: str,
+    checkpoint_tag: str,
+    condition_name: str,
+    epsilon: float,
+    query_ids: Sequence[int],
+    clean_ranks: np.ndarray,
+    attacked_ranks: np.ndarray,
+) -> list[Dict[str, object]]:
+    return [
+        {
+            "dataset": dataset_name,
+            "model_tag": model_tag,
+            "checkpoint_tag": checkpoint_tag,
+            "condition": condition_name,
+            "epsilon": float(epsilon),
+            **record,
+        }
+        for record in per_query_rank_records(query_ids, clean_ranks, attacked_ranks)
+    ]
+
+
+def write_per_query_ranks_csv(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
+    """Write the released per-query rank artifact, header-only when nothing was evaluated."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(PER_QUERY_RANK_FIELDNAMES))
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def attack_image_root(args, attack_group_tag: str | None) -> Path:
@@ -1526,6 +1581,7 @@ def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, 
     attack_times: Dict[str, object] = {}
     audit_by_condition: Dict[str, object] = {}
     image_manifest: list[Dict[str, object]] = []
+    per_query_rows: list[Dict[str, object]] = []
     query_feature_indices = np.arange(len(valid_query_indices), dtype=np.int64)
     positives_by_query = {int(index): sampled_positives[row] for row, index in enumerate(valid_query_indices)}
 
@@ -1600,8 +1656,23 @@ def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, 
                     sampled_positives,
                     args.recall_values,
                 )
-                displacement = rank_displacement_summary(clean_ranks_by_model[model_tag], attacked_ranks)
-                success = attack_success_metrics(clean_ranks_by_model[model_tag], attacked_ranks)
+                metric_bundle = rank_metric_bundle(
+                    clean_ranks_by_model[model_tag],
+                    attacked_ranks,
+                    database_size=int(model_database_features.shape[0]),
+                )
+                per_query_rows.extend(
+                    build_per_query_rank_rows(
+                        dataset_name,
+                        model_tag,
+                        checkpoint_tag_for_model(args, model_tag),
+                        condition_name,
+                        epsilon,
+                        valid_query_indices,
+                        clean_ranks_by_model[model_tag],
+                        attacked_ranks,
+                    )
+                )
 
                 results[model_tag][condition_name] = {
                     **attacked_recalls,
@@ -1617,8 +1688,7 @@ def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, 
                     "attacked_queries": query_counts["attacked_queries"],
                     "audit_sample": True,
                     "sampled_database_images": query_counts["sampled_database_images"],
-                    "rank_displacement": displacement,
-                    "attack_success": success,
+                    **metric_bundle,
                     "runtime_seconds": elapsed,
                     "runtime_per_query_seconds": float(elapsed / max(1, len(valid_query_indices))),
                     "attack_metadata": group_metadata_summary,
@@ -1631,7 +1701,7 @@ def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, 
         "target_seconds": target_seconds_total,
         "attack_seconds": attack_times,
     }
-    return results, runtimes, query_counts, audit_by_condition, image_manifest
+    return results, runtimes, query_counts, audit_by_condition, image_manifest, per_query_rows
 
 
 def prepare_dataset_context(
@@ -1915,6 +1985,7 @@ def evaluate_condition_from_context(
     condition_name = f"{args.rank_attack}_eps_{epsilon:g}"
     audit_by_condition: Dict[str, object] = {}
     image_manifest: list[Dict[str, object]] = []
+    per_query_rows: list[Dict[str, object]] = []
     clean_query_feature_indices = (
         np.arange(len(valid_query_indices), dtype=np.int64)
         if context.get("sampled_gallery")
@@ -1995,8 +2066,23 @@ def evaluate_condition_from_context(
                 valid_positives,
                 args.recall_values,
             )
-            displacement = rank_displacement_summary(clean_ranks_by_model[model_tag], attacked_ranks)
-            success = attack_success_metrics(clean_ranks_by_model[model_tag], attacked_ranks)
+            metric_bundle = rank_metric_bundle(
+                clean_ranks_by_model[model_tag],
+                attacked_ranks,
+                database_size=int(model_database_features.shape[0]),
+            )
+            per_query_rows.extend(
+                build_per_query_rank_rows(
+                    dataset_name,
+                    model_tag,
+                    checkpoint_tag_for_model(args, model_tag),
+                    condition_name,
+                    epsilon,
+                    valid_query_indices,
+                    clean_ranks_by_model[model_tag],
+                    attacked_ranks,
+                )
+            )
 
             results[model_tag][condition_name] = {
                 **attacked_recalls,
@@ -2012,8 +2098,7 @@ def evaluate_condition_from_context(
                 "attacked_queries": context["query_counts"]["attacked_queries"],
                 "sampled_gallery": bool(context.get("sampled_gallery")),
                 "benchmark_comparable": not bool(context.get("sampled_gallery")),
-                "rank_displacement": displacement,
-                "attack_success": success,
+                **metric_bundle,
                 "runtime_seconds": elapsed,
                 "runtime_per_query_seconds": float(elapsed / max(1, len(valid_query_indices))),
                 "attack_metadata": attack_metadata_summary,
@@ -2032,7 +2117,7 @@ def evaluate_condition_from_context(
             )
         },
     }
-    return results, runtimes, context["query_counts"], audit_by_condition, image_manifest
+    return results, runtimes, context["query_counts"], audit_by_condition, image_manifest, per_query_rows
 
 
 def evaluate_dataset(args, dataset_name: str, models: Mapping[str, Tuple[nn.Module, object]]):
@@ -2050,9 +2135,17 @@ def evaluate_dataset(args, dataset_name: str, models: Mapping[str, Tuple[nn.Modu
     query_counts = context["query_counts"]
     audit_by_condition: Dict[str, object] = {}
     image_manifest: list[Dict[str, object]] = []
+    per_query_rows: list[Dict[str, object]] = []
 
     for epsilon in args.epsilons:
-        condition_results, condition_runtimes, _, condition_audit, condition_images = evaluate_condition_from_context(
+        (
+            condition_results,
+            condition_runtimes,
+            _,
+            condition_audit,
+            condition_images,
+            condition_per_query_rows,
+        ) = evaluate_condition_from_context(
             args,
             context,
             dataset_name,
@@ -2064,8 +2157,9 @@ def evaluate_dataset(args, dataset_name: str, models: Mapping[str, Tuple[nn.Modu
         runtimes["attack_seconds"].update(condition_runtimes["attack_seconds"])
         audit_by_condition.update(condition_audit)
         image_manifest.extend(condition_images)
+        per_query_rows.extend(condition_per_query_rows)
 
-    return results, runtimes, query_counts, audit_by_condition, image_manifest
+    return results, runtimes, query_counts, audit_by_condition, image_manifest, per_query_rows
 
 
 def flatten_rows(results: Mapping[str, Mapping[str, Mapping[str, object]]], recall_values: Sequence[int]) -> list[Dict[str, object]]:
@@ -2086,12 +2180,24 @@ def flatten_rows(results: Mapping[str, Mapping[str, Mapping[str, object]]], reca
                     "clean_correct_attack_success_rate": "",
                     "all_valid_attack_success_rate": "",
                     "mean_rank_displacement": "",
+                    "median_rank_displacement": "",
+                    "p90_rank_displacement": "",
+                    "mean_normalized_rank_displacement": "",
+                    "p_cross_1": "",
+                    "p_cross_10": "",
                 }
                 if "attack_success" in metrics:
                     row["clean_correct_attack_success_rate"] = metrics["attack_success"]["clean_correct"]["rate"]
                     row["all_valid_attack_success_rate"] = metrics["attack_success"]["all_valid"]["rate"]
                 if "rank_displacement" in metrics:
-                    row["mean_rank_displacement"] = metrics["rank_displacement"]["mean"]
+                    displacement = metrics["rank_displacement"]
+                    row["mean_rank_displacement"] = displacement["mean"]
+                    row["median_rank_displacement"] = displacement["median"]
+                    row["p90_rank_displacement"] = displacement["p90"]
+                    normalized = displacement.get("mean_normalized")
+                    row["mean_normalized_rank_displacement"] = "" if normalized is None else normalized
+                    row["p_cross_1"] = displacement["p_cross_1"]
+                    row["p_cross_10"] = displacement["p_cross_10"]
                 for recall_value in recall_values:
                     row[f"R@{recall_value}"] = float(metrics["recalls"][f"R@{recall_value}"])
                 rows.append(row)
@@ -2112,6 +2218,11 @@ def write_csv(path: Path, rows: Sequence[Mapping[str, object]], recall_values: S
         "clean_correct_attack_success_rate",
         "all_valid_attack_success_rate",
         "mean_rank_displacement",
+        "median_rank_displacement",
+        "p90_rank_displacement",
+        "mean_normalized_rank_displacement",
+        "p_cross_1",
+        "p_cross_10",
         "recalls_str",
     ]
     with path.open("w", encoding="utf-8", newline="") as handle:
@@ -2148,6 +2259,7 @@ def main() -> None:
     trace_output_dir = build_trace_output_dir(args, run_dir)
     diagnostics_output_dir = build_diagnostics_output_dir(args, run_dir) if args.compute_diagnostics else None
     attack_image_output_dir = build_attack_image_output_dir(args, run_dir)
+    per_query_ranks_path = build_per_query_ranks_path(run_dir)
     args.trace_output_dir_path = trace_output_dir
     args.diagnostics_output_dir_path = diagnostics_output_dir
     args.attack_image_output_dir_path = attack_image_output_dir
@@ -2168,9 +2280,17 @@ def main() -> None:
     query_counts = {}
     audit_results = {}
     attack_image_manifest: list[Dict[str, object]] = []
+    per_query_rank_rows: list[Dict[str, object]] = []
     for dataset_name in args.datasets:
         logging.info("Evaluating %s.", dataset_name)
-        dataset_results, dataset_runtimes, dataset_query_counts, dataset_audit, dataset_images = evaluate_dataset(
+        (
+            dataset_results,
+            dataset_runtimes,
+            dataset_query_counts,
+            dataset_audit,
+            dataset_images,
+            dataset_per_query_rows,
+        ) = evaluate_dataset(
             args,
             dataset_name,
             models,
@@ -2179,6 +2299,7 @@ def main() -> None:
         runtimes[dataset_name] = dataset_runtimes
         query_counts[dataset_name] = dataset_query_counts
         attack_image_manifest.extend(dataset_images)
+        per_query_rank_rows.extend(dataset_per_query_rows)
         if args.audit_attack_implementation:
             audit_results[dataset_name] = dataset_audit
 
@@ -2228,6 +2349,7 @@ def main() -> None:
         "attack_image_output_dir": str(attack_image_output_dir),
         "attack_image_manifest_csv": str(attack_image_manifest_path) if attack_image_manifest else None,
         "attack_image_manifest": attack_image_manifest,
+        "per_query_ranks_csv": str(per_query_ranks_path),
         "duration_seconds": (datetime.now() - started_at).total_seconds(),
     }
     if args.audit_attack_implementation:
@@ -2254,8 +2376,10 @@ def main() -> None:
             json.dump(report["implementation_audit"], handle, indent=2)
     write_csv(output_csv, rows, args.recall_values)
     write_attack_image_manifest(attack_image_manifest_path, attack_image_manifest)
+    write_per_query_ranks_csv(per_query_ranks_path, per_query_rank_rows)
 
     logging.info("Saved JSON rank evaluation report to %s", output_json)
+    logging.info("Saved per-query rank CSV to %s", per_query_ranks_path)
     if audit_output_json is not None:
         logging.info("Saved JSON implementation audit to %s", audit_output_json)
     logging.info("Saved CSV rank evaluation summary to %s", output_csv)

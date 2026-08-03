@@ -802,6 +802,7 @@ def write_condition_rank_eval_report(
     query_counts: Mapping[str, object],
     audit_results: Mapping[str, object],
     attack_image_manifest: Sequence[Mapping[str, object]],
+    per_query_rank_rows: Sequence[Mapping[str, object]],
     output_json: Path,
     output_csv: Path,
     started_at: datetime,
@@ -811,6 +812,7 @@ def write_condition_rank_eval_report(
     results = {job.dataset: dataset_results}
     rows = rank_eval.flatten_rows(results, args.recall_values)
     attack_image_manifest_path = args.attack_image_output_dir_path / "attack_image_manifest.csv"
+    per_query_ranks_path = rank_eval.build_per_query_ranks_path(output_json.parent)
     report: dict[str, Any] = {
         "timestamp": started_at.isoformat(),
         "command": " ".join(shlex.quote(argument) for argument in command_for_job(config, job, output_json.parent)),
@@ -857,6 +859,7 @@ def write_condition_rank_eval_report(
         "attack_image_output_dir": str(args.attack_image_output_dir_path),
         "attack_image_manifest_csv": str(attack_image_manifest_path) if attack_image_manifest else None,
         "attack_image_manifest": list(attack_image_manifest),
+        "per_query_ranks_csv": str(per_query_ranks_path),
         "duration_seconds": (datetime.now() - started_at).total_seconds(),
     }
     if args.audit_attack_implementation:
@@ -878,6 +881,7 @@ def write_condition_rank_eval_report(
         json.dump(report, handle, indent=2)
     rank_eval.write_csv(output_csv, rows, args.recall_values)
     rank_eval.write_attack_image_manifest(attack_image_manifest_path, attack_image_manifest)
+    rank_eval.write_per_query_ranks_csv(per_query_ranks_path, per_query_rank_rows)
 
 
 def run_condition_in_context(
@@ -905,13 +909,18 @@ def run_condition_in_context(
             try:
                 args = rank_eval_args_for_job(config, job, job_dir)
                 configure_rank_eval_output_dirs(args, job_dir)
-                dataset_results, runtimes, query_counts, audit_results, image_manifest = (
-                    rank_eval.evaluate_condition_from_context(
-                        args,
-                        context,
-                        job.dataset,
-                        job.condition.epsilon,
-                    )
+                (
+                    dataset_results,
+                    runtimes,
+                    query_counts,
+                    audit_results,
+                    image_manifest,
+                    per_query_rank_rows,
+                ) = rank_eval.evaluate_condition_from_context(
+                    args,
+                    context,
+                    job.dataset,
+                    job.condition.epsilon,
                 )
                 write_condition_rank_eval_report(
                     config,
@@ -922,6 +931,7 @@ def run_condition_in_context(
                     query_counts,
                     audit_results,
                     image_manifest,
+                    per_query_rank_rows,
                     output_json,
                     output_csv,
                     started_at,

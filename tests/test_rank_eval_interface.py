@@ -1,4 +1,5 @@
 import contextlib
+import csv
 import io
 import sys
 import tempfile
@@ -17,6 +18,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src import rank_eval
+from src.retrieval_metrics import (
+    attack_success_metrics,
+    compute_recalls_from_features,
+    nearest_positive_ranks,
+    rank_displacement_summary,
+)
 
 
 def _dummy_dino_model():
@@ -190,6 +197,31 @@ class RankEvalInterfaceTests(unittest.TestCase):
         self.assertEqual(rows[0]["model"], "base")
         self.assertEqual(rows[0]["condition"], "clean_all_queries")
         self.assertEqual(rows[0]["R@1"], 10.0)
+
+    def test_flatten_rows_reports_robust_displacement_statistics(self):
+        rows = rank_eval.flatten_rows(
+            {
+                "msls": {
+                    "base": {
+                        "rank_pgd_linf_eps_0.01": {
+                            "recalls": {"R@1": 10.0},
+                            "recalls_str": "R@1: 10.0",
+                            "rank_displacement": rank_displacement_summary(
+                                np.array([1, 1, 3], dtype=np.int64),
+                                np.array([1, 4, 900], dtype=np.int64),
+                                database_size=1000,
+                            ),
+                        }
+                    }
+                }
+            },
+            [1],
+        )
+
+        self.assertAlmostEqual(rows[0]["median_rank_displacement"], 3.0)
+        self.assertAlmostEqual(rows[0]["p_cross_1"], 1.0 / 3.0)
+        self.assertAlmostEqual(rows[0]["p_cross_10"], 1.0 / 3.0)
+        self.assertAlmostEqual(rows[0]["mean_normalized_rank_displacement"], 900.0 / 3.0 / 1000.0)
 
     def test_default_outputs_use_timestamped_rank_eval_run_dir(self):
         args = Namespace(output_json=None, output_csv=None)
@@ -722,6 +754,7 @@ class RankEvalInterfaceTests(unittest.TestCase):
                 seed=0,
                 device="cpu",
                 model_tags=["base", "adv"],
+                model_paths=["base.pth", "adv.pth"],
                 rank_attack="rank_pgd_linf",
                 rank_steps=1,
                 rank_restarts=1,
@@ -761,7 +794,7 @@ class RankEvalInterfaceTests(unittest.TestCase):
             rank_eval.generate_attacked_query_features = fake_generate
             rank_eval.write_trace_csvs = fake_write_trace_csvs
 
-            results, runtimes, _, _, _ = rank_eval.evaluate_condition_from_context(
+            results, runtimes, _, _, _, per_query_rows = rank_eval.evaluate_condition_from_context(
                 make_args(shared_attacks=False), build_context(), "msls", 0.01
             )
             per_model_calls = list(generation_calls)
@@ -769,7 +802,7 @@ class RankEvalInterfaceTests(unittest.TestCase):
             per_model_trace_calls = list(trace_calls)
             trace_calls.clear()
 
-            shared_results, shared_runtimes, _, _, _ = rank_eval.evaluate_condition_from_context(
+            shared_results, shared_runtimes, _, _, _, _ = rank_eval.evaluate_condition_from_context(
                 make_args(shared_attacks=True), build_context(), "msls", 0.01
             )
         finally:
@@ -787,6 +820,13 @@ class RankEvalInterfaceTests(unittest.TestCase):
         self.assertEqual(results["base"][condition]["attack_reference_model"], "base")
         self.assertEqual(results["adv"][condition]["attack_reference_model"], "adv")
         self.assertEqual(set(runtimes["attack_seconds"][condition]), {"base", "adv"})
+
+        # Every evaluated (model, query) pair contributes one per-query rank row.
+        self.assertEqual(len(per_query_rows), 4)
+        self.assertEqual({row["model_tag"] for row in per_query_rows}, {"base", "adv"})
+        self.assertEqual({row["checkpoint_tag"] for row in per_query_rows}, {"base.pth", "adv.pth"})
+        self.assertEqual({row["condition"] for row in per_query_rows}, {condition})
+        self.assertEqual({int(row["query_id"]) for row in per_query_rows}, {0, 1})
 
         self.assertEqual([call["models"] for call in generation_calls], [["base", "adv"]])
         self.assertEqual(generation_calls[0]["attack"][1], "model_base")
@@ -833,6 +873,7 @@ class RankEvalInterfaceTests(unittest.TestCase):
                 seed=0,
                 device="cpu",
                 model_tags=["base", "adv"],
+                model_paths=["base.pth", "adv.pth"],
                 rank_attack="rank_pgd_linf",
                 rank_steps=1,
                 rank_restarts=1,
@@ -880,10 +921,10 @@ class RankEvalInterfaceTests(unittest.TestCase):
             rank_eval.generate_attacked_query_features = fake_generate
             rank_eval.write_trace_csvs = fake_write_trace_csvs
 
-            per_model_results, _, _, per_model_audit, _ = rank_eval.evaluate_condition_from_context(
+            per_model_results, _, _, per_model_audit, _, _ = rank_eval.evaluate_condition_from_context(
                 make_args(shared_attacks=False), build_context(), "msls", 0.01
             )
-            _, _, _, shared_audit, _ = rank_eval.evaluate_condition_from_context(
+            _, _, _, shared_audit, _, _ = rank_eval.evaluate_condition_from_context(
                 make_args(shared_attacks=True), build_context(), "msls", 0.01
             )
         finally:
@@ -944,6 +985,86 @@ class RankEvalInterfaceTests(unittest.TestCase):
         self.assertEqual(cached_seconds, 0.0)
         call_names = [name for name, _call_args, _call_kwargs in manager.mock_calls]
         self.assertEqual(call_names, ["clear_cuda_cache", "build_attack_targets"])
+
+    def test_per_query_ranks_path_defaults_to_run_dir(self):
+        run_dir = Path("test/rank_eval/run")
+
+        self.assertEqual(rank_eval.build_per_query_ranks_path(run_dir), run_dir / "per_query_ranks.csv")
+
+    def test_checkpoint_tag_resolves_from_model_paths(self):
+        args = Namespace(model_tags=["base", "trained"], model_paths=["a/base.pth", "b/best_model.pth"])
+
+        self.assertEqual(rank_eval.checkpoint_tag_for_model(args, "trained"), "b/best_model.pth")
+        self.assertEqual(rank_eval.checkpoint_tag_for_model(args, "missing"), "")
+
+    def test_per_query_rank_csv_reproduces_summary_metrics(self):
+        database = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]], dtype=np.float32)
+        clean_queries = np.array([[0.05, 0.0], [1.9, 0.0], [3.05, 0.0]], dtype=np.float32)
+        attacked_queries = np.array([[2.05, 0.0], [1.95, 0.0], [3.05, 0.0]], dtype=np.float32)
+        positives = [
+            np.array([0], dtype=np.int64),
+            np.array([2], dtype=np.int64),
+            np.array([3], dtype=np.int64),
+        ]
+        query_ids = np.array([4, 9, 17], dtype=np.int64)
+        clean_ranks = nearest_positive_ranks(database, clean_queries, positives)
+        attacked_ranks = nearest_positive_ranks(database, attacked_queries, positives)
+
+        rows = rank_eval.build_per_query_rank_rows(
+            "msls",
+            "trained",
+            "logs/run/best_model.pth",
+            "rank_pgd_linf_eps_0.01",
+            0.01,
+            query_ids,
+            clean_ranks,
+            attacked_ranks,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "per_query_ranks.csv"
+            rank_eval.write_per_query_ranks_csv(path, rows)
+            with path.open(encoding="utf-8", newline="") as handle:
+                reader = csv.DictReader(handle)
+                self.assertEqual(reader.fieldnames, list(rank_eval.PER_QUERY_RANK_FIELDNAMES))
+                written = list(reader)
+
+        self.assertEqual([int(row["query_id"]) for row in written], [4, 9, 17])
+        self.assertEqual({row["dataset"] for row in written}, {"msls"})
+        self.assertEqual({row["model_tag"] for row in written}, {"trained"})
+        self.assertEqual({row["checkpoint_tag"] for row in written}, {"logs/run/best_model.pth"})
+        self.assertEqual({row["condition"] for row in written}, {"rank_pgd_linf_eps_0.01"})
+
+        clean_correct = [row["clean_correct_at_1"] == "True" for row in written]
+        attacked_correct = [row["attacked_correct_at_1"] == "True" for row in written]
+        recomputed_clean_ranks = np.array([int(row["clean_rank"]) for row in written], dtype=np.int64)
+        recomputed_attacked_ranks = np.array([int(row["attacked_rank"]) for row in written], dtype=np.int64)
+
+        clean_recalls = compute_recalls_from_features(database, clean_queries, positives, [1])
+        attacked_recalls = compute_recalls_from_features(database, attacked_queries, positives, [1])
+        success = attack_success_metrics(clean_ranks, attacked_ranks)
+        displacement = rank_displacement_summary(clean_ranks, attacked_ranks, database_size=len(database))
+
+        # Recalls accumulate in float32, so recomputed values match to float32 precision.
+        self.assertAlmostEqual(sum(clean_correct) / len(written) * 100.0, clean_recalls["recalls"]["R@1"], places=4)
+        self.assertAlmostEqual(sum(attacked_correct) / len(written) * 100.0, attacked_recalls["recalls"]["R@1"], places=4)
+        broken = sum(1 for clean, attacked in zip(clean_correct, attacked_correct) if clean and not attacked)
+        self.assertAlmostEqual(broken / sum(clean_correct) * 100.0, success["clean_correct"]["rate"], places=5)
+        self.assertAlmostEqual(
+            float(np.mean(recomputed_attacked_ranks - recomputed_clean_ranks)),
+            displacement["mean"],
+            places=5,
+        )
+
+    def test_per_query_rank_csv_is_written_even_when_empty(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "per_query_ranks.csv"
+            rank_eval.write_per_query_ranks_csv(path, [])
+
+            self.assertTrue(path.is_file())
+            self.assertEqual(
+                path.read_text(encoding="utf-8").splitlines()[0].split(","),
+                list(rank_eval.PER_QUERY_RANK_FIELDNAMES),
+            )
 
     def test_grad_checkpointing_flag_defaults_off(self):
         parser = rank_eval.build_parser()
