@@ -32,11 +32,16 @@ ARCHS=${PHASE0_ARCHS:-"supervlad boq mixvpr"}
 EPSILONS=${PHASE0_EPSILONS:-"0.01 0.1"}
 OUTPUT_ROOT=${PHASE0_OUTPUT_ROOT:-output/phase0_regen}
 
-# Recovered from the original run metadata. The SuperVLAD pair below is the one the
-# current paper reports; both files are absent from this working tree, so those
-# conditions are skipped with a warning unless the override variables point at them.
-SUPERVLAD_BASE_PATH=${SUPERVLAD_BASE_PATH:-checkpoints/SuperVLAD.pth}
-SUPERVLAD_ADV_PATH=${SUPERVLAD_ADV_PATH:-checkpoints/perceptual_adv_checkpoint.pth}
+# BoQ and MixVPR paths are recovered verbatim from the original run metadata.
+#
+# The SuperVLAD pair is NOT: the checkpoints the original run used
+# (checkpoints/SuperVLAD.pth, checkpoints/perceptual_adv_checkpoint.pth) are absent from
+# this working tree. The pair below is the current SuperVLAD base release plus the
+# adversarially fine-tuned checkpoint from this project, which is what we carry forward.
+# SuperVLAD numbers from this script are therefore NOT comparable to the SuperVLAD row of
+# the paper's existing table.
+SUPERVLAD_BASE_PATH=${SUPERVLAD_BASE_PATH:-checkpoints/SuperVLAD_base.pth}
+SUPERVLAD_ADV_PATH=${SUPERVLAD_ADV_PATH:-checkpoints/supervlad_adv_trained.pth}
 BOQ_BASE_PATH=checkpoints/boq_dinov2_12288.pth
 BOQ_ADV_PATH=logs/boq_perceptual_adv_training/2026-07-13_07-23-11/best_model.pth
 MIXVPR_BASE_PATH='third_party/VPR-methods-evaluation/trained_models/mixvpr/resnet50_MixVPR_4096_channels(1024)_rows(4)'
@@ -57,7 +62,7 @@ run_condition() {
       model_args=(
         --model_type=supervlad
         --model_paths "$SUPERVLAD_BASE_PATH" "$SUPERVLAD_ADV_PATH"
-        --model_tags base checkpoint
+        --model_tags base best
         --foundation_model_path=checkpoints/dinov2_vitb14_pretrain.pth
         --backbone=dino
         --supervlad_clusters=4
