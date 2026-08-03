@@ -35,6 +35,7 @@ Python 3.12 on Linux x86-64 is the reference environment.
 
 ```bash
 python -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -48,15 +49,15 @@ python -m pip install git+https://github.com/fra31/auto-attack.git
 
 ## Data and checkpoints
 
-Evaluation datasets live under `datasets/<name>/images/test/` with `database/` and `queries/` splits (e.g. `msls`, `sped`, `nordland`). Checkpoints must exist locally under `checkpoints/` — evaluation scripts validate paths up front and never download weights. SuperVLAD additionally needs the DINOv2 foundation weights (`checkpoints/dinov2_vitb14_pretrain.pth`).
+Evaluation datasets live under `datasets/<name>/images/test/` with `database/` and `queries/` splits (e.g. `msls`, `sped`, `nordland`). Checkpoints for the adversarially trained models are available in the [Google Drive checkpoint folder](https://drive.google.com/drive/folders/1dP61euhUI2I5e9e-FE1A_Vvf09b-fLQ1?usp=sharing).
+
+Download the required checkpoints to `checkpoints/` before running an evaluation; the evaluation scripts validate paths up front and never download weights automatically. SuperVLAD additionally needs the DINOv2 foundation weights (`checkpoints/dinov2_vitb14_pretrain.pth`).
 
 ## Usage
 
 The commands below show the shape of each workflow with `<placeholders>`. Ready-to-run examples with real flag values are in the `scripts/` directory.
 
 ### Training
-
-Perceptual adversarial training (wrappers: `scripts/run_super_vlad_vpr_adv_training.sh`, `scripts/run_boq_vpr_adv_training.sh`, `scripts/run_mix_vpr_adv_training.sh`):
 
 ```bash
 python train.py \
@@ -76,8 +77,6 @@ python -m src.fgsm_train \
 ```
 
 ### Rank attack evaluation
-
-Wrapper: `scripts/run_rank_eval.sh` (see also `scripts/boq_mixvpr_eval.sh`).
 
 ```bash
 python eval.py \
@@ -101,8 +100,6 @@ python eval.py perceptual \
 
 ### FGSM evaluation
 
-Wrappers: `scripts/run_fgsm_dual_eval.sh`, `scripts/run_fgsm_checkpoint_list_eval.sh`.
-
 ```bash
 python src/fgsm_eval.py \
   --eval_datasets_folder=<datasets-folder> --eval_dataset_name=<dataset> \
@@ -119,4 +116,4 @@ python -m unittest discover tests
 
 ## Outputs
 
-Evaluation runs write timestamped JSON/CSV reports and logs under `test/rank_eval/` and `test/perceptual_eval/`; training runs write logs, checkpoints, and TensorBoard files under `logs/`.
+Evaluation runs write timestamped JSON/CSV reports and logs under `output/` directory; training runs write logs, checkpoints, and TensorBoard files under `logs/`.
