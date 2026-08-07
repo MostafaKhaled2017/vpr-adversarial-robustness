@@ -1,6 +1,7 @@
 import csv
 import json
 import logging
+from dataclasses import replace
 from datetime import datetime
 from os.path import exists, join
 from typing import Dict, List, Sequence
@@ -13,13 +14,42 @@ from tqdm import tqdm
 import test
 import util
 from .checkpoints import apply_lr_schedule, maybe_remove_old_checkpoint, should_drop_lr_on_plateau
+from .collapse_metrics import collapse_report, collect_descriptors, reference_sample_indices
 from .config import amp_autocast, unwrap_model
+from .attacks import attack_strength_scale
 from .eval import evaluate_against_attacks_retrieval, make_attack_name
-from .losses import compute_align_loss, compute_rank_loss, loss_function, query_is_correct
+from .losses import (
+    compute_align_loss,
+    compute_listwise_loss,
+    compute_rank_loss,
+    loss_function,
+    query_is_correct,
+)
+from .negative_pool import NegativePool
 from .targets import RetrievalAttackBatch, select_rank_targets
 
 
 REPORTED_RECALL_VALUES = (1, 5, 10, 100)
+
+
+def compute_defense_loss(query_descriptors: Tensor, attack_targets: RetrievalAttackBatch, args) -> Tensor:
+    """Dispatch to the configured adversarial defense objective (Task 2.3)."""
+    if getattr(args, "defense_loss", "hinge") == "listwise":
+        return compute_listwise_loss(
+            query_descriptors,
+            attack_targets.positive_descriptors,
+            attack_targets.negative_descriptors,
+            getattr(args, "listwise_tau", 0.05),
+            getattr(args, "listwise_k", 1),
+            attack_targets.positive_mask,
+        )
+    return compute_rank_loss(
+        query_descriptors,
+        attack_targets.positive_descriptors,
+        attack_targets.negative_descriptors,
+        args.adv_margin,
+        attack_targets.positive_mask,
+    )
 
 
 def compute_attack_losses(
@@ -47,12 +77,7 @@ def compute_attack_losses(
         with amp_autocast(False, args.device):
             adv_query_descriptors = model(adv_queries, queryflag=0)
         adv_query_descriptors = adv_query_descriptors.float()
-        rank_loss = compute_rank_loss(
-            adv_query_descriptors,
-            attack_targets.positive_descriptors,
-            attack_targets.negative_descriptors,
-            args.adv_margin,
-        )
+        rank_loss = compute_defense_loss(adv_query_descriptors, attack_targets, args)
         align_loss = compute_align_loss(
             attack_targets.clean_query_descriptors,
             adv_query_descriptors,
@@ -90,6 +115,83 @@ def compute_attack_losses(
         "align_loss": align_loss,
         "combined_adv_loss": combined_adv_loss,
     }
+
+
+def refresh_negative_pool(negative_pool, args, rank_targets, batch_descriptors, batch_place_ids, place_id):
+    """Re-mine the attack's negatives from the pool plus the current batch, then refill it.
+
+    The pool is pushed on every step whether or not targets were produced, so its contents
+    track the encoder rather than the subset of steps that happened to yield targets.
+    """
+    if negative_pool is None or not negative_pool.enabled:
+        return rank_targets
+
+    if rank_targets is not None:
+        mined = negative_pool.mine(
+            rank_targets.clean_query_descriptors,
+            place_id[rank_targets.query_indices, 0],
+            args.adv_negatives,
+            batch_descriptors=batch_descriptors,
+            batch_place_ids=batch_place_ids,
+        )
+        if mined is not None:
+            rank_targets = replace(rank_targets, negative_descriptors=mined)
+
+    negative_pool.push(batch_descriptors, batch_place_ids)
+    return rank_targets
+
+
+def measure_collapse(args, model, val_ds, reference_descriptors, sample_indices):
+    """Collapse and neighborhood-distortion report for the current model, or None."""
+    if reference_descriptors is None or not sample_indices:
+        return None
+    current = collect_descriptors(
+        model,
+        val_ds,
+        sample_indices,
+        args.infer_batch_size,
+        args.device,
+        args.mixed_precision,
+    )
+    return collapse_report(current, reference_descriptors, getattr(args, "collapse_knn", 10))
+
+
+def log_collapse_report(writer, report, epoch_num: int) -> None:
+    if report is None:
+        return
+    for metric_name, value in report.items():
+        writer.add_scalar(f"collapse/{metric_name}", float(value), epoch_num)
+    logging.info(
+        "Collapse monitor: knn_overlap = %.4f, mean_pairwise_cosine = %.4f, "
+        "dimension_std_mean = %.4f, collapsed_dimension_fraction = %.4f",
+        report["knn_overlap"],
+        report["mean_pairwise_cosine"],
+        report["dimension_std_mean"],
+        report["collapsed_dimension_fraction"],
+    )
+
+
+def apply_attack_curriculum(train_attacks, args, epoch_num: int) -> float:
+    """Set this epoch's attack budget on the *training* attacks only (Task 2.5).
+
+    Validation attacks are separate instances (see train.py) and deliberately stay at full
+    strength: the selection score has to mean the same thing in every epoch.
+    """
+    ramp_epochs = int(getattr(args, "attack_ramp_epochs", 0))
+    if ramp_epochs <= 0 or not train_attacks:
+        return 1.0
+
+    scale = attack_strength_scale(
+        epoch_num,
+        args.adv_warmup_epochs,
+        ramp_epochs,
+        getattr(args, "attack_ramp_min_scale", 0.1),
+    )
+    for attack in train_attacks:
+        set_strength_scale = getattr(attack, "set_strength_scale", None)
+        if set_strength_scale is not None:
+            set_strength_scale(scale)
+    return scale
 
 
 def resolved_selection_robust_weight(args) -> float:
@@ -176,6 +278,7 @@ def build_validation_metrics_record(
     epoch_num: int,
     metrics: Dict[str, object],
     validation_scores: Dict[str, float],
+    collapse: Dict[str, float] | None = None,
 ) -> Dict[str, object]:
     attacks = {
         attack_name: {f"R@{recall_at}": recall_value(attack_metrics, recall_at) for recall_at in REPORTED_RECALL_VALUES}
@@ -195,6 +298,7 @@ def build_validation_metrics_record(
         "clean_score": validation_scores["clean_score"],
         "robust_score": validation_scores["robust_score"],
         "selection_score": validation_scores["selection_score"],
+        "collapse": collapse,
     }
 
 
@@ -302,6 +406,30 @@ def run_training(
     validation_attacks,
 ):
     start_time = datetime.now()
+
+    # Reference embedding for neighborhood-distortion monitoring, captured before the first
+    # optimizer step. On a resumed run this is the resumed weights, so the metric then reads
+    # as drift since resume rather than drift from pretrained.
+    collapse_sample_indices = []
+    reference_descriptors = None
+    if int(getattr(args, "collapse_sample_size", 0)) > 0:
+        collapse_sample_indices = reference_sample_indices(val_ds, args.collapse_sample_size)
+        if collapse_sample_indices:
+            reference_descriptors = collect_descriptors(
+                model,
+                val_ds,
+                collapse_sample_indices,
+                args.infer_batch_size,
+                args.device,
+                args.mixed_precision,
+            )
+            logging.info(
+                "Captured collapse reference embedding on %d validation images.",
+                len(collapse_sample_indices),
+            )
+
+    negative_pool = None
+    negative_pool_size = int(getattr(args, "negative_pool_size", 0))
     lr_drop_epochs = [int(epoch_str) for epoch_str in args.lr_schedule.split(",") if epoch_str.strip()]
     iteration = start_epoch * len(train_loader)
     current_lr = float(optimizer.param_groups[0]["lr"])
@@ -360,7 +488,14 @@ def run_training(
         else:
             lr = current_lr
         apply_lr_schedule(optimizer, lr)
-        logging.info("Start epoch %02d with lr %.2e", epoch_num, lr)
+        attack_scale = apply_attack_curriculum(train_attacks, args, epoch_num)
+        writer.add_scalar("train/attack_strength_scale", attack_scale, epoch_num)
+        logging.info(
+            "Start epoch %02d with lr %.2e and attack strength scale %.3f",
+            epoch_num,
+            lr,
+            attack_scale,
+        )
 
         epoch_clean_losses: List[float] = []
         epoch_adv_rank_losses: List[float] = []
@@ -385,7 +520,26 @@ def run_training(
                         clean_descriptors_eval = model(flat_images, queryflag=0)
                     clean_descriptors_eval = clean_descriptors_eval.float()
                 clean_descriptor_view = clean_descriptors_eval.reshape(batch_size, images_per_place, -1)
-                rank_targets = select_rank_targets(clean_descriptor_view, place_id, args.adv_negatives)
+                rank_targets = select_rank_targets(
+                    clean_descriptor_view,
+                    place_id,
+                    args.adv_negatives,
+                    multi_positive=getattr(args, "multi_positive", False),
+                )
+                if negative_pool_size > 0 and negative_pool is None:
+                    negative_pool = NegativePool(
+                        capacity=negative_pool_size,
+                        descriptor_dim=clean_descriptors_eval.shape[1],
+                        device=clean_descriptors_eval.device,
+                    )
+                rank_targets = refresh_negative_pool(
+                    negative_pool,
+                    args,
+                    rank_targets,
+                    clean_descriptors_eval,
+                    labels,
+                    place_id,
+                )
 
             use_adversarial_branch = epoch_num >= args.adv_warmup_epochs
             step_attacks = train_attacks if use_adversarial_branch else []
@@ -402,6 +556,7 @@ def run_training(
                         clean_query_descriptors,
                         selected_targets.positive_descriptors,
                         selected_targets.negative_descriptors,
+                        selected_targets.positive_mask,
                     )
                     if correct_mask.any():
                         selected_targets = selected_targets.subset(correct_mask)
@@ -554,9 +709,11 @@ def run_training(
         clean_score = validation_scores["clean_score"]
         robust_score = validation_scores["robust_score"]
         selection_score = validation_scores["selection_score"]
-        validation_record = build_validation_metrics_record(epoch_num + 1, metrics, validation_scores)
+        collapse = measure_collapse(args, model, val_ds, reference_descriptors, collapse_sample_indices)
+        validation_record = build_validation_metrics_record(epoch_num + 1, metrics, validation_scores, collapse)
         append_validation_metrics(args, validation_record)
         log_validation_recalls(f"after epoch {epoch_num + 1:02d}", metrics)
+        log_collapse_report(writer, collapse, epoch_num)
 
         writer.add_scalar("val/clean_score", clean_score, epoch_num)
         writer.add_scalar("val/robust_score", robust_score, epoch_num)
@@ -605,6 +762,17 @@ def run_training(
         not_improved = next_not_improved
         writer.add_scalar("early_stop/best_score", best_score, epoch_num)
         writer.add_scalar("early_stop/not_improved_epochs", not_improved, epoch_num)
+
+        abort_threshold = getattr(args, "collapse_abort_knn", None)
+        if abort_threshold is not None and collapse is not None and collapse["knn_overlap"] < abort_threshold:
+            logging.error(
+                "Aborting: k-NN overlap %.4f fell below --collapse_abort_knn %.4f after epoch %02d. "
+                "The embedding's neighbourhood structure has been destroyed.",
+                collapse["knn_overlap"],
+                abort_threshold,
+                epoch_num + 1,
+            )
+            break
 
         if not_improved >= args.patience:
             logging.info(

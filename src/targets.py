@@ -10,10 +10,48 @@ from .faiss_utils import create_flat_l2_index
 
 @dataclass
 class RetrievalAttackBatch:
+    """Targets for one batch of retrieval attacks.
+
+    ``positive_descriptors`` carries either the single hardest positive per query with
+    shape ``(B, D)`` — the pre-Phase-2 representation, still produced by the evaluation
+    paths — or the full padded positive set with shape ``(B, P, D)`` when multi-positive
+    targeting is enabled. ``positive_mask`` marks the valid entries of the padded set and
+    is ``None`` in the single-positive case. Consumers should read ``positive_bank`` and
+    ``positive_bank_mask``, which normalise both representations to ``(B, P, D)`` and
+    ``(B, P)``.
+    """
+
     query_indices: Tensor
     clean_query_descriptors: Tensor
     positive_descriptors: Tensor
     negative_descriptors: Tensor
+    positive_mask: Optional[Tensor] = None
+
+    @property
+    def positive_bank(self) -> Tensor:
+        """Positive descriptors as ``(B, P, D)`` regardless of how they were stored."""
+        if self.positive_descriptors.dim() == 2:
+            return self.positive_descriptors.unsqueeze(1)
+        return self.positive_descriptors
+
+    @property
+    def positive_bank_mask(self) -> Tensor:
+        """Validity mask as ``(B, P)``; all-valid when no mask was supplied."""
+        if self.positive_mask is not None:
+            return self.positive_mask
+        bank = self.positive_bank
+        return torch.ones(bank.shape[:2], dtype=torch.bool, device=bank.device)
+
+    @property
+    def hardest_positive_descriptors(self) -> Tensor:
+        """Legacy ``(B, D)`` view: the valid positive farthest from the clean query."""
+        bank = self.positive_bank
+        if bank.shape[1] == 1:
+            return bank[:, 0, :]
+        distances = torch.norm(bank - self.clean_query_descriptors.unsqueeze(1), p=2, dim=2)
+        distances = distances.masked_fill(~self.positive_bank_mask, float("-inf"))
+        hardest = distances.argmax(dim=1)
+        return bank[torch.arange(bank.shape[0], device=bank.device), hardest, :]
 
     def subset(self, selector: Tensor) -> "RetrievalAttackBatch":
         return RetrievalAttackBatch(
@@ -21,13 +59,30 @@ class RetrievalAttackBatch:
             clean_query_descriptors=self.clean_query_descriptors[selector],
             positive_descriptors=self.positive_descriptors[selector],
             negative_descriptors=self.negative_descriptors[selector],
+            positive_mask=None if self.positive_mask is None else self.positive_mask[selector],
         )
 
     def __len__(self) -> int:
         return int(self.query_indices.shape[0])
 
 
-def select_rank_targets(clean_descriptors: Tensor, place_ids: Tensor, adv_negatives: int) -> Optional[RetrievalAttackBatch]:
+def select_rank_targets(
+    clean_descriptors: Tensor,
+    place_ids: Tensor,
+    adv_negatives: int,
+    multi_positive: bool = False,
+    image_mask: Optional[Tensor] = None,
+) -> Optional[RetrievalAttackBatch]:
+    """Mine attack targets from a batch of place-grouped descriptors.
+
+    With ``multi_positive=False`` this keeps the single hardest positive per place, which
+    is the behaviour every pre-Phase-2 run used. With ``multi_positive=True`` it keeps the
+    full positive set per place, padded to the batch maximum and accompanied by a validity
+    mask, so the attack objective can target the *closest* positive instead (Task 2.1).
+
+    ``image_mask`` optionally marks which of the ``images_per_place`` slots hold real
+    images, which is what makes places with differing positive counts representable.
+    """
     batch_size, images_per_place, descriptor_dim = clean_descriptors.shape
     if images_per_place < 2:
         return None
@@ -36,25 +91,27 @@ def select_rank_targets(clean_descriptors: Tensor, place_ids: Tensor, adv_negati
     flat_place_ids = place_ids.reshape(-1)
     query_descriptors = clean_descriptors[:, 0, :]
 
+    if image_mask is None:
+        flat_image_mask = torch.ones(batch_size * images_per_place, dtype=torch.bool, device=clean_descriptors.device)
+    else:
+        flat_image_mask = image_mask.reshape(-1).to(device=clean_descriptors.device, dtype=torch.bool)
+
     query_indices: List[int] = []
     clean_queries: List[Tensor] = []
-    positives: List[Tensor] = []
+    positive_sets: List[Tensor] = []
     negatives: List[Tensor] = []
     min_negatives = None
 
     for place_offset in range(batch_size):
         place_label = place_ids[place_offset, 0]
-        positive_candidates = clean_descriptors[place_offset, 1:, :]
+        candidate_mask = flat_image_mask.reshape(batch_size, images_per_place)[place_offset, 1:]
+        positive_candidates = clean_descriptors[place_offset, 1:, :][candidate_mask]
         if positive_candidates.shape[0] == 0:
             continue
 
-        positive_distances = torch.norm(
-            positive_candidates - query_descriptors[place_offset].unsqueeze(0),
-            p=2,
-            dim=1,
-        )
-        hardest_positive_index = int(torch.argmax(positive_distances).item())
-        negative_candidates = flat_descriptors[flat_place_ids != place_label]
+        # Negatives may never come from a padded slot of another place.
+        negative_selector = (flat_place_ids != place_label) & flat_image_mask
+        negative_candidates = flat_descriptors[negative_selector]
         if negative_candidates.shape[0] == 0:
             continue
 
@@ -70,9 +127,19 @@ def select_rank_targets(clean_descriptors: Tensor, place_ids: Tensor, adv_negati
             largest=False,
         ).indices
 
+        if multi_positive:
+            positive_sets.append(positive_candidates)
+        else:
+            positive_distances = torch.norm(
+                positive_candidates - query_descriptors[place_offset].unsqueeze(0),
+                p=2,
+                dim=1,
+            )
+            hardest_positive_index = int(torch.argmax(positive_distances).item())
+            positive_sets.append(positive_candidates[hardest_positive_index])
+
         query_indices.append(place_offset)
         clean_queries.append(query_descriptors[place_offset])
-        positives.append(positive_candidates[hardest_positive_index])
         negatives.append(negative_candidates[hard_negative_indices])
         min_negatives = current_k if min_negatives is None else min(min_negatives, current_k)
 
@@ -81,12 +148,36 @@ def select_rank_targets(clean_descriptors: Tensor, place_ids: Tensor, adv_negati
 
     trimmed_negatives = [negative[:min_negatives] for negative in negatives]
     device = clean_descriptors.device
+
+    if multi_positive:
+        positive_descriptors, positive_mask = pad_positive_sets(positive_sets, descriptor_dim, device)
+    else:
+        positive_descriptors = torch.stack(positive_sets, dim=0).detach()
+        positive_mask = None
+
     return RetrievalAttackBatch(
         query_indices=torch.tensor(query_indices, dtype=torch.long, device=device),
         clean_query_descriptors=torch.stack(clean_queries, dim=0).detach(),
-        positive_descriptors=torch.stack(positives, dim=0).detach(),
+        positive_descriptors=positive_descriptors,
         negative_descriptors=torch.stack(trimmed_negatives, dim=0).detach(),
+        positive_mask=positive_mask,
     )
+
+
+def pad_positive_sets(
+    positive_sets: List[Tensor],
+    descriptor_dim: int,
+    device: torch.device,
+) -> Tuple[Tensor, Tensor]:
+    """Pad ragged per-query positive sets to ``(B, P_max, D)`` with a validity mask."""
+    max_positives = max(int(positives.shape[0]) for positives in positive_sets)
+    padded = torch.zeros(len(positive_sets), max_positives, descriptor_dim, device=device)
+    mask = torch.zeros(len(positive_sets), max_positives, dtype=torch.bool, device=device)
+    for row, positives in enumerate(positive_sets):
+        count = int(positives.shape[0])
+        padded[row, :count, :] = positives
+        mask[row, :count] = True
+    return padded.detach(), mask
 
 
 def build_attack_targets(

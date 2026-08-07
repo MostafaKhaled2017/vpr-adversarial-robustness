@@ -149,6 +149,75 @@ def build_parser():
         help="Number of initial epochs that train only on the clean loss.",
     )
     parser.add_argument(
+        "--attack_ramp_epochs",
+        type=int,
+        default=0,
+        help="Ramp the training attack budget linearly to full strength over this many "
+        "epochs after --adv_warmup_epochs. 0 disables the curriculum (Task 2.5).",
+    )
+    parser.add_argument(
+        "--attack_ramp_min_scale",
+        type=float,
+        default=0.1,
+        help="Attack budget multiplier at the first adversarial epoch of the ramp.",
+    )
+    parser.add_argument(
+        "--collapse_sample_size",
+        type=int,
+        default=256,
+        help="Validation images used for collapse and neighborhood-distortion monitoring. "
+        "0 disables the monitoring (Task 2.4).",
+    )
+    parser.add_argument(
+        "--collapse_knn",
+        type=int,
+        default=10,
+        help="Neighbourhood size for the k-NN overlap against the reference embedding.",
+    )
+    parser.add_argument(
+        "--collapse_abort_knn",
+        type=float,
+        default=None,
+        help="Abort training when k-NN overlap against the reference embedding falls below "
+        "this value. Off by default.",
+    )
+    parser.add_argument(
+        "--defense_loss",
+        choices=("hinge", "listwise"),
+        default="hinge",
+        help="Adversarial defense objective. 'hinge' is the pre-Phase-2 margin loss; "
+        "'listwise' is the smooth top-K recall surrogate (Task 2.3). The attack's inner "
+        "objective follows this choice so attack and defense fight over the same thing.",
+    )
+    parser.add_argument(
+        "--listwise_tau",
+        type=float,
+        default=0.05,
+        help="Temperature of the smooth rank. Must be comparable to the descriptor "
+        "distance scale: much smaller and the sigmoid saturates and no gradient flows.",
+    )
+    parser.add_argument(
+        "--listwise_k",
+        type=int,
+        default=1,
+        help="Rank the best positive must reach for the listwise objective to be satisfied.",
+    )
+    parser.add_argument(
+        "--negative_pool_size",
+        type=int,
+        default=0,
+        help="Capacity of the cross-batch FIFO negative pool. 0 disables it and mines "
+        "negatives from the current batch only (Task 2.2).",
+    )
+    parser.add_argument(
+        "--multi_positive",
+        action="store_true",
+        default=False,
+        help="Target every positive of a place instead of only the hardest one. Retrieval "
+        "succeeds if any positive outranks the negatives, so the attack must beat the "
+        "closest positive (Task 2.1).",
+    )
+    parser.add_argument(
         "--adv_margin",
         type=float,
         default=0.1,
@@ -211,6 +280,20 @@ def parse_arguments(argv=None):
         raise ValueError("--lr_plateau_factor must be between 0 and 1 (exclusive)")
     if args.adv_negatives < 1:
         raise ValueError("--adv_negatives must be at least 1")
+    if args.negative_pool_size < 0:
+        raise ValueError("--negative_pool_size must be non-negative")
+    if args.listwise_tau <= 0:
+        raise ValueError("--listwise_tau must be positive")
+    if args.listwise_k < 1:
+        raise ValueError("--listwise_k must be at least 1")
+    if args.collapse_sample_size < 0:
+        raise ValueError("--collapse_sample_size must be non-negative")
+    if args.collapse_knn < 1:
+        raise ValueError("--collapse_knn must be at least 1")
+    if args.attack_ramp_epochs < 0:
+        raise ValueError("--attack_ramp_epochs must be non-negative")
+    if not 0.0 <= args.attack_ramp_min_scale <= 1.0:
+        raise ValueError("--attack_ramp_min_scale must be between 0 and 1 (inclusive)")
     if args.adv_warmup_epochs < 0:
         raise ValueError("--adv_warmup_epochs must be non-negative")
     if args.clip_grad <= 0:

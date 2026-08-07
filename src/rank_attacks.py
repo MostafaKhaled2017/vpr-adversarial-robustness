@@ -5,6 +5,7 @@ import torch
 from torch import Tensor, nn
 
 from .config import denormalize_imagenet, get_normalized_bounds
+from .losses import closest_positive_distance
 from .targets import RetrievalAttackBatch
 
 
@@ -200,7 +201,8 @@ class RankPGDAttack(nn.Module):
         descriptors = self.model(inputs, queryflag=0).float()
         positive_descriptors = targets.positive_descriptors.detach().to(device=inputs.device, dtype=descriptors.dtype)
         negative_descriptors = targets.negative_descriptors.detach().to(device=inputs.device, dtype=descriptors.dtype)
-        positive_distance = torch.norm(descriptors - positive_descriptors, p=2, dim=1)
+        positive_mask = None if targets.positive_mask is None else targets.positive_mask.to(device=inputs.device)
+        positive_distance = closest_positive_distance(descriptors, positive_descriptors, positive_mask)
         negative_distance = torch.norm(descriptors.unsqueeze(1) - negative_descriptors, p=2, dim=2)
         hard_negative_distance = negative_distance.min(dim=1).values
         score = self.config.margin + positive_distance - hard_negative_distance

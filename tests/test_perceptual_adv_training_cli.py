@@ -287,5 +287,67 @@ class MatchedCleanOnlyFineTuneTests(unittest.TestCase):
         self.assertEqual(args.adversarial_attack_names, ["PerceptualPGDAttack"])
 
 
+class Phase2FlagDefaultTests(unittest.TestCase):
+    """Every Phase 2 component is separately switchable and OFF by default.
+
+    Phase 1's PAT re-run must reproduce the pre-Phase-2 method exactly, and Phase 4's
+    ablations need each component to be independently toggleable, so no new flag may
+    change behaviour unless it is asked for.
+    """
+
+    def parse(self, *extra):
+        return parse_arguments(["--eval_datasets_folder", "/tmp", "--device", "cpu", *extra])
+
+    def test_phase2_components_default_to_the_pre_phase2_method(self):
+        args = self.parse()
+
+        self.assertFalse(args.multi_positive)
+        self.assertEqual(args.negative_pool_size, 0)
+        self.assertEqual(args.defense_loss, "hinge")
+        self.assertEqual(args.attack_ramp_epochs, 0)
+        self.assertIsNone(args.collapse_abort_knn)
+
+    def test_each_component_can_be_enabled_independently(self):
+        args = self.parse(
+            "--multi_positive",
+            "--negative_pool_size=4096",
+            "--defense_loss=listwise",
+            "--listwise_tau=0.01",
+            "--listwise_k=5",
+            "--attack_ramp_epochs=5",
+            "--attack_ramp_min_scale=0.25",
+            "--collapse_abort_knn=0.2",
+        )
+
+        self.assertTrue(args.multi_positive)
+        self.assertEqual(args.negative_pool_size, 4096)
+        self.assertEqual(args.defense_loss, "listwise")
+        self.assertAlmostEqual(args.listwise_tau, 0.01)
+        self.assertEqual(args.listwise_k, 5)
+        self.assertEqual(args.attack_ramp_epochs, 5)
+        self.assertAlmostEqual(args.attack_ramp_min_scale, 0.25)
+        self.assertAlmostEqual(args.collapse_abort_knn, 0.2)
+
+    def test_negative_pool_size_rejects_negative_values(self):
+        with self.assertRaisesRegex(ValueError, "negative_pool_size"):
+            self.parse("--negative_pool_size=-1")
+
+    def test_listwise_tau_must_be_positive(self):
+        with self.assertRaisesRegex(ValueError, "listwise_tau"):
+            self.parse("--listwise_tau=0")
+
+    def test_listwise_k_must_be_at_least_one(self):
+        with self.assertRaisesRegex(ValueError, "listwise_k"):
+            self.parse("--listwise_k=0")
+
+    def test_attack_ramp_min_scale_must_be_a_fraction(self):
+        with self.assertRaisesRegex(ValueError, "attack_ramp_min_scale"):
+            self.parse("--attack_ramp_min_scale=1.5")
+
+    def test_unknown_defense_loss_is_rejected(self):
+        with self.assertRaises(SystemExit):
+            self.parse("--defense_loss=triplet")
+
+
 if __name__ == "__main__":
     unittest.main()
