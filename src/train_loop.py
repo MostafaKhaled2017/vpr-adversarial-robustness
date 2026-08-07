@@ -92,6 +92,15 @@ def compute_attack_losses(
     }
 
 
+def resolved_selection_robust_weight(args) -> float:
+    """Weight actually used for checkpoint selection (see src/cli.py Task 1.1).
+
+    Clean-only fine-tunes resolve to 0.0 so selection is pure clean recall; adversarial
+    runs keep --selection_robust_weight.
+    """
+    return float(getattr(args, "effective_selection_robust_weight", args.selection_robust_weight))
+
+
 def compute_validation_selection_scores(metrics: Dict[str, object], robust_weight: float = 0.75) -> Dict[str, float]:
     clean_score = compute_recall_score(metrics["NoAttack"])
 
@@ -307,7 +316,7 @@ def run_training(
             writer=writer,
             iteration=iteration,
         )
-        initial_scores = compute_validation_selection_scores(initial_metrics, args.selection_robust_weight)
+        initial_scores = compute_validation_selection_scores(initial_metrics, resolved_selection_robust_weight(args))
         initial_record = build_validation_metrics_record(-1, initial_metrics, initial_scores)
         append_validation_metrics(args, initial_record)
         log_validation_recalls("before training", initial_metrics)
@@ -367,13 +376,16 @@ def run_training(
             flat_images = images.reshape(batch_size * images_per_place, channels, height, width)
             labels = place_id.reshape(-1)
 
-            model.eval()
-            with torch.no_grad():
-                with amp_autocast(args.mixed_precision, args.device):
-                    clean_descriptors_eval = model(flat_images, queryflag=0)
-                clean_descriptors_eval = clean_descriptors_eval.float()
-            clean_descriptor_view = clean_descriptors_eval.reshape(batch_size, images_per_place, -1)
-            rank_targets = select_rank_targets(clean_descriptor_view, place_id, args.adv_negatives)
+            clean_descriptor_view = None
+            rank_targets = None
+            if len(train_attacks) > 0:
+                model.eval()
+                with torch.no_grad():
+                    with amp_autocast(args.mixed_precision, args.device):
+                        clean_descriptors_eval = model(flat_images, queryflag=0)
+                    clean_descriptors_eval = clean_descriptors_eval.float()
+                clean_descriptor_view = clean_descriptors_eval.reshape(batch_size, images_per_place, -1)
+                rank_targets = select_rank_targets(clean_descriptor_view, place_id, args.adv_negatives)
 
             use_adversarial_branch = epoch_num >= args.adv_warmup_epochs
             step_attacks = train_attacks if use_adversarial_branch else []
@@ -538,7 +550,7 @@ def run_training(
             writer=writer,
             iteration=iteration,
         )
-        validation_scores = compute_validation_selection_scores(metrics, args.selection_robust_weight)
+        validation_scores = compute_validation_selection_scores(metrics, resolved_selection_robust_weight(args))
         clean_score = validation_scores["clean_score"]
         robust_score = validation_scores["robust_score"]
         selection_score = validation_scores["selection_score"]

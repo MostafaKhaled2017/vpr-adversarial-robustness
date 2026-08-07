@@ -178,5 +178,114 @@ class PerceptualTrainingCliTests(unittest.TestCase):
         self.assertEqual(args.val_batches, 40)
 
 
+class MatchedCleanOnlyFineTuneTests(unittest.TestCase):
+    """Task 1.1 — the clean-only control must be matched to the adversarial run."""
+
+    SHARED_FLAGS = (
+        "--model=supervlad",
+        "--backbone=dino",
+        "--supervlad_clusters=4",
+        "--crossimage_encoder",
+        "--lr=1e-5",
+        "--freeze_te=8",
+        "--num_epochs=100",
+        "--patience=12",
+        "--batch_size=16",
+        "--batches_per_epoch=400",
+        "--lr_plateau_patience=5",
+        "--keep_every=6",
+        "--val_batches=200",
+        "--adv_negatives=5",
+        "--adv_warmup_epochs=1",
+        "--adv_margin=0.1",
+        "--mixed_precision",
+        "--randomize_attack",
+    )
+
+    ADVERSARIAL_FLAGS = (
+        "--attack",
+        "FastLagrangePerceptualAttack(model, bound=0.1, num_iterations=5)",
+        "--attack",
+        "PerceptualPGDAttack(model, bound=0.1, num_iterations=5)",
+    )
+
+    # Fields the two runs are *allowed* to differ in: the attack list itself and the
+    # selection-rule fields derived from it. Everything else must match exactly.
+    ALLOWED_DIFFERENCES = {
+        "attack",
+        "adversarial_attack_names",
+        "is_clean_only",
+        "checkpoint_selection_rule",
+        "effective_selection_robust_weight",
+    }
+
+    def parse(self, *extra):
+        return parse_arguments(["--eval_datasets_folder", "/tmp", "--device", "cpu", *extra])
+
+    def test_clean_only_config_matches_adversarial_config_except_attack_fields(self):
+        adversarial = self.parse(*self.SHARED_FLAGS, *self.ADVERSARIAL_FLAGS)
+        clean_only = self.parse(*self.SHARED_FLAGS)
+
+        adversarial_config = vars(adversarial)
+        clean_config = vars(clean_only)
+        self.assertEqual(set(adversarial_config), set(clean_config))
+
+        differing = {
+            key
+            for key in adversarial_config
+            if adversarial_config[key] != clean_config[key]
+        }
+        self.assertEqual(differing, self.ALLOWED_DIFFERENCES)
+
+    def test_clean_only_keeps_optimizer_and_schedule_fields_identical(self):
+        adversarial = self.parse(*self.SHARED_FLAGS, *self.ADVERSARIAL_FLAGS)
+        clean_only = self.parse(*self.SHARED_FLAGS)
+
+        for field in (
+            "lr",
+            "optim",
+            "lr_schedule",
+            "lr_plateau_patience",
+            "lr_plateau_factor",
+            "weight_decay",
+            "clip_grad",
+            "epochs_num",
+            "patience",
+            "train_batch_size",
+            "batches_per_epoch",
+            "freeze_te",
+            "early_stop_min_delta",
+            "keep_every",
+            "seed",
+            "adv_loss_weight",
+            "adv_align_weight",
+        ):
+            with self.subTest(field=field):
+                self.assertEqual(getattr(adversarial, field), getattr(clean_only, field))
+
+    def test_no_attack_is_an_accepted_attack_expression(self):
+        args = self.parse("--attack", "NoAttack(model)")
+        self.assertEqual(args.attack, ["NoAttack(model)"])
+        self.assertTrue(args.is_clean_only)
+        self.assertEqual(args.adversarial_attack_names, [])
+
+    def test_clean_only_resolves_checkpoint_selection_to_clean_recall(self):
+        args = self.parse("--selection_robust_weight=0.75")
+        self.assertTrue(args.is_clean_only)
+        self.assertEqual(args.checkpoint_selection_rule, "clean_recall")
+        self.assertEqual(args.effective_selection_robust_weight, 0.0)
+
+    def test_adversarial_run_keeps_robust_weighted_selection(self):
+        args = self.parse(
+            "--selection_robust_weight=0.75",
+            "--attack",
+            "PerceptualPGDAttack(model, bound=0.1, num_iterations=5)",
+        )
+        self.assertFalse(args.is_clean_only)
+        self.assertEqual(args.checkpoint_selection_rule, "robust_weighted")
+        self.assertEqual(args.effective_selection_robust_weight, 0.75)
+        self.assertEqual(args.adversarial_attack_names, ["PerceptualPGDAttack"])
+
+
 if __name__ == "__main__":
     unittest.main()

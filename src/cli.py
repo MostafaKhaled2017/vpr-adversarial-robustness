@@ -233,5 +233,26 @@ def parse_arguments(argv=None):
         args.mixvpr_descriptors_dimension = resolve_descriptor_dimension(args)
 
     args.recall_values = list(dict.fromkeys([*args.recall_values, *REQUIRED_RECALL_VALUES]))
-    parse_attack_names(args.attack)
+    resolve_checkpoint_selection_rule(args)
+    return args
+
+
+def resolve_checkpoint_selection_rule(args):
+    """Derive the checkpoint-selection rule from the configured attacks (Task 1.1).
+
+    A clean-only fine-tune produces no adversarial validation signal, so the robust
+    score degenerates to the clean score and ``--selection_robust_weight`` must resolve
+    to pure clean-recall selection. Recording the resolution on ``args`` puts it into
+    ``training_config.yaml`` verbatim, which is what the paper's checkpoint-selection
+    subsection cites.
+    """
+    attack_names = parse_attack_names(args.attack)
+    args.adversarial_attack_names = [name for name in attack_names if name != "NoAttack"]
+    args.is_clean_only = len(args.adversarial_attack_names) == 0
+    if args.is_clean_only:
+        args.checkpoint_selection_rule = "clean_recall"
+        args.effective_selection_robust_weight = 0.0
+    else:
+        args.checkpoint_selection_rule = "robust_weighted"
+        args.effective_selection_robust_weight = args.selection_robust_weight
     return args
