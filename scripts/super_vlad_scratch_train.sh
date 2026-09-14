@@ -8,7 +8,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/third_party/SuperVLAD:${PYTHONPATH:-}"
 
-BATCH_SIZE="${BATCH_SIZE:-120}"
+BATCH_SIZE="${BATCH_SIZE:-16}"
 EPOCHS="${EPOCHS:-50}"
 SEED="${SEED:-0}"
 ADV_WARMUP_EPOCHS="${ADV_WARMUP_EPOCHS:-2}"
@@ -35,7 +35,7 @@ exec python3 train.py \
   --freeze_te=8 \
   --lr=0.00005 \
   --num_epochs="${EPOCHS}" \
-  --patience=3 \
+  --patience=6 \
   --lr_plateau_patience=3 \
   --lr_plateau_factor=0.5 \
   --batch_size="${BATCH_SIZE}" \
