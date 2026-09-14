@@ -83,6 +83,12 @@ def build_parser():
         "resumed runs reproduce the same ordering.",
     )
     parser.add_argument("--log_dir", type=str, default="logs", help="Base folder for perceptual adversarial training runs.")
+    parser.add_argument(
+        "--run_dir",
+        type=str,
+        default=None,
+        help="Exact output directory for a managed run; bypasses the timestamp appended to --save_dir.",
+    )
     parser.add_argument("--parallel", type=int, default=1, help="Number of GPUs to use when CUDA is available.")
     parser.add_argument(
         "--only_attack_correct",

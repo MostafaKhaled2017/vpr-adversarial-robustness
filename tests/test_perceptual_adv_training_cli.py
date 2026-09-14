@@ -348,6 +348,10 @@ class Phase2FlagDefaultTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.parse("--defense_loss=triplet")
 
+    def test_exact_run_directory_is_recorded(self):
+        args = self.parse("--run_dir=/tmp/pilot/tau0.05_k1_pool4096")
+        self.assertEqual(args.run_dir, "/tmp/pilot/tau0.05_k1_pool4096")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -58,6 +58,18 @@ class NegativePoolStorageTests(unittest.TestCase):
         self.assertEqual(len(pool), 0)
         self.assertFalse(pool.enabled)
 
+    def test_state_dict_round_trip_preserves_fifo_contents_and_cursor(self):
+        pool = NegativePool(capacity=4, descriptor_dim=2)
+        pool.push(descriptors(1.0, 2.0, 3.0), torch.tensor([1, 2, 3]))
+        pool.push(descriptors(4.0, 5.0), torch.tensor([4, 5]))
+
+        restored = NegativePool.from_state_dict(pool.state_dict(), device="cpu")
+
+        self.assertEqual(len(restored), len(pool))
+        self.assertEqual(restored._write_cursor, pool._write_cursor)
+        self.assertTrue(torch.equal(restored._descriptors, pool._descriptors))
+        self.assertTrue(torch.equal(restored._place_ids, pool._place_ids))
+
 
 class NegativePoolMiningTests(unittest.TestCase):
     def test_mine_returns_the_k_nearest_cross_place_negatives(self):

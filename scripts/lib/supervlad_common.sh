@@ -34,13 +34,13 @@ if [ "${SUPERVLAD_FROM_SCRATCH:-0}" = "1" ]; then
   SUPERVLAD_INIT_FLAGS=()
 fi
 
-# Every flag except the attack configuration and --seed/--save_dir. Shared by BOTH arms.
-SUPERVLAD_BASE_FLAGS=(
+# Every flag except initialization, attack configuration, and --seed/--save_dir. Keeping
+# initialization separate lets a managed run replace it with --resume=<last_model> --continue.
+SUPERVLAD_RECIPE_FLAGS=(
   --model=supervlad
   --eval_datasets_folder=datasets
   --gsv_cities_base_path=datasets/gsv_cities
   --eval_dataset_name=msls
-  "${SUPERVLAD_INIT_FLAGS[@]}"
   --foundation_model_path=checkpoints/dinov2_vitb14_pretrain.pth
   --backbone=dino
   --supervlad_clusters=4
@@ -70,6 +70,12 @@ SUPERVLAD_BASE_FLAGS=(
   --early_stop_min_delta=0.0
   --keep_every=6
   --val_batches=200
+)
+
+# Backwards-compatible complete flag list used by Phase 1 and standalone launchers.
+SUPERVLAD_BASE_FLAGS=(
+  "${SUPERVLAD_RECIPE_FLAGS[@]}"
+  "${SUPERVLAD_INIT_FLAGS[@]}"
 )
 
 # The adversarial arm's only addition. Frozen at the paper's configuration.

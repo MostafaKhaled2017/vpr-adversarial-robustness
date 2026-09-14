@@ -43,6 +43,25 @@ class NegativePool:
     def __len__(self) -> int:
         return self._size
 
+    def state_dict(self) -> dict:
+        return {
+            "capacity": self.capacity,
+            "descriptor_dim": self.descriptor_dim,
+            "descriptors": self._descriptors.detach().cpu(),
+            "place_ids": self._place_ids.detach().cpu(),
+            "write_cursor": self._write_cursor,
+            "size": self._size,
+        }
+
+    @classmethod
+    def from_state_dict(cls, state: dict, device: torch.device | str = "cpu") -> "NegativePool":
+        pool = cls(int(state["capacity"]), int(state["descriptor_dim"]), device=device)
+        pool._descriptors.copy_(state["descriptors"].to(device=pool.device))
+        pool._place_ids.copy_(state["place_ids"].to(device=pool.device, dtype=torch.long))
+        pool._write_cursor = int(state["write_cursor"])
+        pool._size = int(state["size"])
+        return pool
+
     def descriptors(self) -> Tensor:
         """The live entries, oldest-to-newest ordering not guaranteed."""
         return self._descriptors[: self._size]
