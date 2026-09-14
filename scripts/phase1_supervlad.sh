@@ -29,7 +29,7 @@
 #   PHASE1_OUTPUT_ROOT  evaluation output root (default: output/phase1)
 #   PHASE1_BASE_PATH    pretrained SuperVLAD reference checkpoint
 #   PHASE1_DRY_RUN=1    print the commands without running them
-#   PYTHON              python interpreter (default: venv/bin/python3)
+#   PYTHON              python interpreter (default: python)
 #
 # Cost: 4 training runs of up to 50 epochs each, plus an evaluation grid of
 # 5 checkpoints x 2 datasets x 2 epsilons. Both stages are restartable — a training run
@@ -44,7 +44,7 @@ export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/third_party/SuperVLAD:${PYTHONPATH:
 # shellcheck source=scripts/lib/supervlad_common.sh
 source "${SCRIPT_DIR}/lib/supervlad_common.sh"
 
-PYTHON=${PYTHON:-venv/bin/python3}
+PYTHON=${PYTHON:-python}
 SEEDS=${PHASE1_SEEDS:-"0 1"}
 ARMS=${PHASE1_ARMS:-"clean_ft pat"}
 DATASETS=${PHASE1_DATASETS:-"msls sped"}
