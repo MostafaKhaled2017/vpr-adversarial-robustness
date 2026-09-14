@@ -13,7 +13,14 @@ from tqdm import tqdm
 
 import test
 import util
-from .checkpoints import apply_lr_schedule, maybe_remove_old_checkpoint, should_drop_lr_on_plateau
+from .checkpoints import (
+    apply_lr_schedule,
+    capture_rng_state,
+    maybe_remove_old_checkpoint,
+    save_checkpoint,
+    restore_rng_state,
+    should_drop_lr_on_plateau,
+)
 from .collapse_metrics import collapse_report, collect_descriptors, reference_sample_indices
 from .config import amp_autocast, unwrap_model
 from .attacks import attack_strength_scale
@@ -374,11 +381,19 @@ def build_checkpoint_state(
     validation_scores: Dict[str, float],
     next_best_score: float,
     next_not_improved: int,
+    *,
+    scaler=None,
+    iteration: int = 0,
+    negative_pool=None,
+    collapse_sample_indices=None,
+    reference_descriptors=None,
 ) -> Dict[str, object]:
     return {
         "epoch_num": epoch_num,
+        "next_epoch": epoch_num + 1,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
+        "scaler_state_dict": None if scaler is None else scaler.state_dict(),
         "recalls": metrics["NoAttack"]["recalls_list"],
         "clean_score": validation_scores["clean_score"],
         "robust_score": validation_scores["robust_score"],
@@ -387,6 +402,15 @@ def build_checkpoint_state(
         "not_improved_num": next_not_improved,
         "tensorboard_dir": args.tensorboard_dir,
         "validation_metrics": build_validation_metrics_record(epoch_num, metrics, validation_scores),
+        "rng_state": capture_rng_state(),
+        "runtime_state": {
+            "iteration": int(iteration),
+            "negative_pool": None if negative_pool is None else negative_pool.state_dict(),
+            "collapse_sample_indices": list(collapse_sample_indices or []),
+            "reference_descriptors": None
+            if reference_descriptors is None
+            else reference_descriptors.detach().cpu(),
+        },
     }
 
 
@@ -404,15 +428,19 @@ def run_training(
     writer,
     train_attacks,
     validation_attacks,
+    resume_runtime_state=None,
 ):
     start_time = datetime.now()
+    resume_runtime_state = dict(resume_runtime_state or {})
 
     # Reference embedding for neighborhood-distortion monitoring, captured before the first
-    # optimizer step. On a resumed run this is the resumed weights, so the metric then reads
-    # as drift since resume rather than drift from pretrained.
-    collapse_sample_indices = []
-    reference_descriptors = None
-    if int(getattr(args, "collapse_sample_size", 0)) > 0:
+    # optimizer step and stored in every managed checkpoint so resumption keeps measuring
+    # drift from the same pretrained reference.
+    collapse_sample_indices = list(resume_runtime_state.get("collapse_sample_indices", []))
+    reference_descriptors = resume_runtime_state.get("reference_descriptors")
+    if reference_descriptors is not None:
+        reference_descriptors = reference_descriptors.to(args.device)
+    if not collapse_sample_indices and int(getattr(args, "collapse_sample_size", 0)) > 0:
         collapse_sample_indices = reference_sample_indices(val_ds, args.collapse_sample_size)
         if collapse_sample_indices:
             reference_descriptors = collect_descriptors(
@@ -428,13 +456,19 @@ def run_training(
                 len(collapse_sample_indices),
             )
 
-    negative_pool = None
+    negative_pool_state = resume_runtime_state.get("negative_pool")
+    negative_pool = (
+        None
+        if negative_pool_state is None
+        else NegativePool.from_state_dict(negative_pool_state, device=args.device)
+    )
     negative_pool_size = int(getattr(args, "negative_pool_size", 0))
     lr_drop_epochs = [int(epoch_str) for epoch_str in args.lr_schedule.split(",") if epoch_str.strip()]
-    iteration = start_epoch * len(train_loader)
+    iteration = int(resume_runtime_state.get("iteration", start_epoch * len(train_loader)))
     current_lr = float(optimizer.param_groups[0]["lr"])
+    restore_rng_state(resume_runtime_state.get("rng_state"))
 
-    if start_epoch == 0 and not args.skip_initial_validation:
+    if start_epoch == 0 and not resume_runtime_state and not args.skip_initial_validation:
         logging.info("Begin initial validation before training")
         initial_metrics = evaluate_against_attacks_retrieval(
             args,
@@ -460,8 +494,13 @@ def run_training(
             initial_scores,
             best_score,
             not_improved,
+            scaler=scaler,
+            iteration=iteration,
+            negative_pool=negative_pool,
+            collapse_sample_indices=collapse_sample_indices,
+            reference_descriptors=reference_descriptors,
         )
-        util.save_checkpoint(args, initial_checkpoint_state, True, filename="initial_validation_model.pth")
+        save_checkpoint(args, initial_checkpoint_state, True, filename="initial_validation_model.pth")
         writer.add_scalar("val_initial/clean_score", initial_scores["clean_score"], 0)
         writer.add_scalar("val_initial/robust_score", initial_scores["robust_score"], 0)
         writer.add_scalar("val_initial/selection_score", initial_scores["selection_score"], 0)
@@ -472,6 +511,8 @@ def run_training(
             initial_scores["selection_score"],
         )
 
+    outcome = "completed"
+    final_epoch = start_epoch - 1
     for epoch_num in range(start_epoch, args.epochs_num):
         epoch_start = datetime.now()
         model = model.train()
@@ -740,11 +781,17 @@ def run_training(
             validation_scores,
             next_best_score,
             next_not_improved,
+            scaler=scaler,
+            iteration=iteration,
+            negative_pool=negative_pool,
+            collapse_sample_indices=collapse_sample_indices,
+            reference_descriptors=reference_descriptors,
         )
-        util.save_checkpoint(args, checkpoint_state, is_best, filename="last_model.pth")
+        save_checkpoint(args, checkpoint_state, is_best, filename="last_model.pth")
         intermediate_name = f"checkpoint_epoch_{epoch_num + 1:04d}.pth"
-        util.save_checkpoint(args, checkpoint_state, False, filename=intermediate_name)
+        save_checkpoint(args, checkpoint_state, False, filename=intermediate_name)
         maybe_remove_old_checkpoint(args, epoch_num + 1)
+        final_epoch = epoch_num
         logging.info(
             "Saved latest checkpoint after epoch %02d%s.",
             epoch_num + 1,
@@ -772,6 +819,7 @@ def run_training(
                 abort_threshold,
                 epoch_num + 1,
             )
+            outcome = "collapse_aborted"
             break
 
         if not_improved >= args.patience:
@@ -780,6 +828,7 @@ def run_training(
                 not_improved,
                 best_score,
             )
+            outcome = "early_stopped"
             break
 
     logging.info("Best validation selection score: %.2f", best_score)
@@ -794,3 +843,4 @@ def run_training(
     for recall_value, recall_metric in zip(args.recall_values, recalls):
         writer.add_scalar(f"test/R@{recall_value}", float(recall_metric), 0)
     logging.info("Finished in %s", str(datetime.now() - start_time)[:-7])
+    return {"state": outcome, "final_epoch": final_epoch}

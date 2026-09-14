@@ -3,7 +3,7 @@ import logging
 import torch
 from torch.cuda.amp import GradScaler
 
-import util
+from .checkpoints import load_training_state
 from .config import unwrap_model
 from .data import build_training_dataloader, setup_datasets
 from .models import get_model_adapter
@@ -53,6 +53,8 @@ def build_training_components(args):
     best_score = -1.0
     not_improved = 0
     start_epoch = 0
+    resume_runtime_state = {}
+    scaler = GradScaler(enabled=args.mixed_precision)
     if args.resume:
         if args.resume_model_only or not args.continue_training:
             adapter.load_weights(unwrap_model(model), args.resume, args)
@@ -61,15 +63,32 @@ def build_training_components(args):
                 args.resume,
             )
         else:
-            model, optimizer, best_score, start_epoch, not_improved = util.resume_train(
-                args,
+            resume_state = load_training_state(
+                args.resume,
                 model,
                 optimizer,
+                scaler,
+                map_location=args.device,
+                strict=False,
             )
+            best_score = resume_state.best_score
+            start_epoch = resume_state.next_epoch
+            not_improved = resume_state.not_improved
+            resume_runtime_state = dict(resume_state.runtime_state)
             logging.info("Resuming from epoch %d with best validation score %.1f", start_epoch, best_score)
     elif args.download_pretrained:
         adapter.download_weights(unwrap_model(model), args)
         logging.info("Downloaded and loaded pretrained weights for %s.", args.model)
-    scaler = GradScaler(enabled=args.mixed_precision)
     train_loader = build_training_dataloader(args)
-    return model, optimizer, scaler, train_loader, val_ds, test_ds, best_score, start_epoch, not_improved
+    return (
+        model,
+        optimizer,
+        scaler,
+        train_loader,
+        val_ds,
+        test_ds,
+        best_score,
+        start_epoch,
+        not_improved,
+        resume_runtime_state,
+    )

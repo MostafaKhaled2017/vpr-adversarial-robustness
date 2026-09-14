@@ -36,9 +36,18 @@ def main():
 
     writer = create_summary_writer(args.tensorboard_dir)
     try:
-        model, optimizer, scaler, train_loader, val_ds, test_ds, best_score, start_epoch, not_improved = (
-            build_training_components(args)
-        )
+        (
+            model,
+            optimizer,
+            scaler,
+            train_loader,
+            val_ds,
+            test_ds,
+            best_score,
+            start_epoch,
+            not_improved,
+            resume_runtime_state,
+        ) = build_training_components(args)
         maybe_copy_resume_checkpoint(args, model)
 
         train_attacks = instantiate_attacks(model, args.attack, args)
@@ -57,6 +66,7 @@ def main():
             writer,
             train_attacks,
             validation_attacks,
+            resume_runtime_state,
         )
     finally:
         writer.close()

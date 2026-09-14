@@ -18,9 +18,9 @@
 # run without Phase 1, but you cannot judge the result.
 #
 # Usage:
-#   scripts/phase2_supervlad.sh pilot     # 8-run hyper-parameter grid, seed 0
-#   scripts/phase2_supervlad.sh select    # rank the pilot runs against Phase 1
-#   scripts/phase2_supervlad.sh final     # train the winning config on seeds {0, 1}
+#   scripts/phase2_supervlad.sh pilot [--run-root DIR]  # new grid, or resume DIR
+#   scripts/phase2_supervlad.sh select --run-root DIR   # rank this pilot against Phase 1
+#   scripts/phase2_supervlad.sh final [--run-root DIR]  # train selected config on seeds {0, 1}
 #   scripts/phase2_supervlad.sh eval      # evaluate final checkpoints + Phase 1 arms
 #   scripts/phase2_supervlad.sh all
 #
@@ -38,10 +38,11 @@
 #   PHASE2_DATASETS           evaluation datasets (default: "msls sped")
 #   PHASE2_EPSILONS           attack budgets (default: "0.01 0.1")
 #   PHASE2_OUTPUT_ROOT        evaluation output root (default: output/phase2)
+#   PHASE2_PILOT_ROOT_BASE    parent for managed pilot roots (default: logs/phase2_supervlad_pilots)
 #   PHASE2_DRY_RUN=1          print the commands without running them
 #
-# Cost: 8 pilot runs + 2 final runs, plus an evaluation grid. Restartable — a run whose log
-# directory already holds best_model.pth is skipped.
+# Cost: 8 pilot runs + 2 final runs, plus an evaluation grid. Managed pilot runs resume at
+# epoch boundaries and use run_status.json—not best_model.pth—as the terminal marker.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -53,6 +54,13 @@ export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/third_party/SuperVLAD:${PYTHONPATH:
 source "${SCRIPT_DIR}/lib/supervlad_common.sh"
 
 PYTHON=${PYTHON:-venv/bin/python3}
+TAUS_EXPLICIT=${PHASE2_TAUS+x}
+KS_EXPLICIT=${PHASE2_KS+x}
+POOLS_EXPLICIT=${PHASE2_POOLS+x}
+RAMP_EPOCHS_EXPLICIT=${PHASE2_RAMP_EPOCHS+x}
+ABORT_KNN_EXPLICIT=${PHASE2_ABORT_KNN+x}
+BASE_PATH_EXPLICIT=${PHASE1_BASE_PATH+x}${SUPERVLAD_BASE_CHECKPOINT+x}
+FROM_SCRATCH_EXPLICIT=${SUPERVLAD_FROM_SCRATCH+x}
 TAUS=${PHASE2_TAUS:-"0.01 0.05"}
 KS=${PHASE2_KS:-"1 5"}
 POOLS=${PHASE2_POOLS:-"0 4096"}
@@ -65,10 +73,29 @@ EPSILONS=${PHASE2_EPSILONS:-"0.01 0.1"}
 OUTPUT_ROOT=${PHASE2_OUTPUT_ROOT:-output/phase2}
 PHASE1_OUTPUT_ROOT=${PHASE1_OUTPUT_ROOT:-output/phase1}
 DRY_RUN=${PHASE2_DRY_RUN:-0}
-BASE_PATH=${PHASE1_BASE_PATH:-checkpoints/SuperVLAD_base.pth}
+BASE_PATH=${PHASE1_BASE_PATH:-${SUPERVLAD_BASE_CHECKPOINT:-checkpoints/SuperVLAD_base.pth}}
+FROM_SCRATCH=${SUPERVLAD_FROM_SCRATCH:-0}
+PILOT_ROOT_BASE=${PHASE2_PILOT_ROOT_BASE:-logs/phase2_supervlad_pilots}
 
 WINNER_FILE="${OUTPUT_ROOT}/pilot_winner.txt"
 STAGE=${1:-all}
+if [ $# -gt 0 ]; then
+  shift
+fi
+RUN_ROOT=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --run-root)
+      [ $# -ge 2 ] || { echo "--run-root requires a directory" >&2; exit 2; }
+      RUN_ROOT=$2
+      shift 2
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
 
 run() {
   echo "+ $*"
@@ -94,6 +121,71 @@ config_label() {
   echo "tau${1}_k${2}_pool${3}"
 }
 
+ensure_pilot_root() {
+  if [ -n "${RUN_ROOT}" ]; then
+    local manifest_values manifest_taus manifest_ks manifest_pools manifest_seed manifest_ramp manifest_abort manifest_base manifest_from_scratch
+    manifest_values="$("${PYTHON}" -m src.phase2_run_group values --run-root "${RUN_ROOT}")"
+    IFS=$'\t' read -r manifest_taus manifest_ks manifest_pools manifest_seed manifest_ramp manifest_abort manifest_base manifest_from_scratch <<<"${manifest_values}"
+    if [ -n "${TAUS_EXPLICIT}" ] && [ "${TAUS}" != "${manifest_taus}" ]; then
+      echo "PHASE2_TAUS does not match ${RUN_ROOT}/pilot_manifest.yaml" >&2
+      return 2
+    fi
+    if [ -n "${KS_EXPLICIT}" ] && [ "${KS}" != "${manifest_ks}" ]; then
+      echo "PHASE2_KS does not match ${RUN_ROOT}/pilot_manifest.yaml" >&2
+      return 2
+    fi
+    if [ -n "${POOLS_EXPLICIT}" ] && [ "${POOLS}" != "${manifest_pools}" ]; then
+      echo "PHASE2_POOLS does not match ${RUN_ROOT}/pilot_manifest.yaml" >&2
+      return 2
+    fi
+    if [ -n "${RAMP_EPOCHS_EXPLICIT}" ] && [ "${RAMP_EPOCHS}" != "${manifest_ramp}" ]; then
+      echo "PHASE2_RAMP_EPOCHS does not match ${RUN_ROOT}/pilot_manifest.yaml" >&2
+      return 2
+    fi
+    if [ -n "${ABORT_KNN_EXPLICIT}" ] && [ "${ABORT_KNN}" != "${manifest_abort}" ]; then
+      echo "PHASE2_ABORT_KNN does not match ${RUN_ROOT}/pilot_manifest.yaml" >&2
+      return 2
+    fi
+    if [ -n "${BASE_PATH_EXPLICIT}" ] && [ "${BASE_PATH}" != "${manifest_base}" ]; then
+      echo "Base-checkpoint override does not match ${RUN_ROOT}/pilot_manifest.yaml" >&2
+      return 2
+    fi
+    if [ -n "${FROM_SCRATCH_EXPLICIT}" ] && [ "${FROM_SCRATCH}" != "${manifest_from_scratch}" ]; then
+      echo "SUPERVLAD_FROM_SCRATCH does not match ${RUN_ROOT}/pilot_manifest.yaml" >&2
+      return 2
+    fi
+    TAUS=${manifest_taus}
+    KS=${manifest_ks}
+    POOLS=${manifest_pools}
+    RAMP_EPOCHS=${manifest_ramp}
+    ABORT_KNN=${manifest_abort}
+    BASE_PATH=${manifest_base}
+    FROM_SCRATCH=${manifest_from_scratch}
+    SUPERVLAD_FROM_SCRATCH=${manifest_from_scratch}
+  else
+    local -a create_args=(
+      --base-dir "${PILOT_ROOT_BASE}"
+      --taus ${TAUS} --ks ${KS} --pools ${POOLS}
+      --seed 0 --ramp-epochs "${RAMP_EPOCHS}" --abort-knn "${ABORT_KNN}"
+      --base-checkpoint "${BASE_PATH}"
+    )
+    if [ "${FROM_SCRATCH}" = "1" ]; then
+      create_args+=(--from-scratch)
+    fi
+    # shellcheck disable=SC2086
+    RUN_ROOT="$("${PYTHON}" -m src.phase2_run_group create "${create_args[@]}")"
+  fi
+  echo "Pilot run root: ${RUN_ROOT}"
+}
+
+acquire_pilot_lock() {
+  exec 9>"${RUN_ROOT}/.pilot.lock"
+  if ! flock -n 9; then
+    echo "Pilot run root is already active: ${RUN_ROOT}" >&2
+    return 1
+  fi
+}
+
 latest_finished_run() {
   local name=$1
   local newest="" candidate
@@ -104,7 +196,45 @@ latest_finished_run() {
 }
 
 train_config() {
-  local name=$1 seed=$2 tau=$3 k=$4 pool=$5
+  local name=$1 seed=$2 tau=$3 k=$4 pool=$5 managed_dir=${6:-}
+
+  if [ -n "${managed_dir}" ]; then
+    local classification state checkpoint
+    classification="$("${PYTHON}" -m src.phase2_run_group classify --config-dir "${managed_dir}")"
+    IFS=$'\t' read -r state checkpoint <<<"${classification}"
+    case "${state}" in
+      completed | early_stopped | collapse_aborted)
+        echo "=== SKIP ${name}: ${state} at ${managed_dir}"
+        return 0
+        ;;
+      invalid)
+        echo "Cannot resume ${name}: artifacts exist but no valid checkpoint was found in ${managed_dir}" >&2
+        return 1
+        ;;
+    esac
+
+    local -a launch_flags
+    if [ "${state}" = "resumable" ]; then
+      launch_flags=("${SUPERVLAD_RECIPE_FLAGS[@]}" --resume="${checkpoint}" --continue)
+      echo "=== RESUME ${name} from ${checkpoint}"
+    else
+      launch_flags=("${SUPERVLAD_RECIPE_FLAGS[@]}")
+      if [ "${FROM_SCRATCH}" != "1" ]; then
+        launch_flags+=(--resume="${BASE_PATH}" --resume_model_only)
+      fi
+      echo "=== TRAIN ${name} (tau=${tau}, k=${k}, pool=${pool}, seed=${seed})"
+    fi
+
+    # shellcheck disable=SC2046
+    run "${PYTHON}" train.py \
+      "${launch_flags[@]}" \
+      "${SUPERVLAD_ATTACK_FLAGS[@]}" \
+      $(method_flags "${tau}" "${k}" "${pool}") \
+      --seed="${seed}" \
+      --save_dir="${name}" \
+      --run_dir="${managed_dir}"
+    return
+  fi
 
   local existing
   existing="$(latest_finished_run "${name}")"
@@ -114,9 +244,13 @@ train_config() {
   fi
 
   echo "=== TRAIN ${name} (tau=${tau}, k=${k}, pool=${pool}, seed=${seed})"
+  local -a standalone_flags=("${SUPERVLAD_RECIPE_FLAGS[@]}")
+  if [ "${FROM_SCRATCH}" != "1" ]; then
+    standalone_flags+=(--resume="${BASE_PATH}" --resume_model_only)
+  fi
   # shellcheck disable=SC2046
   run "${PYTHON}" train.py \
-    "${SUPERVLAD_BASE_FLAGS[@]}" \
+    "${standalone_flags[@]}" \
     "${SUPERVLAD_ATTACK_FLAGS[@]}" \
     $(method_flags "${tau}" "${k}" "${pool}") \
     --seed="${seed}" \
@@ -124,13 +258,15 @@ train_config() {
 }
 
 stage_pilot() {
+  ensure_pilot_root
+  acquire_pilot_lock
   echo "Pilot grid on SuperVLAD seed 0: $(echo ${TAUS} | wc -w) taus x $(echo ${KS} | wc -w) ks x $(echo ${POOLS} | wc -w) pools"
   for tau in ${TAUS}; do
     for k in ${KS}; do
       for pool in ${POOLS}; do
         local label
         label="$(config_label "${tau}" "${k}" "${pool}")"
-        train_config "phase2_supervlad_pilot_${label}" 0 "${tau}" "${k}" "${pool}"
+        train_config "${label}" 0 "${tau}" "${k}" "${pool}" "${RUN_ROOT}/${label}"
       done
     done
   done
@@ -173,16 +309,35 @@ PYTHON
 }
 
 stage_select() {
+  if [ -z "${RUN_ROOT}" ]; then
+    echo "select requires --run-root so pilot attempts cannot be mixed" >&2
+    return 2
+  fi
+  ensure_pilot_root
+  acquire_pilot_lock
   resolve_phase1_baselines
 
   local -a run_args=()
   for tau in ${TAUS}; do
     for k in ${KS}; do
       for pool in ${POOLS}; do
-        local label run_dir
+        local label run_dir classification state checkpoint
         label="$(config_label "${tau}" "${k}" "${pool}")"
-        run_dir="$(latest_finished_run "phase2_supervlad_pilot_${label}")"
-        [ -n "${run_dir}" ] && run_args+=(--run "${label}=${run_dir}")
+        run_dir="${RUN_ROOT}/${label}"
+        classification="$("${PYTHON}" -m src.phase2_run_group classify --config-dir "${run_dir}")"
+        IFS=$'\t' read -r state checkpoint <<<"${classification}"
+        case "${state}" in
+          completed | early_stopped)
+            run_args+=(--run "${label}=${run_dir}")
+            ;;
+          collapse_aborted)
+            echo "=== EXCLUDE ${label}: collapse_aborted at ${run_dir}"
+            ;;
+          *)
+            echo "Cannot select: ${label} is not terminal (${state})" >&2
+            return 1
+            ;;
+        esac
       done
     done
   done
@@ -197,19 +352,21 @@ stage_select() {
   [ -n "${PAT_ATTACKED_R1}" ] && baseline_args+=(--pat_attacked_r1 "${PAT_ATTACKED_R1}")
 
   echo "=== PILOT RANKING (criterion: clean R@1 within ${MAX_CLEAN_DROP} of clean-FT, attacked R@1 >= PAT)"
-  mkdir -p "${OUTPUT_ROOT}"
+  local ranking_markdown="${RUN_ROOT}/pilot_ranking.md"
+  local ranking_json="${RUN_ROOT}/pilot_ranking.json"
+  WINNER_FILE="${RUN_ROOT}/pilot_winner.txt"
   run "${PYTHON}" -m src.phase2_pilot_summary \
     "${run_args[@]}" \
     "${baseline_args[@]}" \
     --max_clean_drop "${MAX_CLEAN_DROP}" \
-    --output_markdown "${OUTPUT_ROOT}/pilot_ranking.md" \
-    --output_json "${OUTPUT_ROOT}/pilot_ranking.json"
+    --output_markdown "${ranking_markdown}" \
+    --output_json "${ranking_json}"
 
   if [ "${DRY_RUN}" = "1" ]; then
     return 0
   fi
 
-  "${PYTHON}" - "${OUTPUT_ROOT}/pilot_ranking.json" "${WINNER_FILE}" <<'PYTHON'
+  "${PYTHON}" - "${ranking_json}" "${WINNER_FILE}" <<'PYTHON'
 import json, pathlib, sys
 
 rows = json.loads(pathlib.Path(sys.argv[1]).read_text())
@@ -245,6 +402,11 @@ resolve_winner() {
 }
 
 stage_final() {
+  if [ -n "${RUN_ROOT}" ]; then
+    # Validate the root and reload the settings that produced its selected winner.
+    ensure_pilot_root
+    WINNER_FILE="${RUN_ROOT}/pilot_winner.txt"
+  fi
   resolve_winner
   for seed in ${SEEDS}; do
     train_config "phase2_supervlad_mplc_s${seed}" "${seed}" "${WINNER_TAU}" "${WINNER_K}" "${WINNER_POOL}"
@@ -340,7 +502,7 @@ case "${STAGE}" in
     stage_eval
     ;;
   *)
-    echo "usage: $0 [pilot|select|final|eval|all]" >&2
+    echo "usage: $0 [pilot|select|final|eval|all] [--run-root DIR]" >&2
     exit 2
     ;;
 esac
