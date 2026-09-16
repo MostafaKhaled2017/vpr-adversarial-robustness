@@ -53,7 +53,7 @@ export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/third_party/SuperVLAD:${PYTHONPATH:
 # shellcheck source=scripts/lib/supervlad_common.sh
 source "${SCRIPT_DIR}/lib/supervlad_common.sh"
 
-PYTHON=${PYTHON:-venv/bin/python3}
+PYTHON=${PYTHON:-python}
 TAUS_EXPLICIT=${PHASE2_TAUS+x}
 KS_EXPLICIT=${PHASE2_KS+x}
 POOLS_EXPLICIT=${PHASE2_POOLS+x}
