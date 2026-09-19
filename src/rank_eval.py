@@ -94,6 +94,12 @@ def build_parser():
         help="One or more dataset names under --eval_datasets_folder to evaluate.",
     )
     parser.add_argument(
+        "--dataset_split",
+        choices=("test", "val"),
+        default="test",
+        help="Dataset split to evaluate. Use val for model selection and test only for final reporting.",
+    )
+    parser.add_argument(
         "--model_paths",
         type=str,
         nargs="+",
@@ -321,7 +327,7 @@ def validate_arguments(args) -> None:
         require_file(model_path, "--model_paths")
     if args.foundation_model_path is not None:
         require_file(args.foundation_model_path, "--foundation_model_path")
-    validate_dataset_layouts(args.eval_datasets_folder, args.datasets)
+    validate_dataset_layouts(args.eval_datasets_folder, args.datasets, args.dataset_split)
 
 
 def require_file(path: str, argument_name: str) -> None:
@@ -330,15 +336,16 @@ def require_file(path: str, argument_name: str) -> None:
         raise FileNotFoundError(f"{argument_name} does not exist: {resolved_path}")
 
 
-def validate_dataset_layouts(datasets_root: str, dataset_names: Sequence[str]) -> None:
+def validate_dataset_layouts(datasets_root: str, dataset_names: Sequence[str], dataset_split: str = "test") -> None:
     root = Path(datasets_root).expanduser()
     for dataset_name in dataset_names:
-        test_root = root / dataset_name / "images" / "test"
-        database_root = test_root / "database"
-        queries_root = test_root / "queries"
+        split_root = root / dataset_name / "images" / dataset_split
+        database_root = split_root / "database"
+        queries_root = split_root / "queries"
         if not database_root.is_dir() or not queries_root.is_dir():
             raise FileNotFoundError(
-                f"Dataset {dataset_name!r} must contain images/test/database and images/test/queries under {root}."
+                f"Dataset {dataset_name!r} must contain images/{dataset_split}/database and "
+                f"images/{dataset_split}/queries under {root}."
             )
 
 
@@ -1489,7 +1496,7 @@ def add_sampled_gallery_clean_results(
 
 def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, Tuple[nn.Module, object]]):
     eval_ds = build_evaluation_dataset(args, dataset_name)
-    logging.info("Test set: %s", eval_ds)
+    logging.info("%s split: %s", args.dataset_split, eval_ds)
     logging.info(
         "Using audit sample mode with max_queries=%s and audit_sample_database_size=%s. "
         "Results are not benchmark-comparable.",
@@ -2319,6 +2326,7 @@ def main() -> None:
             },
         },
         "datasets": list(args.datasets),
+        "dataset_split": args.dataset_split,
         "arguments": serialize_args(args),
         "attack": {
             "mode": args.rank_attack,

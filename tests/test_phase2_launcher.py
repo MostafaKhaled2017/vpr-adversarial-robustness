@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +17,7 @@ class Phase2LauncherResumeTests(unittest.TestCase):
         environment.update(
             {
                 "PHASE2_DRY_RUN": "1",
+                "PYTHON": sys.executable,
                 "PHASE2_TAUS": "0.05",
                 "PHASE2_KS": "1",
                 "PHASE2_POOLS": "0",
@@ -86,6 +88,7 @@ class Phase2LauncherResumeTests(unittest.TestCase):
             root = self.root_from_output(first.stdout)
             environment = os.environ.copy()
             environment["PHASE2_DRY_RUN"] = "1"
+            environment["PYTHON"] = sys.executable
 
             resumed = subprocess.run(
                 ["bash", str(LAUNCHER), "pilot", "--run-root", str(root)],
@@ -155,19 +158,42 @@ class Phase2LauncherResumeTests(unittest.TestCase):
             (config_dir / "run_status.json").write_text(
                 json.dumps({"state": "completed"}), encoding="utf-8"
             )
+            common_eval = Path(directory) / "common_eval.json"
+            common_eval.write_text("{}", encoding="utf-8")
 
-            selected = self.run_launcher("select", "--run-root", str(root))
+            selected = self.run_launcher(
+                "select", "--run-root", str(root), PHASE2_COMMON_EVAL_JSON=str(common_eval)
+            )
 
             self.assertEqual(selected.returncode, 0, selected.stdout)
             self.assertIn(f"--run tau0.05_k1_pool0={config_dir}", selected.stdout)
+            self.assertIn(f"--common_eval_json {common_eval}", selected.stdout)
             self.assertIn(f"--output_markdown {root / 'pilot_ranking.md'}", selected.stdout)
+
+    def test_select_requires_common_validation_evaluation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first = self.run_launcher("pilot", PHASE2_PILOT_ROOT_BASE=directory)
+            root = self.root_from_output(first.stdout)
+            config_dir = root / "tau0.05_k1_pool0"
+            (config_dir / "run_status.json").write_text(
+                json.dumps({"state": "completed"}), encoding="utf-8"
+            )
+
+            selected = self.run_launcher("select", "--run-root", str(root))
+
+        self.assertNotEqual(selected.returncode, 0)
+        self.assertIn("PHASE2_COMMON_EVAL_JSON", selected.stdout)
 
     def test_select_refuses_a_root_with_pending_configs(self):
         with tempfile.TemporaryDirectory() as directory:
             first = self.run_launcher("pilot", PHASE2_PILOT_ROOT_BASE=directory)
             root = self.root_from_output(first.stdout)
+            common_eval = Path(directory) / "common_eval.json"
+            common_eval.write_text("{}", encoding="utf-8")
 
-            selected = self.run_launcher("select", "--run-root", str(root))
+            selected = self.run_launcher(
+                "select", "--run-root", str(root), PHASE2_COMMON_EVAL_JSON=str(common_eval)
+            )
 
             self.assertNotEqual(selected.returncode, 0)
             self.assertIn("is not terminal", selected.stdout)
@@ -180,8 +206,12 @@ class Phase2LauncherResumeTests(unittest.TestCase):
             (config_dir / "run_status.json").write_text(
                 json.dumps({"state": "collapse_aborted"}), encoding="utf-8"
             )
+            common_eval = Path(directory) / "common_eval.json"
+            common_eval.write_text("{}", encoding="utf-8")
 
-            selected = self.run_launcher("select", "--run-root", str(root))
+            selected = self.run_launcher(
+                "select", "--run-root", str(root), PHASE2_COMMON_EVAL_JSON=str(common_eval)
+            )
 
             self.assertNotEqual(selected.returncode, 0)
             self.assertIn("EXCLUDE tau0.05_k1_pool0: collapse_aborted", selected.stdout)

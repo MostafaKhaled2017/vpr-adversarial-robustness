@@ -40,7 +40,7 @@ def configure_evaluation(args) -> None:
 def build_evaluation_dataset(args, dataset_name: str):
     import datasets_ws
 
-    return datasets_ws.BaseDataset(args, args.eval_datasets_folder, dataset_name, "test")
+    return datasets_ws.BaseDataset(args, args.eval_datasets_folder, dataset_name, args.dataset_split)
 
 
 def load_evaluation_weights(model: nn.Module, checkpoint_path: str, args) -> None:

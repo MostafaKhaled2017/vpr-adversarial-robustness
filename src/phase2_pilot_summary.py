@@ -1,22 +1,13 @@
-"""Rank Phase 2 pilot configurations against the Phase 1 baselines (Task 2.6).
-
-The pilot grid trains one run per hyper-parameter combination and then has to pick a
-winner. The acceptance criterion is stated relative to Phase 1's arms, not in absolute
-terms: clean R@1 must stay within a small drop of the *clean-FT* control, and attacked R@1
-must be at least the *PAT* re-run's. Neither number exists until Phase 1 has run, which is
-why Phase 1 is a gate on Phase 2.
-
-Selection uses each run's ``validation_recalls.csv``, the same validation signal that chose
-the checkpoint, so ranking costs nothing beyond the training already done. The winner then
-goes through the full Phase 0 evaluation grid for the reported numbers.
-"""
+"""Rank Phase 2 pilot configurations on a common held-out validation threat model."""
 
 from __future__ import annotations
 
 import argparse
 import csv
+import filecmp
 import json
 from pathlib import Path
+from statistics import mean
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 DEFAULT_MAX_CLEAN_DROP = 2.0
@@ -33,7 +24,7 @@ def _read_float(row: Mapping[str, str], key: str) -> Optional[float]:
 
 
 def best_validation_epoch(run_dir: Path) -> Optional[Dict[str, object]]:
-    """Clean and attacked R@1 at the epoch with the highest selection score."""
+    """Best trained validation epoch, excluding the pre-training epoch -1."""
     csv_path = Path(run_dir) / "validation_recalls.csv"
     if not csv_path.is_file():
         return None
@@ -43,7 +34,11 @@ def best_validation_epoch(run_dir: Path) -> Optional[Dict[str, object]]:
     if not rows:
         return None
 
-    clean_rows = [row for row in rows if row.get("split") == "clean"]
+    clean_rows = [
+        row
+        for row in rows
+        if row.get("split") == "clean" and _read_float(row, "epoch") is not None and _read_float(row, "epoch") >= 0
+    ]
     if not clean_rows:
         return None
 
@@ -64,6 +59,13 @@ def best_validation_epoch(run_dir: Path) -> Optional[Dict[str, object]]:
         "robust_score": _read_float(best_clean, "robust_score"),
         "selection_score": _read_float(best_clean, "selection_score"),
     }
+
+
+def selected_checkpoint_is_initial(run_dir: Path) -> bool:
+    """Whether the run selected its unchanged pre-training checkpoint."""
+    best_path = run_dir / "best_model.pth"
+    initial_path = run_dir / "initial_validation_model.pth"
+    return best_path.is_file() and initial_path.is_file() and filecmp.cmp(best_path, initial_path, shallow=False)
 
 
 def read_collapse_metrics(run_dir: Path, epoch: int) -> Optional[Dict[str, float]]:
@@ -120,7 +122,8 @@ def rank_pilot_runs(
         if best is None:
             continue
 
-        accepted = meets_acceptance(
+        initial_checkpoint = selected_checkpoint_is_initial(Path(run_dir))
+        accepted = False if initial_checkpoint else meets_acceptance(
             best["clean_r1"],
             best["attacked_r1"],
             clean_ft_clean_r1,
@@ -135,6 +138,8 @@ def rank_pilot_runs(
             "attacked_r1": best["attacked_r1"],
             "selection_score": best["selection_score"],
             "accepted": accepted,
+            "eligible": not initial_checkpoint,
+            "status": "excluded_initial_checkpoint" if initial_checkpoint else "eligible",
             "collapse": read_collapse_metrics(Path(run_dir), best["epoch"]),
         }
         row["clean_r1_drop_vs_clean_ft"] = (
@@ -149,9 +154,126 @@ def rank_pilot_runs(
         gain = row.get("attacked_r1_gain_vs_pat")
         fallback = row.get("attacked_r1")
         robustness = gain if gain is not None else (fallback if fallback is not None else float("-inf"))
-        return (0 if row.get("accepted") else 1, -float(robustness))
+        if not row.get("eligible"):
+            group = 2
+        elif row.get("accepted"):
+            group = 0
+        else:
+            group = 1
+        return (group, -float(robustness))
 
     rows.sort(key=sort_key)
+    return rows
+
+
+def read_common_evaluation(path: Path) -> Dict[str, Dict[str, float]]:
+    """Read clean and mean attacked R@1 per model from a fixed val-split rank evaluation."""
+    with path.open(encoding="utf-8") as handle:
+        report = json.load(handle)
+    if report.get("dataset_split") != "val":
+        raise ValueError("--common_eval_json must be a rank evaluation of the validation split.")
+    attack = report.get("attack", {})
+    if attack.get("mode") != "rank_pgd_linf":
+        raise ValueError("--common_eval_json must use rank_pgd_linf.")
+
+    metrics: Dict[str, Dict[str, list[float]]] = {}
+    for models in report.get("results", {}).values():
+        for tag, conditions in models.items():
+            clean = conditions.get("clean_all_queries", {}).get("recalls", {}).get("R@1")
+            attacked = [
+                condition.get("recalls", {}).get("R@1")
+                for name, condition in conditions.items()
+                if name.startswith("rank_pgd_linf_eps_")
+            ]
+            if clean is None or not attacked or any(value is None for value in attacked):
+                continue
+            record = metrics.setdefault(tag, {"clean_r1": [], "attacked_r1": []})
+            record["clean_r1"].append(float(clean))
+            record["attacked_r1"].extend(float(value) for value in attacked)
+    return {
+        tag: {"clean_r1": mean(values["clean_r1"]), "attacked_r1": mean(values["attacked_r1"])}
+        for tag, values in metrics.items()
+    }
+
+
+def common_control_baselines(metrics: Mapping[str, Mapping[str, float]]) -> Tuple[float, float]:
+    clean_ft = [values["clean_r1"] for tag, values in metrics.items() if tag.startswith("clean_ft_s")]
+    pat = [values["attacked_r1"] for tag, values in metrics.items() if tag.startswith("pat_s")]
+    if not clean_ft or not pat:
+        raise ValueError("Common evaluation must include clean_ft_s* and pat_s* control model tags.")
+    return mean(clean_ft), mean(pat)
+
+
+def rank_common_evaluation(
+    runs: Sequence[Tuple[str, Path]], common_metrics: Mapping[str, Mapping[str, float]], max_clean_drop: float
+) -> List[Dict[str, object]]:
+    """Rank eligible pilots using the common validation evaluation and its controls."""
+    clean_ft_clean_r1, pat_attacked_r1 = common_control_baselines(common_metrics)
+    rows: List[Dict[str, object]] = []
+    for label, run_dir in runs:
+        best = best_validation_epoch(run_dir)
+        if best is None:
+            continue
+        initial_checkpoint = selected_checkpoint_is_initial(run_dir)
+        values = common_metrics.get(label)
+        status = "eligible"
+        if initial_checkpoint:
+            status = "excluded_initial_checkpoint"
+        elif values is None:
+            status = "missing_common_evaluation"
+        eligible = status == "eligible"
+        clean_r1 = None if values is None else values["clean_r1"]
+        attacked_r1 = None if values is None else values["attacked_r1"]
+        accepted = meets_acceptance(clean_r1, attacked_r1, clean_ft_clean_r1, pat_attacked_r1, max_clean_drop)
+        if not eligible:
+            accepted = False
+        rows.append(
+            {
+                "label": label,
+                "run_dir": str(run_dir),
+                "epoch": best["epoch"],
+                "clean_r1": clean_r1,
+                "attacked_r1": attacked_r1,
+                "selection_score": best["selection_score"],
+                "accepted": accepted,
+                "eligible": eligible,
+                "status": status,
+                "collapse": read_collapse_metrics(run_dir, best["epoch"]),
+                "clean_r1_drop_vs_clean_ft": None if clean_r1 is None else clean_ft_clean_r1 - clean_r1,
+                "attacked_r1_gain_vs_pat": None if attacked_r1 is None else attacked_r1 - pat_attacked_r1,
+            }
+        )
+    rows.sort(key=lambda row: (0 if row["eligible"] and row["accepted"] else 1 if row["eligible"] else 2, -float(row["attacked_r1"] or float("-inf"))))
+    return rows
+
+
+def rank_phase2_only(runs: Sequence[Tuple[str, Path]], common_metrics: Mapping[str, Mapping[str, float]]) -> List[Dict[str, object]]:
+    """Rank eligible pilots only by common-validation attacked R@1."""
+    rows: List[Dict[str, object]] = []
+    for label, run_dir in runs:
+        best = best_validation_epoch(run_dir)
+        if best is None:
+            continue
+        initial_checkpoint = selected_checkpoint_is_initial(run_dir)
+        values = common_metrics.get(label)
+        status = "excluded_initial_checkpoint" if initial_checkpoint else "missing_common_evaluation" if values is None else "eligible"
+        rows.append(
+            {
+                "label": label,
+                "run_dir": str(run_dir),
+                "epoch": best["epoch"],
+                "clean_r1": None if values is None else values["clean_r1"],
+                "attacked_r1": None if values is None else values["attacked_r1"],
+                "selection_score": best["selection_score"],
+                "accepted": None,
+                "eligible": status == "eligible",
+                "status": status,
+                "collapse": read_collapse_metrics(run_dir, best["epoch"]),
+                "clean_r1_drop_vs_clean_ft": None,
+                "attacked_r1_gain_vs_pat": None,
+            }
+        )
+    rows.sort(key=lambda row: (0 if row["eligible"] else 1, -float(row["attacked_r1"] or float("-inf")), -float(row["clean_r1"] or float("-inf"))))
     return rows
 
 
@@ -164,6 +286,7 @@ TABLE_COLUMNS = (
     "attacked R@1",
     "gain vs PAT",
     "knn overlap",
+    "status",
     "accepted",
 )
 
@@ -196,6 +319,7 @@ def format_ranking_markdown(rows: Sequence[Mapping[str, object]]) -> str:
                     _format(row.get("attacked_r1")),
                     _format(row.get("attacked_r1_gain_vs_pat"), "+.2f"),
                     _format(knn, ".3f"),
+                    str(row.get("status", "eligible")),
                     "unknown" if row.get("accepted") is None else _format(row.get("accepted")),
                 ]
             )
@@ -214,16 +338,27 @@ def main() -> None:
         help="A pilot run as label=path-to-run-directory. Repeatable.",
     )
     parser.add_argument(
+        "--common_eval_json",
+        type=Path,
+        default=None,
+        help="Common rank_pgd_linf validation-split report containing the pilot checkpoints.",
+    )
+    parser.add_argument(
+        "--phase2_only",
+        action="store_true",
+        help="Rank eligible pilots by common-validation attacked R@1 without Phase 1 controls.",
+    )
+    parser.add_argument(
         "--clean_ft_clean_r1",
         type=float,
         default=None,
-        help="Phase 1 clean-FT clean R@1 baseline. Without it acceptance is reported as unknown.",
+        help="Legacy scalar clean-FT baseline. Prefer --common_eval_json for comparable pilot selection.",
     )
     parser.add_argument(
         "--pat_attacked_r1",
         type=float,
         default=None,
-        help="Phase 1 PAT attacked R@1 baseline. Without it acceptance is reported as unknown.",
+        help="Legacy scalar PAT baseline. Prefer --common_eval_json for comparable pilot selection.",
     )
     parser.add_argument("--max_clean_drop", type=float, default=DEFAULT_MAX_CLEAN_DROP)
     parser.add_argument("--output_markdown", type=str, default=None)
@@ -237,14 +372,23 @@ def main() -> None:
         label, _, directory = entry.partition("=")
         runs.append((label, Path(directory)))
 
-    rows = rank_pilot_runs(runs, args.clean_ft_clean_r1, args.pat_attacked_r1, args.max_clean_drop)
+    if args.phase2_only and args.common_eval_json is None:
+        raise SystemExit("--phase2_only requires --common_eval_json.")
+    if args.common_eval_json is None:
+        rows = rank_pilot_runs(runs, args.clean_ft_clean_r1, args.pat_attacked_r1, args.max_clean_drop)
+    elif args.phase2_only:
+        rows = rank_phase2_only(runs, read_common_evaluation(args.common_eval_json))
+    else:
+        rows = rank_common_evaluation(runs, read_common_evaluation(args.common_eval_json), args.max_clean_drop)
     markdown = format_ranking_markdown(rows)
     print(markdown)
 
     if not rows:
         print("\nNo pilot run produced validation results yet.")
+    elif args.phase2_only:
+        print(f"\nWinner by common-validation attacked R@1: {rows[0]['label']} ({rows[0]['run_dir']})")
     elif rows[0].get("accepted") is None:
-        print("\nAcceptance is UNKNOWN: pass --clean_ft_clean_r1 and --pat_attacked_r1 from Phase 1.")
+        print("\nAcceptance is UNKNOWN: use --common_eval_json from shared validation screening.")
     elif not rows[0]["accepted"]:
         print("\nNo configuration met the Task 2.6 criterion. Stop and reassess with the supervisor")
         print("before training the full run matrix.")

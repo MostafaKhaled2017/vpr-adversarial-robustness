@@ -11,15 +11,12 @@
 #   Task 2.5  --attack_ramp_epochs    attack-hardness curriculum
 #   Task 2.6  pilot grid -> select -> final seeds -> evaluate
 #
-# REQUIRES PHASE 1. The Task 2.6 acceptance criterion is stated relative to Phase 1's arms
-# (clean R@1 within PHASE2_MAX_CLEAN_DROP of clean-FT, attacked R@1 at least PAT's), so the
-# 'select' stage needs those two baselines. Pass them explicitly, or let the script read
-# them from output/phase1/phase1_three_way_table.csv. The code stages (pilot training) will
-# run without Phase 1, but you cannot judge the result.
+# The select stage ranks Phase 2 pilots from a common rank-PGD validation evaluation.
+# Phase 1 checkpoints and test results are reserved for the final comparison.
 #
 # Usage:
 #   scripts/phase2_supervlad.sh pilot [--run-root DIR]  # new grid, or resume DIR
-#   scripts/phase2_supervlad.sh select --run-root DIR   # rank this pilot against Phase 1
+#   scripts/phase2_supervlad.sh select --run-root DIR   # rank this pilot from common validation eval
 #   scripts/phase2_supervlad.sh final [--run-root DIR]  # train selected config on seeds {0, 1}
 #   scripts/phase2_supervlad.sh eval      # evaluate final checkpoints + Phase 1 arms
 #   scripts/phase2_supervlad.sh all
@@ -32,9 +29,7 @@
 #   PHASE2_RAMP_EPOCHS        attack-hardness ramp   (default: 5)
 #   PHASE2_ABORT_KNN          collapse abort threshold (default: 0.15)
 #   PHASE2_WINNER             skip 'select' and force a config label
-#   PHASE2_CLEAN_FT_CLEAN_R1  Phase 1 clean-FT clean R@1 baseline
-#   PHASE2_PAT_ATTACKED_R1    Phase 1 PAT attacked R@1 baseline
-#   PHASE2_MAX_CLEAN_DROP     acceptable clean R@1 loss (default: 2.0)
+#   PHASE2_COMMON_EVAL_JSON   Common validation rank-evaluation report for selection
 #   PHASE2_DATASETS           evaluation datasets (default: "msls sped")
 #   PHASE2_EPSILONS           attack budgets (default: "0.01 0.1")
 #   PHASE2_OUTPUT_ROOT        evaluation output root (default: output/phase2)
@@ -67,11 +62,9 @@ POOLS=${PHASE2_POOLS:-"0 4096"}
 SEEDS=${PHASE2_SEEDS:-"0 1"}
 RAMP_EPOCHS=${PHASE2_RAMP_EPOCHS:-5}
 ABORT_KNN=${PHASE2_ABORT_KNN:-0.15}
-MAX_CLEAN_DROP=${PHASE2_MAX_CLEAN_DROP:-2.0}
 DATASETS=${PHASE2_DATASETS:-"msls sped"}
 EPSILONS=${PHASE2_EPSILONS:-"0.01 0.1"}
 OUTPUT_ROOT=${PHASE2_OUTPUT_ROOT:-output/phase2}
-PHASE1_OUTPUT_ROOT=${PHASE1_OUTPUT_ROOT:-output/phase1}
 DRY_RUN=${PHASE2_DRY_RUN:-0}
 BASE_PATH=${PHASE1_BASE_PATH:-${SUPERVLAD_BASE_CHECKPOINT:-checkpoints/SuperVLAD_base.pth}}
 FROM_SCRATCH=${SUPERVLAD_FROM_SCRATCH:-0}
@@ -272,42 +265,6 @@ stage_pilot() {
   done
 }
 
-# Read the Phase 1 baselines out of the three-way table when they were not passed in.
-resolve_phase1_baselines() {
-  CLEAN_FT_CLEAN_R1=${PHASE2_CLEAN_FT_CLEAN_R1:-}
-  PAT_ATTACKED_R1=${PHASE2_PAT_ATTACKED_R1:-}
-
-  local table="${PHASE1_OUTPUT_ROOT}/phase1_three_way_table.csv"
-  if { [ -z "${CLEAN_FT_CLEAN_R1}" ] || [ -z "${PAT_ATTACKED_R1}" ]; } && [ -f "${table}" ]; then
-    local parsed
-    parsed="$("${PYTHON}" - "${table}" <<'PYTHON'
-import csv, sys
-from collections import defaultdict
-
-clean_ft, pat = [], []
-with open(sys.argv[1], newline="", encoding="utf-8") as handle:
-    for row in csv.DictReader(handle):
-        if row["arm"] == "clean_ft" and row.get("clean_r1_mean"):
-            clean_ft.append(float(row["clean_r1_mean"]))
-        if row["arm"] == "pat" and row.get("attacked_r1_mean"):
-            pat.append(float(row["attacked_r1_mean"]))
-
-# Average across datasets and epsilons: a single scalar gate for the pilot sweep. The
-# reported comparison is always per-condition; this is only for picking a winner.
-print(sum(clean_ft) / len(clean_ft) if clean_ft else "", sum(pat) / len(pat) if pat else "")
-PYTHON
-)"
-    [ -z "${CLEAN_FT_CLEAN_R1}" ] && CLEAN_FT_CLEAN_R1="$(echo "${parsed}" | cut -d' ' -f1)"
-    [ -z "${PAT_ATTACKED_R1}" ] && PAT_ATTACKED_R1="$(echo "${parsed}" | cut -d' ' -f2)"
-  fi
-
-  if [ -z "${CLEAN_FT_CLEAN_R1}" ] || [ -z "${PAT_ATTACKED_R1}" ]; then
-    echo "WARNING: Phase 1 baselines unavailable — acceptance will be reported as unknown." >&2
-    echo "         Run scripts/phase1_supervlad.sh, or set PHASE2_CLEAN_FT_CLEAN_R1 and" >&2
-    echo "         PHASE2_PAT_ATTACKED_R1 explicitly." >&2
-  fi
-}
-
 stage_select() {
   if [ -z "${RUN_ROOT}" ]; then
     echo "select requires --run-root so pilot attempts cannot be mixed" >&2
@@ -315,7 +272,11 @@ stage_select() {
   fi
   ensure_pilot_root
   acquire_pilot_lock
-  resolve_phase1_baselines
+  local common_eval_json=${PHASE2_COMMON_EVAL_JSON:-}
+  if [ -z "${common_eval_json}" ] || [ ! -f "${common_eval_json}" ]; then
+    echo "select requires PHASE2_COMMON_EVAL_JSON from the common validation screening run." >&2
+    return 2
+  fi
 
   local -a run_args=()
   for tau in ${TAUS}; do
@@ -347,18 +308,14 @@ stage_select() {
     return 1
   fi
 
-  local -a baseline_args=()
-  [ -n "${CLEAN_FT_CLEAN_R1}" ] && baseline_args+=(--clean_ft_clean_r1 "${CLEAN_FT_CLEAN_R1}")
-  [ -n "${PAT_ATTACKED_R1}" ] && baseline_args+=(--pat_attacked_r1 "${PAT_ATTACKED_R1}")
-
-  echo "=== PILOT RANKING (criterion: clean R@1 within ${MAX_CLEAN_DROP} of clean-FT, attacked R@1 >= PAT)"
+  echo "=== PILOT RANKING (common validation rank-PGD; highest attacked R@1 wins)"
   local ranking_markdown="${RUN_ROOT}/pilot_ranking.md"
   local ranking_json="${RUN_ROOT}/pilot_ranking.json"
   WINNER_FILE="${RUN_ROOT}/pilot_winner.txt"
   run "${PYTHON}" -m src.phase2_pilot_summary \
     "${run_args[@]}" \
-    "${baseline_args[@]}" \
-    --max_clean_drop "${MAX_CLEAN_DROP}" \
+    --common_eval_json "${common_eval_json}" \
+    --phase2_only \
     --output_markdown "${ranking_markdown}" \
     --output_json "${ranking_json}"
 

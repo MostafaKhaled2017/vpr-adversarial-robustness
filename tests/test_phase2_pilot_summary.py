@@ -13,8 +13,11 @@ if str(SUPERVLAD_ROOT) not in sys.path:
 from src.phase2_pilot_summary import (
     best_validation_epoch,
     meets_acceptance,
+    rank_common_evaluation,
+    rank_phase2_only,
     rank_pilot_runs,
     read_collapse_metrics,
+    read_common_evaluation,
 )
 
 FIELDNAMES = [
@@ -100,6 +103,19 @@ class BestEpochTests(unittest.TestCase):
     def test_a_missing_csv_returns_none(self):
         with tempfile.TemporaryDirectory() as run_dir:
             self.assertIsNone(best_validation_epoch(Path(run_dir)))
+
+    def test_initial_validation_epoch_is_not_a_trained_candidate(self):
+        with tempfile.TemporaryDirectory() as run_dir:
+            write_validation_csv(run_dir, [(-1, 90.0, 90.0, 90.0), (1, 89.0, 88.0, 88.0)])
+            Path(run_dir, "initial_validation_model.pth").write_bytes(b"initial")
+            Path(run_dir, "best_model.pth").write_bytes(b"initial")
+
+            best = best_validation_epoch(Path(run_dir))
+            rows = rank_pilot_runs([("pilot", Path(run_dir))], None, None)
+
+        self.assertEqual(best["epoch"], 1)
+        self.assertFalse(rows[0]["eligible"])
+        self.assertEqual(rows[0]["status"], "excluded_initial_checkpoint")
 
 
 class CollapseReadingTests(unittest.TestCase):
@@ -224,6 +240,86 @@ class RankingTests(unittest.TestCase):
             rows = rank_pilot_runs(runs, clean_ft_clean_r1=86.0, pat_attacked_r1=58.0, max_clean_drop=2.0)
 
         self.assertNotIn("unfinished", [row["label"] for row in rows])
+
+
+class CommonEvaluationTests(unittest.TestCase):
+    @staticmethod
+    def report():
+        def conditions(clean, attacked):
+            return {
+                "clean_all_queries": {"recalls": {"R@1": clean}},
+                "rank_pgd_linf_eps_0.01": {"recalls": {"R@1": attacked - 1}},
+                "rank_pgd_linf_eps_0.1": {"recalls": {"R@1": attacked + 1}},
+            }
+
+        return {
+            "dataset_split": "val",
+            "attack": {"mode": "rank_pgd_linf"},
+            "results": {
+                "msls": {
+                    "clean_ft_s0": conditions(90.0, 70.0),
+                    "clean_ft_s1": conditions(88.0, 70.0),
+                    "pat_s0": conditions(87.0, 75.0),
+                    "pat_s1": conditions(87.0, 73.0),
+                    "pilot": conditions(87.5, 75.0),
+                }
+            },
+        }
+
+    def test_common_evaluation_uses_shared_controls_and_attack_conditions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report_path = Path(directory) / "report.json"
+            report_path.write_text(json.dumps(self.report()), encoding="utf-8")
+            run_dir = Path(directory) / "pilot"
+            run_dir.mkdir()
+            write_validation_csv(run_dir, [(1, 87.5, 70.0, 75.0)])
+            (run_dir / "initial_validation_model.pth").write_bytes(b"initial")
+            (run_dir / "best_model.pth").write_bytes(b"trained")
+
+            rows = rank_common_evaluation([("pilot", run_dir)], read_common_evaluation(report_path), 2.0)
+
+        self.assertTrue(rows[0]["accepted"])
+        self.assertAlmostEqual(rows[0]["clean_r1_drop_vs_clean_ft"], 1.5)
+        self.assertAlmostEqual(rows[0]["attacked_r1_gain_vs_pat"], 1.0)
+
+    def test_common_evaluation_rejects_test_split_reports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report = self.report()
+            report["dataset_split"] = "test"
+            path = Path(directory) / "report.json"
+            path.write_text(json.dumps(report), encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                read_common_evaluation(path)
+
+    def test_phase2_only_ranking_uses_attacked_recall_without_controls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report = self.report()
+            report["results"]["msls"] = {
+                "pilot_a": self.report()["results"]["msls"]["pilot"],
+                "pilot_b": self.report()["results"]["msls"]["pilot"],
+            }
+            report["results"]["msls"]["pilot_b"] = {
+                **report["results"]["msls"]["pilot_b"],
+                "rank_pgd_linf_eps_0.01": {"recalls": {"R@1": 80.0}},
+                "rank_pgd_linf_eps_0.1": {"recalls": {"R@1": 82.0}},
+            }
+            report_path = Path(directory) / "report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            runs = []
+            for label in ("pilot_a", "pilot_b"):
+                run_dir = Path(directory) / label
+                run_dir.mkdir()
+                write_validation_csv(run_dir, [(1, 80.0, 70.0, 75.0)])
+                (run_dir / "initial_validation_model.pth").write_bytes(b"initial")
+                (run_dir / "best_model.pth").write_bytes(b"trained")
+                runs.append((label, run_dir))
+
+            rows = rank_phase2_only(runs, read_common_evaluation(report_path))
+
+        self.assertEqual(rows[0]["label"], "pilot_b")
+        self.assertTrue(rows[0]["eligible"])
+        self.assertIsNone(rows[0]["accepted"])
 
 
 if __name__ == "__main__":

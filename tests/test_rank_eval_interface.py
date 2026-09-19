@@ -61,6 +61,8 @@ class RankEvalInterfaceTests(unittest.TestCase):
         parser = rank_eval.build_parser()
 
         self.assertIn("--datasets", parser._option_string_actions)
+        self.assertIn("--dataset_split", parser._option_string_actions)
+        self.assertEqual(parser._option_string_actions["--dataset_split"].default, "test")
         self.assertIn("--model_type", parser._option_string_actions)
         self.assertIn("--model_paths", parser._option_string_actions)
         self.assertIn("--model_tags", parser._option_string_actions)
@@ -83,6 +85,14 @@ class RankEvalInterfaceTests(unittest.TestCase):
         self.assertIn("--attack_image_amplification", parser._option_string_actions)
         self.assertNotIn("--resume", parser._option_string_actions)
         self.assertNotIn("--eval_dataset_name", parser._option_string_actions)
+
+    def test_dataset_layout_validation_supports_the_validation_split(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "msls" / "images" / "val" / "database").mkdir(parents=True)
+            (root / "msls" / "images" / "val" / "queries").mkdir()
+
+            rank_eval.validate_dataset_layouts(str(root), ["msls"], "val")
 
     def test_model_type_and_model_paths_are_required(self):
         parser = rank_eval.build_parser()
