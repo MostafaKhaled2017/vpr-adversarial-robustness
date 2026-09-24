@@ -33,6 +33,7 @@ from .losses import (
     query_is_correct,
 )
 from .negative_pool import NegativePool
+from .rank_validation import evaluate_rank_validation, sample_validation_queries, select_checkpoint
 from .targets import RetrievalAttackBatch, select_rank_targets
 
 
@@ -281,11 +282,23 @@ def log_validation_recalls(epoch_label: str, metrics: Dict[str, object]) -> None
         logging.info("Validation recalls %s attacked/mean: %s", epoch_label, format_reported_recalls(attacked_mean))
 
 
+def log_rank_selection(scores: Dict[str, object], initial_clean_r1: float, max_clean_drop: float) -> None:
+    logging.info(
+        "Selection: clean R@1 %.2f (initial %.2f, limit %.2f), mean attacked R@1 %.2f, eligible=%s",
+        scores["clean_score"],
+        initial_clean_r1,
+        initial_clean_r1 - max_clean_drop,
+        scores["robust_score"],
+        scores["eligible"],
+    )
+
+
 def build_validation_metrics_record(
     epoch_num: int,
     metrics: Dict[str, object],
     validation_scores: Dict[str, float],
     collapse: Dict[str, float] | None = None,
+    initial_clean_r1: float | None = None,
 ) -> Dict[str, object]:
     attacks = {
         attack_name: {f"R@{recall_at}": recall_value(attack_metrics, recall_at) for recall_at in REPORTED_RECALL_VALUES}
@@ -293,7 +306,7 @@ def build_validation_metrics_record(
         if attack_name != "NoAttack"
     }
     attacked_mean = compute_attacked_mean_metrics(metrics)
-    return {
+    record = {
         "epoch": epoch_num,
         "clean": {f"R@{recall_at}": recall_value(metrics["NoAttack"], recall_at) for recall_at in REPORTED_RECALL_VALUES},
         "attacks": attacks,
@@ -307,6 +320,11 @@ def build_validation_metrics_record(
         "selection_score": validation_scores["selection_score"],
         "collapse": collapse,
     }
+    if "eligible" in validation_scores:
+        record["eligible"] = validation_scores["eligible"]
+    if initial_clean_r1 is not None:
+        record["initial_clean_r1"] = initial_clean_r1
+    return record
 
 
 def append_validation_metrics(args, record: Dict[str, object]) -> None:
@@ -387,6 +405,7 @@ def build_checkpoint_state(
     negative_pool=None,
     collapse_sample_indices=None,
     reference_descriptors=None,
+    initial_clean_r1=None,
 ) -> Dict[str, object]:
     return {
         "epoch_num": epoch_num,
@@ -401,7 +420,9 @@ def build_checkpoint_state(
         "best_r5": next_best_score,
         "not_improved_num": next_not_improved,
         "tensorboard_dir": args.tensorboard_dir,
-        "validation_metrics": build_validation_metrics_record(epoch_num, metrics, validation_scores),
+        "validation_metrics": build_validation_metrics_record(
+            epoch_num, metrics, validation_scores, initial_clean_r1=initial_clean_r1
+        ),
         "rng_state": capture_rng_state(),
         "runtime_state": {
             "iteration": int(iteration),
@@ -410,6 +431,7 @@ def build_checkpoint_state(
             "reference_descriptors": None
             if reference_descriptors is None
             else reference_descriptors.detach().cpu(),
+            "initial_clean_r1": initial_clean_r1,
         },
     }
 
@@ -468,9 +490,26 @@ def run_training(
     current_lr = float(optimizer.param_groups[0]["lr"])
     restore_rng_state(resume_runtime_state.get("rng_state"))
 
-    if start_epoch == 0 and not resume_runtime_state and not args.skip_initial_validation:
-        logging.info("Begin initial validation before training")
-        initial_metrics = evaluate_against_attacks_retrieval(
+    # Spec D4: rank_pgd validates clean and rank-PGD recall on a fixed query sample and
+    # selects the most robust epoch whose clean R@1 stays within
+    # --selection_max_clean_drop of the initial model's (C0, kept across resumes).
+    rank_protocol = getattr(args, "validation_protocol", "legacy") == "rank_pgd"
+    initial_clean_r1 = resume_runtime_state.get("initial_clean_r1")
+    if rank_protocol:
+        validation_query_indices = sample_validation_queries(val_ds.get_positives(), args.val_queries, args.val_query_seed)
+        logging.info("Rank-PGD validation on %d sampled queries.", len(validation_query_indices))
+
+    def validate(epoch_initial: bool):
+        if rank_protocol:
+            metrics = evaluate_rank_validation(args, model, val_ds, validation_query_indices)
+            scores = select_checkpoint(
+                metrics,
+                None if epoch_initial else initial_clean_r1,
+                args.selection_max_clean_drop,
+                args.is_clean_only,
+            )
+            return metrics, scores
+        metrics = evaluate_against_attacks_retrieval(
             args,
             model,
             val_ds,
@@ -478,8 +517,17 @@ def run_training(
             writer=writer,
             iteration=iteration,
         )
-        initial_scores = compute_validation_selection_scores(initial_metrics, resolved_selection_robust_weight(args))
-        initial_record = build_validation_metrics_record(-1, initial_metrics, initial_scores)
+        return metrics, compute_validation_selection_scores(metrics, resolved_selection_robust_weight(args))
+
+    if start_epoch == 0 and not resume_runtime_state and not args.skip_initial_validation:
+        logging.info("Begin initial validation before training")
+        initial_metrics, initial_scores = validate(True)
+        if rank_protocol:
+            initial_clean_r1 = initial_scores["clean_score"]
+            log_rank_selection(initial_scores, initial_clean_r1, args.selection_max_clean_drop)
+        initial_record = build_validation_metrics_record(
+            -1, initial_metrics, initial_scores, initial_clean_r1=initial_clean_r1
+        )
         append_validation_metrics(args, initial_record)
         log_validation_recalls("before training", initial_metrics)
 
@@ -499,6 +547,7 @@ def run_training(
             negative_pool=negative_pool,
             collapse_sample_indices=collapse_sample_indices,
             reference_descriptors=reference_descriptors,
+            initial_clean_r1=initial_clean_r1,
         )
         save_checkpoint(args, initial_checkpoint_state, True, filename="initial_validation_model.pth")
         writer.add_scalar("val_initial/clean_score", initial_scores["clean_score"], 0)
@@ -509,6 +558,12 @@ def run_training(
             initial_scores["clean_score"],
             initial_scores["robust_score"],
             initial_scores["selection_score"],
+        )
+
+    if rank_protocol and not args.is_clean_only and initial_clean_r1 is None:
+        raise RuntimeError(
+            "--validation_protocol rank_pgd needs the initial clean R@1, but the resumed checkpoint "
+            "does not store it; resume from a checkpoint trained with this protocol."
         )
 
     outcome = "completed"
@@ -743,22 +798,18 @@ def run_training(
         )
 
         logging.info("Begin validation")
-        metrics = evaluate_against_attacks_retrieval(
-            args,
-            model,
-            val_ds,
-            validation_attacks,
-            writer=writer,
-            iteration=iteration,
-        )
-        validation_scores = compute_validation_selection_scores(metrics, resolved_selection_robust_weight(args))
+        metrics, validation_scores = validate(False)
         clean_score = validation_scores["clean_score"]
         robust_score = validation_scores["robust_score"]
         selection_score = validation_scores["selection_score"]
         collapse = measure_collapse(args, model, val_ds, reference_descriptors, collapse_sample_indices)
-        validation_record = build_validation_metrics_record(epoch_num + 1, metrics, validation_scores, collapse)
+        validation_record = build_validation_metrics_record(
+            epoch_num + 1, metrics, validation_scores, collapse, initial_clean_r1=initial_clean_r1
+        )
         append_validation_metrics(args, validation_record)
         log_validation_recalls(f"after epoch {epoch_num + 1:02d}", metrics)
+        if rank_protocol and initial_clean_r1 is not None:
+            log_rank_selection(validation_scores, initial_clean_r1, args.selection_max_clean_drop)
         log_collapse_report(writer, collapse, epoch_num)
 
         writer.add_scalar("val/clean_score", clean_score, epoch_num)
@@ -791,6 +842,7 @@ def run_training(
             negative_pool=negative_pool,
             collapse_sample_indices=collapse_sample_indices,
             reference_descriptors=reference_descriptors,
+            initial_clean_r1=initial_clean_r1,
         )
         save_checkpoint(args, checkpoint_state, is_best, filename="last_model.pth")
         intermediate_name = f"checkpoint_epoch_{epoch_num + 1:04d}.pth"

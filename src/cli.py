@@ -236,6 +236,30 @@ def build_parser():
         help="Weight of the robust score in the validation selection score; clean weight is 1 minus this.",
     )
     parser.add_argument(
+        "--validation_protocol",
+        choices=["legacy", "rank_pgd"],
+        default="legacy",
+        help="legacy: perceptual validation attacks and the weighted score. rank_pgd: clean and "
+        "rank-PGD L-inf recall on a fixed query sample, selecting the most robust epoch whose "
+        "clean R@1 stays within --selection_max_clean_drop of the initial model.",
+    )
+    parser.add_argument("--val_queries", type=int, default=2000, help="Validation queries sampled for rank_pgd.")
+    parser.add_argument("--val_query_seed", type=int, default=0, help="Seed of the rank_pgd validation query sample.")
+    parser.add_argument("--val_rank_steps", type=int, default=10, help="Rank-PGD steps in rank_pgd validation.")
+    parser.add_argument(
+        "--val_rank_epsilons",
+        type=float,
+        nargs="+",
+        default=[0.01, 0.1],
+        help="Rank-PGD L-inf budgets in rank_pgd validation.",
+    )
+    parser.add_argument(
+        "--selection_max_clean_drop",
+        type=float,
+        default=1.0,
+        help="Largest clean R@1 drop (points) from the initial validation for an epoch to be selectable.",
+    )
+    parser.add_argument(
         "--early_stop_min_delta",
         type=float,
         default=0.0,
@@ -306,6 +330,16 @@ def parse_arguments(argv=None):
         raise ValueError("--clip_grad must be positive")
     if not 0.0 <= args.selection_robust_weight <= 1.0:
         raise ValueError("--selection_robust_weight must be between 0 and 1 (inclusive)")
+    if args.validation_protocol == "rank_pgd" and args.skip_initial_validation:
+        raise ValueError("--validation_protocol rank_pgd requires the initial validation")
+    if args.val_queries < 1:
+        raise ValueError("--val_queries must be at least 1")
+    if args.val_rank_steps < 1:
+        raise ValueError("--val_rank_steps must be at least 1")
+    if any(epsilon <= 0 for epsilon in args.val_rank_epsilons):
+        raise ValueError("--val_rank_epsilons must be positive")
+    if args.selection_max_clean_drop < 0:
+        raise ValueError("--selection_max_clean_drop must be non-negative")
     if args.weight_decay is not None and args.weight_decay < 0:
         raise ValueError("--weight_decay must be non-negative")
     if args.train_resize is None:
@@ -344,4 +378,6 @@ def resolve_checkpoint_selection_rule(args):
     else:
         args.checkpoint_selection_rule = "robust_weighted"
         args.effective_selection_robust_weight = args.selection_robust_weight
+    if getattr(args, "validation_protocol", "legacy") == "rank_pgd":
+        args.checkpoint_selection_rule = "clean_recall" if args.is_clean_only else "clean_constrained_rank_pgd"
     return args
