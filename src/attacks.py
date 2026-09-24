@@ -457,6 +457,36 @@ def build_attack_namespace(model: nn.Module, args) -> Dict[str, object]:
                 **kwargs,
             )
 
+    class RankLinfAttack(nn.Module):
+        """L∞ rank-PGD in normalized space, the test's threat model, for training (spec D6).
+
+        Uses the evaluation attack's objective and units so training and test share the
+        threat model. ``set_strength_scale`` scales epsilon for the attack-strength ramp.
+        """
+
+        def __init__(self, model, epsilon: float = 0.1, steps: int = 5):
+            super().__init__()
+            self.model = unwrap_model(model)
+            self.base_epsilon = float(epsilon)
+            self.steps = int(steps)
+            self.strength_scale = 1.0
+
+        def set_strength_scale(self, scale: float) -> None:
+            self.strength_scale = float(scale)
+
+        def forward(self, inputs: Tensor, targets: RetrievalAttackBatch) -> Tensor:
+            from .rank_attacks import RankAttackConfig, RankPGDAttack
+
+            config = RankAttackConfig(
+                epsilon=self.base_epsilon * self.strength_scale,
+                steps=self.steps,
+                margin=args.adv_margin,
+                device=args.device,
+            )
+            with amp_autocast(False, args.device), attack_generation_context(self.model):
+                result = RankPGDAttack(self.model, config)(inputs.float(), targets)
+            return result.adversarial.detach()
+
     return {
         "model": unwrap_model(model),
         "NoAttack": NoAttack,
@@ -470,6 +500,7 @@ def build_attack_namespace(model: nn.Module, args) -> Dict[str, object]:
         "FastLagrangePerceptualAttack": FastLagrangePerceptualAttack,
         "PerceptualPGDAttack": PerceptualPGDAttack,
         "LagrangePerceptualAttack": LagrangePerceptualAttack,
+        "RankLinfAttack": RankLinfAttack,
         "AutoAttack": lambda *a, **k: UnsupportedAttack(*a, attack_name="AutoAttack", **k),
         "AutoLinfAttack": lambda *a, **k: UnsupportedAttack(*a, attack_name="AutoLinfAttack", **k),
         "AutoL2Attack": lambda *a, **k: UnsupportedAttack(*a, attack_name="AutoL2Attack", **k),
