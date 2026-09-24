@@ -219,6 +219,17 @@ class FaissUtilsTests(unittest.TestCase):
         self.assertEqual(targets[0]["positive_index"], 0)
         np.testing.assert_array_equal(targets[0]["negative_indexes"], np.array([1]))
 
+    def test_build_attack_targets_carries_every_positive(self):
+        database = np.array([[0.0], [1.0], [1.5], [10.0]], dtype=np.float32)
+        queries = np.array([[0.1]], dtype=np.float32)
+        positives = [np.array([0, 1], dtype=np.int64)]
+
+        eval_ds = SimpleNamespace(database_num=4, get_positives=lambda: positives)
+        target_args = Namespace(device="cpu", adv_negatives=1)
+        targets, _ = build_attack_targets(target_args, eval_ds, database, queries)
+
+        np.testing.assert_array_equal(targets[0]["positive_indexes"], positives[0])
+
 
 if __name__ == "__main__":
     unittest.main()

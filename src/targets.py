@@ -228,6 +228,7 @@ def build_attack_targets(
             {
                 "query_index": int(query_index),
                 "positive_index": positive_index,
+                "positive_indexes": positive_candidates,
                 "negative_indexes": negative_indexes,
             }
         )

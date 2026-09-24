@@ -39,7 +39,7 @@ from src.retrieval_metrics import (
     rank_metric_bundle,
     squared_l2_distance_chunk,
 )
-from src.targets import RetrievalAttackBatch, build_attack_targets
+from src.targets import RetrievalAttackBatch, build_attack_targets, pad_positive_sets
 
 
 SUPPORTED_TEST_METHODS = {"hard_resize", "central_crop", "single_query"}
@@ -840,6 +840,7 @@ def build_sampled_attack_targets(
                 "query_index": int(query_index),
                 "query_feature_index": int(query_row),
                 "positive_index": positive_index,
+                "positive_indexes": positive_candidates,
                 "negative_indexes": negative_candidates[negative_order[: args.adv_negatives]].astype(np.int64),
             }
         )
@@ -856,7 +857,7 @@ def make_attack_batch(
     query_tensors = []
     query_indices = []
     query_feature_indices = []
-    positive_descriptors = []
+    positive_banks = []
     negative_descriptors = []
 
     for target in targets:
@@ -867,15 +868,26 @@ def make_attack_batch(
         query_indices.append(query_index)
         query_feature_indices.append(query_feature_index)
 
-        positive_descriptors.append(database_features[int(target["positive_index"])])
+        # Attack every positive (Task 3), not just the one nearest the clean query: R@1
+        # counts a retrieval as correct if *any* positive is closest, so the attack must
+        # push away whichever positive ends up closest under perturbation.
+        positive_rows = np.asarray(target.get("positive_indexes", [target["positive_index"]]), dtype=np.int64)
+        positive_banks.append(
+            database_features[torch.as_tensor(positive_rows, dtype=torch.long, device=database_features.device)]
+        )
         negative_indexes = torch.as_tensor(target["negative_indexes"], dtype=torch.long, device=args.device)
         negative_descriptors.append(database_features[negative_indexes])
+
+    positive_descriptors, positive_mask = pad_positive_sets(
+        positive_banks, database_features.shape[1], database_features.device
+    )
 
     attack_targets = RetrievalAttackBatch(
         query_indices=torch.as_tensor(query_indices, dtype=torch.long, device=args.device),
         clean_query_descriptors=torch.from_numpy(clean_query_features[query_feature_indices]).to(args.device),
-        positive_descriptors=torch.stack(positive_descriptors, dim=0),
+        positive_descriptors=positive_descriptors,
         negative_descriptors=torch.stack(negative_descriptors, dim=0),
+        positive_mask=positive_mask,
     )
     return torch.stack(query_tensors, dim=0).to(args.device), attack_targets
 

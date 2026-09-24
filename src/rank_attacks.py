@@ -206,7 +206,11 @@ class RankPGDAttack(nn.Module):
         negative_distance = torch.norm(descriptors.unsqueeze(1) - negative_descriptors, p=2, dim=2)
         hard_negative_distance = negative_distance.min(dim=1).values
         score = self.config.margin + positive_distance - hard_negative_distance
-        return torch.relu(score), positive_distance, hard_negative_distance, descriptors
+        # Ascend the raw score, not relu(score): clamping at 0 makes the objective flat
+        # (zero gradient) for every already-successful query, so PGD would never perturb
+        # a confidently-correct query even though pushing it further from the boundary
+        # still helps robustness.
+        return score, positive_distance, hard_negative_distance, descriptors
 
     def _audit_components(self, inputs: Tensor, targets: RetrievalAttackBatch) -> Dict[str, Tensor]:
         with torch.no_grad():
