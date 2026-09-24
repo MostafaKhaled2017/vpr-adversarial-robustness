@@ -75,7 +75,7 @@ class ListwiseLossTests(unittest.TestCase):
 
         loss = compute_listwise_loss(query, positives, negatives, tau=0.05, k=1)
 
-        self.assertGreater(float(loss), 1.0)
+        self.assertGreater(float(loss), 4 * 0.05 ** 2)
 
     def test_larger_k_tolerates_a_positive_ranked_below_a_few_negatives(self):
         query = points(0.0)
@@ -86,8 +86,8 @@ class ListwiseLossTests(unittest.TestCase):
         strict = compute_listwise_loss(query, positives, negatives, tau=0.05, k=1)
         lenient = compute_listwise_loss(query, positives, negatives, tau=0.05, k=5)
 
-        self.assertGreater(float(strict), 1.0)
-        self.assertLess(float(lenient), 1e-3)
+        self.assertGreater(float(strict), 4 * 0.05 ** 2)
+        self.assertLess(float(lenient), 4 * 0.05 ** 2 * 1e-3)
 
     def test_only_the_best_positive_has_to_succeed(self):
         query = points(0.0)
@@ -107,7 +107,7 @@ class ListwiseLossTests(unittest.TestCase):
 
         loss = compute_listwise_loss(query, positives, negatives, tau=0.05, k=1, positive_mask=positive_mask)
 
-        self.assertGreater(float(loss), 1.0)
+        self.assertGreater(float(loss), 4 * 0.05 ** 2)
 
     def test_gradient_flows_to_the_query(self):
         # The positive and the negative sit on different axes. Collinear points would make
@@ -136,7 +136,7 @@ class ListwiseLossTests(unittest.TestCase):
         loss = compute_listwise_loss(query, positives, negatives, tau=0.05, k=1)
         loss.backward()
 
-        self.assertGreater(float(loss), 1.0)
+        self.assertGreater(float(loss), 4 * 0.05 ** 2)
         self.assertEqual(float(query.grad.abs().sum()), 0.0)
 
     def test_loss_is_the_mean_of_the_per_sample_scores(self):
@@ -148,7 +148,7 @@ class ListwiseLossTests(unittest.TestCase):
         loss = compute_listwise_loss(query, positives, negatives, tau=0.05, k=1)
 
         self.assertEqual(scores.shape, (2,))
-        self.assertAlmostEqual(float(loss), float(scores.mean()), places=6)
+        self.assertAlmostEqual(float(loss), float(4 * 0.05 ** 2 * scores.mean()), places=6)
 
     def test_two_dimensional_positives_are_accepted(self):
         query = points(0.0)
@@ -158,6 +158,24 @@ class ListwiseLossTests(unittest.TestCase):
         loss = compute_listwise_loss(query, positives, negatives, tau=0.05, k=1)
 
         self.assertLess(float(loss), 1e-3)
+
+
+class ListwiseLossScaleTests(unittest.TestCase):
+    def test_loss_is_scaled_scores(self):
+        query = points(0.0, 0.0)
+        positives = torch.stack([points(1.0), points(5.0)], dim=0)
+        negatives = torch.stack([points(5.0), points(1.0)], dim=0)
+        scores = compute_listwise_scores(query, positives, negatives, tau=0.05, k=1)
+        loss = compute_listwise_loss(query, positives, negatives, tau=0.05, k=1)
+        self.assertAlmostEqual(float(loss), float(4 * 0.05 ** 2 * scores.mean()), places=6)
+
+    def test_distance_slope_is_at_most_one(self):
+        for gap in (-0.2, -0.05, 0.0, 0.05, 0.2, 1.0):
+            query = points(0.0).requires_grad_(True)
+            positives = points(1.0 + gap).unsqueeze(0)
+            negatives = points(1.0).unsqueeze(0)
+            compute_listwise_loss(query, positives, negatives, tau=0.05, k=1).backward()
+            self.assertLessEqual(float(query.grad.abs().max()), 1.0 + 1e-4)
 
 
 if __name__ == "__main__":

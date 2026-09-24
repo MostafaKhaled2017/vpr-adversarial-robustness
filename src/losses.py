@@ -140,7 +140,17 @@ def compute_listwise_loss(
     k: int = DEFAULT_LISTWISE_K,
     positive_mask: Optional[Tensor] = None,
 ) -> Tensor:
-    return compute_listwise_scores(
+    """Scaled listwise Recall@k smooth surrogate (Task 4).
+
+    Multiplies softplus-based ranking loss by 4*tau^2 to normalize the slope in
+    descriptor distance to <= 1, matching the hinge loss behavior. Without scaling,
+    the softplus slope ≤ 1/tau reaches ~100 at tau=0.05, overwhelming clean-loss
+    gradients. After scaling, sigmoid slope ≤ 1/(4*tau) and softplus slope ≤ 1/tau.
+
+    compute_listwise_scores remains unscaled; perceptual attacks target it directly.
+    """
+    scale_factor = 4.0 * tau ** 2
+    return scale_factor * compute_listwise_scores(
         query_descriptor,
         positive_descriptor,
         negative_descriptors,
