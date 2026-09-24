@@ -198,7 +198,7 @@ class RankPGDAttack(nn.Module):
         return self._rank_components(inputs, targets)[0]
 
     def _rank_components(self, inputs: Tensor, targets: RetrievalAttackBatch) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-        descriptors = self.model(inputs, queryflag=0).float()
+        descriptors = self.model(inputs, queryflag=1).float()
         positive_descriptors = targets.positive_descriptors.detach().to(device=inputs.device, dtype=descriptors.dtype)
         negative_descriptors = targets.negative_descriptors.detach().to(device=inputs.device, dtype=descriptors.dtype)
         positive_mask = None if targets.positive_mask is None else targets.positive_mask.to(device=inputs.device)

@@ -524,6 +524,7 @@ def extract_features_for_models(
     desc: str,
     test_method: str,
     batch_size: int,
+    queryflag: int = 0,
 ) -> tuple[Dict[str, np.ndarray], Dict[str, float], float]:
     eval_ds.test_method = test_method
     ordered_indices = [int(index) for index in dataset_indices]
@@ -558,7 +559,7 @@ def extract_features_for_models(
 
                 for model_tag, (model, _) in models.items():
                     model_start = perf_counter()
-                    descriptors = model(device_inputs, queryflag=0).cpu().numpy()
+                    descriptors = model(device_inputs, queryflag=queryflag).cpu().numpy()
                     features[model_tag][positions, :] = descriptors
                     model_seconds[model_tag] += perf_counter() - model_start
                 progress.update(1)
@@ -588,6 +589,7 @@ def extract_clean_query_features(args, eval_ds, model: nn.Module) -> np.ndarray:
         desc="Clean queries",
         test_method=args.test_method,
         batch_size=query_batch_size(args),
+        queryflag=1,
     )
     return features["model"]
 
@@ -1328,7 +1330,7 @@ def generate_attacked_query_features(
 
         with torch.inference_mode():
             for model_tag, (model, _) in models.items():
-                descriptors = model(attack_result.adversarial, queryflag=0).cpu().numpy()
+                descriptors = model(attack_result.adversarial, queryflag=1).cpu().numpy()
                 attacked_features[model_tag][offset : offset + len(batch_targets), :] = descriptors
 
         for key, value in attack_result.metadata.items():
@@ -1539,6 +1541,7 @@ def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, 
         desc=f"{dataset_name}:audit queries",
         test_method=args.test_method,
         batch_size=query_batch_size(args),
+        queryflag=1,
     )
     clean_features = {
         model_tag: {"database": database_features[model_tag], "queries": query_features[model_tag]}
@@ -1742,6 +1745,7 @@ def prepare_dataset_context(
             desc=f"{dataset_name}:clean queries",
             test_method=args.test_method,
             batch_size=query_batch_size(args),
+            queryflag=1,
         )
         clean_features = {
             model_tag: {"database": database_features[model_tag], "queries": query_features[model_tag]}
@@ -1841,6 +1845,7 @@ def prepare_dataset_context(
         desc=f"{dataset_name}:sampled queries",
         test_method=args.test_method,
         batch_size=query_batch_size(args),
+        queryflag=1,
     )
     clean_features = {
         model_tag: {"database": database_features[model_tag], "queries": query_features[model_tag]}

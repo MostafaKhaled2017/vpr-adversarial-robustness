@@ -82,7 +82,7 @@ def compute_attack_losses(
     for attack in attacks:
         adv_queries = attack(query_inputs, attack_targets)
         with amp_autocast(False, args.device):
-            adv_query_descriptors = model(adv_queries, queryflag=0)
+            adv_query_descriptors = model(adv_queries, queryflag=1)
         adv_query_descriptors = adv_query_descriptors.float()
         rank_loss = compute_defense_loss(adv_query_descriptors, attack_targets, args)
         align_loss = compute_align_loss(
@@ -561,6 +561,11 @@ def run_training(
                         clean_descriptors_eval = model(flat_images, queryflag=0)
                     clean_descriptors_eval = clean_descriptors_eval.float()
                 clean_descriptor_view = clean_descriptors_eval.reshape(batch_size, images_per_place, -1)
+                with torch.no_grad():
+                    with amp_autocast(args.mixed_precision, args.device):
+                        independent_queries = model(images[:, 0], queryflag=1).float()
+                    clean_descriptor_view = clean_descriptor_view.clone()
+                    clean_descriptor_view[:, 0, :] = independent_queries
                 rank_targets = select_rank_targets(
                     clean_descriptor_view,
                     place_id,

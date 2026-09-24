@@ -110,7 +110,7 @@ class RetrievalAttackProxy(nn.Module):
 
         normalized_inputs = pixels_to_normalized(inputs)
         with amp_autocast(False, self.device):
-            query_descriptors = self.model(normalized_inputs, queryflag=0)
+            query_descriptors = self.model(normalized_inputs, queryflag=1)
         query_descriptors = query_descriptors.float()
         attack_scores = self.attack_scores(query_descriptors)
         zeros = torch.zeros_like(attack_scores)
