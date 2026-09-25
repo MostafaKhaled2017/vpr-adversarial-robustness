@@ -171,7 +171,7 @@ class OutputTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             base = self.build_finished_sweep(root)
-            sweep.main(["summarize", "--root", str(root), "--epochs", str(EPOCHS)])
+            sweep.main(["summarize", "--root", str(root), "--epochs", str(EPOCHS), "--batch-size", "32"])
             out = root / "summary"
             self.assertEqual((out / "mplc_star.env").read_text().strip(), "MPLC_V2_ATTACK_MIX=linf MPLC_V2_FREEZE_TE=4")
             rows = (out / "screens.csv").read_text().splitlines()
@@ -185,19 +185,21 @@ class OutputTests(unittest.TestCase):
             final_dir = root / sweep.run_name(sweep.config(**base), EPOCHS)
             (final_dir / "last_model.pth").write_bytes(b"x")
             (root / name(seed="1") / "last_model.pth").write_bytes(b"x")
-            sweep.main(["prune", "--root", str(root), "--epochs", str(EPOCHS)])
+            sweep.main(["prune", "--root", str(root), "--epochs", str(EPOCHS), "--batch-size", "32"])
             self.assertTrue((final_dir / "last_model.pth").is_file())
             self.assertFalse((root / name(seed="1") / "last_model.pth").exists())
 
     def test_settings_are_frozen_after_first_use(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            sweep.main(["next", "--root", str(root), "--epochs", "6", "--no-freeze"])
+            sweep.main(["next", "--root", str(root), "--epochs", "6", "--batch-size", "32", "--no-freeze"])
             self.assertFalse((root / sweep.CONFIG_NAME).exists())
-            sweep.main(["next", "--root", str(root), "--epochs", "9"])
+            sweep.main(["next", "--root", str(root), "--epochs", "9", "--batch-size", "32"])
             self.assertTrue((root / sweep.CONFIG_NAME).is_file())
             with self.assertRaises(SystemExit):
-                sweep.main(["next", "--root", str(root), "--epochs", "6"])
+                sweep.main(["next", "--root", str(root), "--epochs", "6", "--batch-size", "32"])
+            with self.assertRaises(SystemExit):
+                sweep.main(["next", "--root", str(root), "--epochs", "9", "--batch-size", "16"])
 
 
 class LauncherResumableModeTests(unittest.TestCase):
@@ -242,6 +244,29 @@ class LauncherResumableModeTests(unittest.TestCase):
             result = self.dry_run(root)
             self.assertIn("=== SKIP", result.stdout)
             self.assertNotIn("+ ", result.stdout)
+
+    def test_run_at_another_batch_size_is_neither_skipped_nor_resumed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / "mplc_v2_supervlad_mplc_ep9_s0"
+            run_dir.mkdir()
+            (run_dir / "last_model.pth").write_bytes(b"x")
+            (run_dir / "training_config.yaml").write_text("train_batch_size: 16\n")
+            result = self.dry_run(root)
+            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertIn("trained at batch size 16", result.stdout)
+
+            (run_dir / "run_status.json").write_text(json.dumps({"state": "completed"}))
+            self.assertEqual(self.dry_run(root).returncode, 1)
+
+            (run_dir / "training_config.yaml").write_text("train_batch_size: 32\n")
+            self.assertIn("=== SKIP", self.dry_run(root).stdout)
+
+    def test_recipe_uses_the_single_batch_size(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.dry_run(tmp)
+        self.assertIn("--batch_size=32", result.stdout)
+        self.assertNotIn("--batch_size=16", result.stdout)
 
 
 class DriverTests(unittest.TestCase):

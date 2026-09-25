@@ -19,14 +19,21 @@
 #   STEP1_PRUNE=1        after the sweep, delete the .pth files of every screen but MPLC*
 #   PYTHON               python interpreter                       (default: python)
 #
-# Outputs in ${STEP1_ROOT}/summary/, rebuilt before every screen and at the end: screens.csv / screens.md,
-# decisions.md, mplc_star.env (MPLC*'s settings for Step 2) and fig_*.pdf / fig_*.png.
+# The training batch size comes from SUPERVLAD_TRAIN_BATCH_SIZE (lib/supervlad_common.sh) and is
+# fixed in sweep_config.yaml with the other settings.
+#
+# Outputs in ${STEP1_ROOT}/summary/, rebuilt before every screen and at the end:
+# screens.csv / screens.md, decisions.md, mplc_star.env (MPLC*'s settings for Step 2) and
+# fig_*.pdf / fig_*.png.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/third_party/SuperVLAD:${PYTHONPATH:-}"
+
+# shellcheck source=scripts/lib/supervlad_common.sh
+source "${SCRIPT_DIR}/lib/supervlad_common.sh"
 
 PYTHON=${PYTHON:-python}
 ROOT=${STEP1_ROOT:-logs/mplc_v2_step1}
@@ -47,7 +54,7 @@ case "${1:-}" in
     ;;
 esac
 
-SWEEP_FLAGS=(--root "${ROOT}" --epochs "${EPOCHS}")
+SWEEP_FLAGS=(--root "${ROOT}" --epochs "${EPOCHS}" --batch-size "${SUPERVLAD_TRAIN_BATCH_SIZE}")
 [ "${STEP1_ACCEPT_NOISE:-0}" = "1" ] && SWEEP_FLAGS+=(--accept-noise)
 # A dry run must not freeze the sweep settings for the real one.
 [ "${MODE}" = "dry" ] && SWEEP_FLAGS+=(--no-freeze)

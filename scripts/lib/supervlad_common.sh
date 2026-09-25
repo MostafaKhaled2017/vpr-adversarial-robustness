@@ -24,6 +24,13 @@
 # Values that happen to equal a current src/cli.py default are still written out explicitly:
 # a matched-control experiment must not silently change when a default changes.
 
+# Training batch size in places (each place contributes 4 images). This is the single
+# definition for every sprint 5 training run: Step 1 screens, full runs, clean twins,
+# baselines, ablations and Step 4. It is deliberately not an environment override. The
+# launchers refuse to reuse or resume a run trained at another size, and the Step 1 sweep
+# records it in sweep_config.yaml. Change it only before any sprint 5 run exists.
+SUPERVLAD_TRAIN_BATCH_SIZE=32
+
 # Initialization. Default: fine-tune from the pretrained SuperVLAD release.
 # Set SUPERVLAD_FROM_SCRATCH=1 to train the VLAD head from scratch on the DINOv2 backbone.
 SUPERVLAD_INIT_FLAGS=(
@@ -56,7 +63,7 @@ SUPERVLAD_RECIPE_FLAGS=(
   --lr_plateau_factor=0.1
   --num_epochs=100
   --patience=8
-  --batch_size=16
+  --batch_size="${SUPERVLAD_TRAIN_BATCH_SIZE}"
   --infer_batch_size=16
   --batches_per_epoch=400
   --mixed_precision

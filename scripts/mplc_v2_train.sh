@@ -111,6 +111,19 @@ finished_run_dir() {
   return 1
 }
 
+# A run trained at another batch size must never be skipped as finished or resumed: the
+# batch size is fixed once for all runs (SUPERVLAD_TRAIN_BATCH_SIZE in lib/supervlad_common.sh).
+check_batch_size() {
+  local config="$1/training_config.yaml" found
+  [ -f "${config}" ] || return 0
+  found="$(sed -n 's/^train_batch_size: //p' "${config}")"
+  if [ -n "${found}" ] && [ "${found}" != "${SUPERVLAD_TRAIN_BATCH_SIZE}" ]; then
+    echo "$1 was trained at batch size ${found}, but SUPERVLAD_TRAIN_BATCH_SIZE is ${SUPERVLAD_TRAIN_BATCH_SIZE}." >&2
+    echo "Move that run aside or restore the batch size; runs at different sizes must not be mixed." >&2
+    exit 1
+  fi
+}
+
 # Non-default mplc-arm hyperparameters get named in the save_dir so a rerun with a
 # different tau/k/pool/ramp/abort doesn't share a name with (and get SKIPped by, or
 # silently evaluated as) a finished default run.
@@ -193,10 +206,12 @@ for arm in ${ARMS}; do
     fi
     case "${state}" in
       completed | early_stopped | collapse_aborted)
+        check_batch_size "${managed_dir}"
         echo "=== SKIP ${name}: ${state} at ${managed_dir}"
         continue
         ;;
       resumable)
+        check_batch_size "${managed_dir}"
         echo "=== RESUME ${name} from ${checkpoint}"
         init_flags=(--resume="${checkpoint}" --continue)
         ;;
@@ -219,6 +234,7 @@ for arm in ${ARMS}; do
   else
     finished_dir=""
     if finished_dir="$(finished_run_dir "${name}")"; then
+      check_batch_size "${finished_dir}"
       echo "=== SKIP ${name}: finished at ${finished_dir}"
       continue
     fi

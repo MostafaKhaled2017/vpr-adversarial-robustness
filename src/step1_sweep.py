@@ -51,10 +51,11 @@ ANCHORS = ("0", "0.1", "1.0", "10")
 ANCHOR_EXTENSION = "30"
 
 
-def sweep_settings(epochs: int, budget: float) -> Dict[str, object]:
+def sweep_settings(epochs: int, budget: float, batch_size: int) -> Dict[str, object]:
     """Everything that must stay fixed across a sweep's lifetime."""
     return {
         "epochs": int(epochs),
+        "batch_size": int(batch_size),
         "budget": float(budget),
         "noise_seeds": list(NOISE_SEEDS),
         "mixes": list(MIXES),
@@ -511,10 +512,10 @@ def _results_reader(root: Path, epochs: int, budget: float):
     return results
 
 
-def ensure_config(root: Path, epochs: int, budget: float, freeze: bool = True) -> None:
+def ensure_config(root: Path, epochs: int, budget: float, batch_size: int, freeze: bool = True) -> None:
     """Freeze the sweep settings on first use; refuse a later run with different ones."""
     path = root / CONFIG_NAME
-    wanted = sweep_settings(epochs, budget)
+    wanted = sweep_settings(epochs, budget, batch_size)
     if path.is_file():
         stored = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         stored = {key: stored.get(key) for key in wanted}
@@ -561,11 +562,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--epochs", type=int, required=True)
     parser.add_argument("--budget", type=float, default=3.0)
+    parser.add_argument("--batch-size", type=int, required=True, help="SUPERVLAD_TRAIN_BATCH_SIZE, recorded in the sweep config.")
     parser.add_argument("--accept-noise", action="store_true")
     parser.add_argument("--no-freeze", action="store_true", help="Check but do not create sweep_config.yaml.")
     args = parser.parse_args(argv)
 
-    ensure_config(args.root, args.epochs, args.budget, freeze=not args.no_freeze)
+    ensure_config(args.root, args.epochs, args.budget, args.batch_size, freeze=not args.no_freeze)
     state = summarize(args.root, args.epochs, args.budget, args.accept_noise)
     if args.command == "summarize":
         print(f"Summary written to {args.root / SUMMARY_DIR}")
