@@ -1,11 +1,12 @@
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
 from torch import Tensor
 
 from .faiss_utils import create_flat_l2_index
+from .retrieval_metrics import prepare_distance_database, squared_l2_distance_chunk
 
 
 @dataclass
@@ -234,3 +235,41 @@ def build_attack_targets(
         )
 
     return targets, valid_query_indices
+
+
+def retarget_attack_targets(
+    targets: Sequence[Dict[str, object]],
+    database_features: np.ndarray,
+    clean_query_features: np.ndarray,
+    target_rank: int,
+    adv_negatives: int,
+    chunk_size: int = 128,
+) -> List[Dict[str, object]]:
+    """Turn untargeted attack targets into targeted ones (spec D5).
+
+    The target is the database image at position ``target_rank`` among the clean query's
+    nearest non-positive images. ``competitor_indexes`` are the ``adv_negatives`` nearest
+    other non-positives; with the true positives they are what the target must overtake.
+    """
+    database, database_norms = prepare_distance_database(database_features)
+    retargeted = []
+    for start in range(0, len(targets), chunk_size):
+        chunk = targets[start : start + chunk_size]
+        rows = [int(target.get("query_feature_index", target["query_index"])) for target in chunk]
+        distances = squared_l2_distance_chunk(database, database_norms, clean_query_features[rows])
+        for target, query_distances in zip(chunk, distances):
+            order = np.argsort(query_distances, kind="stable")
+            non_positive = order[~np.isin(order, target["positive_indexes"])]
+            if len(non_positive) < target_rank:
+                raise RuntimeError(
+                    f"Query {target['query_index']} has fewer than --target_rank={target_rank} "
+                    "non-positive database images."
+                )
+            retargeted.append(
+                {
+                    **target,
+                    "target_index": int(non_positive[target_rank - 1]),
+                    "competitor_indexes": np.delete(non_positive, target_rank - 1)[:adv_negatives].astype(np.int64),
+                }
+            )
+    return retargeted

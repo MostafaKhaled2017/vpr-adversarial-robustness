@@ -213,6 +213,24 @@ def per_query_rank_records(
     ]
 
 
+def targeted_success_rate(
+    database_features: np.ndarray,
+    query_features: np.ndarray,
+    target_indexes: Sequence[int],
+    chunk_size: int = 128,
+) -> float:
+    """Percentage of queries whose top-1 database image is their attack target (spec D5)."""
+    targets = np.asarray(target_indexes, dtype=np.int64)
+    if len(targets) == 0:
+        return 0.0
+    database, database_norms = prepare_distance_database(database_features)
+    hits = 0
+    for start in range(0, len(targets), chunk_size):
+        distances = squared_l2_distance_chunk(database, database_norms, query_features[start : start + chunk_size])
+        hits += int(np.count_nonzero(np.argmin(distances, axis=1) == targets[start : start + chunk_size]))
+    return float(hits / len(targets) * 100.0)
+
+
 def rank_metric_bundle(
     clean_ranks: np.ndarray,
     attacked_ranks: np.ndarray,

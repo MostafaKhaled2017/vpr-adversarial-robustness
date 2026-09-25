@@ -519,7 +519,7 @@ class RankEvalInterfaceTests(unittest.TestCase):
             rank_eval.build_attack_targets = original_build_attack_targets
 
         self.assertEqual(seen_databases, [0.0, 1.0])
-        self.assertEqual(set(context["target_cache"]), {("base", 2), ("adv", 2)})
+        self.assertEqual(set(context["target_cache"]), {("base", 2, "untargeted", 10), ("adv", 2, "untargeted", 10)})
 
     def test_query_diagnostics_compute_margins_and_cwr_estimate(self):
         database = np.array(
@@ -753,8 +753,8 @@ class RankEvalInterfaceTests(unittest.TestCase):
                 "feature_times": {},
                 "feature_shared_input_seconds": 0.0,
                 "target_cache": {
-                    ("base", 1): {"targets": targets, "target_seconds": 0.0},
-                    ("adv", 1): {"targets": targets, "target_seconds": 0.0},
+                    ("base", 1, "untargeted", 10): {"targets": targets, "target_seconds": 0.0},
+                    ("adv", 1, "untargeted", 10): {"targets": targets, "target_seconds": 0.0},
                 },
             }
 
@@ -872,8 +872,8 @@ class RankEvalInterfaceTests(unittest.TestCase):
                 "feature_times": {},
                 "feature_shared_input_seconds": 0.0,
                 "target_cache": {
-                    ("base", 1): {"targets": targets, "target_seconds": 0.0},
-                    ("adv", 1): {"targets": targets, "target_seconds": 0.0},
+                    ("base", 1, "untargeted", 10): {"targets": targets, "target_seconds": 0.0},
+                    ("adv", 1, "untargeted", 10): {"targets": targets, "target_seconds": 0.0},
                 },
             }
 
