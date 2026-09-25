@@ -37,13 +37,23 @@ class MplcV2TrainScriptTests(unittest.TestCase):
         self.assertIn("--save_dir=mplc_v2_supervlad_clean_ft_s0", result.stdout)
         self.assertIn("--save_dir=mplc_v2_supervlad_mplc_s0", result.stdout)
         self.assertIn("--validation_protocol=rank_pgd", result.stdout)
-        self.assertIn("RankLinfAttack(model, epsilon=0.1, steps=5)", result.stdout)
+        self.assertIn("RankLinfAttack(model, epsilon=0.0685, steps=5)", result.stdout)
 
         commands = [line for line in result.stdout.splitlines() if line.startswith("+ ")]
         clean_ft_command = next(
             line for line in commands if "mplc_v2_supervlad_clean_ft_s0" in line
         )
         self.assertNotIn("--attack", clean_ft_command)
+
+        mplc_command = next(line for line in commands if "mplc_v2_supervlad_mplc_s0" in line)
+        for command in (clean_ft_command, mplc_command):
+            self.assertIn("--freeze_te=8", command)
+            self.assertIn("--selection_clean_budgets 1 3 5", command)
+            self.assertIn("--val_rank_epsilons 0.0342 0.0685", command)
+            self.assertNotIn("--grad_checkpointing", command)
+        self.assertIn("--align_target=initial", mplc_command)
+        self.assertIn("--adv_align_weight=1.0", mplc_command)
+        self.assertNotIn("--align_target", clean_ft_command)
 
     def test_seed_override_trains_seed_one(self):
         result = run_script(TRAIN_SCRIPT, {"MPLC_V2_SEED": "1"})
@@ -101,6 +111,29 @@ class MplcV2TrainScriptTests(unittest.TestCase):
             shutil.rmtree(
                 REPO_ROOT / "logs" / "mplc_v2_supervlad_mplc_s98", ignore_errors=True
             )
+
+    def test_freeze_te_override_names_both_arms_and_enables_checkpointing(self):
+        result = run_script(TRAIN_SCRIPT, {"MPLC_V2_FREEZE_TE": "0"})
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        commands = [line for line in result.stdout.splitlines() if line.startswith("+ ")]
+        self.assertEqual(len(commands), 2, result.stdout)
+        self.assertIn("--save_dir=mplc_v2_supervlad_clean_ft_fte0_s0", commands[0])
+        self.assertIn("--save_dir=mplc_v2_supervlad_mplc_fte0_s0", commands[1])
+        for command in commands:
+            self.assertIn("--freeze_te=0", command)
+            self.assertIn("--grad_checkpointing", command)
+
+    def test_align_weight_and_eps_overrides_get_suffix(self):
+        result = run_script(
+            TRAIN_SCRIPT,
+            {"MPLC_V2_ARMS": "mplc", "MPLC_V2_ALIGN_WEIGHT": "10", "MPLC_V2_TRAIN_EPS": "0.137", "MPLC_V2_TAU": "0.01"},
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("--save_dir=mplc_v2_supervlad_mplc_tau0.01_aw10_eps0.137_s0", result.stdout)
+        self.assertIn("RankLinfAttack(model, epsilon=0.137, steps=5)", result.stdout)
+        self.assertIn("--adv_align_weight=10", result.stdout)
 
 
 class MplcV2EvalScriptTests(unittest.TestCase):
