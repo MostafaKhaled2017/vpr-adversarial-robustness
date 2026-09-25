@@ -47,6 +47,11 @@ class SummarizeTests(unittest.TestCase):
         self.assertAlmostEqual(mplc["auc"], ((78 + 60) / 2 * 0.5 + (60 + 50) / 2 * 0.5) / 1.0)
         self.assertAlmostEqual(mplc["clean_r1"], 78.0)
 
+    def test_duplicate_curve_point_is_rejected(self):
+        rows = [*ROWS, row("mplc", "rank_pgd_linf_eps_1", "1.0", "45")]
+        with self.assertRaisesRegex(ValueError, r"duplicate.*mplc.*rank_pgd_linf.*1\.0"):
+            summarize(rows)
+
 
 if __name__ == "__main__":
     unittest.main()

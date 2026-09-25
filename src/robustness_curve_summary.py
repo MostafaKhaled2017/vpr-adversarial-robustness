@@ -62,7 +62,11 @@ def summarize(rows: Sequence[Mapping[str, str]], reference_model: Optional[str] 
             anchors[key] = float(row["R@1"])
         if row.get("epsilon"):
             family_key = (*key, EPSILON_PATTERN.sub("", row["condition"]))
-            curves[family_key][float(row["epsilon"])] = float(row["R@1"])
+            epsilon = float(row["epsilon"])
+            if epsilon in curves[family_key]:
+                raise ValueError(f"duplicate curve point (dataset, model, family, epsilon)={(*family_key, epsilon)}; "
+                                 "were CSVs from different runs combined?")
+            curves[family_key][epsilon] = float(row["R@1"])
             if row.get("targeted_success_rate"):
                 successes[family_key].append(float(row["targeted_success_rate"]))
 
