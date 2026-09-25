@@ -345,6 +345,10 @@ def parse_arguments(argv=None):
         raise ValueError("--adv_warmup_epochs must be non-negative")
     if args.align_target == "initial" and args.resume is None:
         raise ValueError("--align_target initial requires --resume (the weights to anchor to)")
+    if args.align_target == "initial" and args.continue_training and args.run_dir is None:
+        raise ValueError(
+            "--align_target initial with --continue requires --run_dir (the original run directory holding initial_model.pth)"
+        )
     if args.clip_grad <= 0:
         raise ValueError("--clip_grad must be positive")
     if not 0.0 <= args.selection_robust_weight <= 1.0:

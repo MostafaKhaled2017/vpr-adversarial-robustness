@@ -78,6 +78,14 @@ class AlignTargetCliTests(unittest.TestCase):
         args = parse_arguments(BASE + ["--align_target", "initial", "--resume", "w.pth"])
         self.assertEqual(args.align_target, "initial")
 
+    def test_resuming_anchored_run_requires_run_dir(self):
+        anchored = BASE + ["--align_target", "initial", "--resume", "last_model.pth", "--continue"]
+        with self.assertRaisesRegex(ValueError, "--continue requires --run_dir"):
+            parse_arguments(anchored)
+        args = parse_arguments(anchored + ["--run_dir", "logs/run"])
+        self.assertTrue(args.continue_training)
+        self.assertEqual(args.run_dir, "logs/run")
+
     def test_grad_checkpointing_flag(self):
         self.assertFalse(parse_arguments(BASE).grad_checkpointing)
         self.assertTrue(parse_arguments(BASE + ["--grad_checkpointing"]).grad_checkpointing)
