@@ -18,6 +18,13 @@
 #   MPLC_V2_ABORT_KNN     collapse-abort threshold (mplc arm)    (default: 0.15)
 #   MPLC_V2_DRY_RUN=1     print the commands without running them
 #   PYTHON                python interpreter                    (default: python)
+#
+# When any of MPLC_V2_TAU/_K/_POOL/_RAMP_EPOCHS/_ABORT_KNN differs from its default, the
+# mplc arm's save_dir gets a suffix naming the non-default values, e.g.
+# mplc_v2_supervlad_mplc_tau0.01_s<seed>, so a differently configured rerun neither
+# collides with, nor gets SKIPped by, a finished default run. With all defaults the
+# save_dir is the plain mplc_v2_supervlad_mplc_s<seed> that scripts/mplc_v2_eval.sh
+# auto-discovers; override runs must be evaluated explicitly via MPLC_V2_MODELS.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -71,8 +78,24 @@ finished_run_dir() {
   return 1
 }
 
+# Non-default mplc-arm hyperparameters get named in the save_dir so a rerun with a
+# different tau/k/pool/ramp/abort doesn't share a name with (and get SKIPped by, or
+# silently evaluated as) a finished default run.
+mplc_override_suffix() {
+  local suffix=""
+  [ "${TAU}" = "0.05" ] || suffix="${suffix}_tau${TAU}"
+  [ "${K}" = "1" ] || suffix="${suffix}_k${K}"
+  [ "${POOL}" = "0" ] || suffix="${suffix}_pool${POOL}"
+  [ "${RAMP_EPOCHS}" = "5" ] || suffix="${suffix}_ramp${RAMP_EPOCHS}"
+  [ "${ABORT_KNN}" = "0.15" ] || suffix="${suffix}_abort${ABORT_KNN}"
+  echo "${suffix}"
+}
+
 for arm in ${ARMS}; do
   name="mplc_v2_supervlad_${arm}_s${SEED}"
+  if [ "${arm}" = "mplc" ]; then
+    name="mplc_v2_supervlad_mplc$(mplc_override_suffix)_s${SEED}"
+  fi
 
   arm_flags=()
   case "${arm}" in

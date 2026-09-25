@@ -14,6 +14,15 @@
 #   MPLC_V2_MODELS       "tag=path tag=path ..." replaces the discovered model list
 #   MPLC_V2_DRY_RUN=1    print the commands without running them
 #   PYTHON               python interpreter                    (default: python)
+#
+# Only checkpoints whose run_status.json records a terminal state (completed,
+# early_stopped, collapse_aborted) are auto-discovered; the newest such run wins.
+# best_model.pth alone is not a reliable "finished" marker (it also exists right after
+# the initial validation, i.e. the untrained/pretrained checkpoint, and in interrupted
+# runs), so a still-training or crashed run is skipped with a WARNING rather than
+# evaluated. A run trained with scripts/mplc_v2_train.sh overrides (MPLC_V2_TAU/_K/
+# _POOL/_RAMP_EPOCHS/_ABORT_KNN) gets a save_dir with a distinct name and will not be
+# auto-discovered here; pass it explicitly via MPLC_V2_MODELS.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,10 +47,20 @@ run() {
   fi
 }
 
+# A run is finished, and safe to evaluate, only when its run_status.json records a
+# terminal state; the newest such run wins. best_model.pth alone is not a reliable
+# finished marker (see header). Same state check as finished_run_dir in
+# scripts/mplc_v2_train.sh.
 latest_finished_run() {
-  local name=$1 newest="" candidate
-  for candidate in "logs/${name}"/*/; do
-    [ -f "${candidate}best_model.pth" ] && newest="${candidate%/}"
+  local name=$1 dir state newest=""
+  for dir in "logs/${name}"/*/; do
+    [ -f "${dir}run_status.json" ] || continue
+    state="$("${PYTHON}" -c "import json,sys; print(json.load(open(sys.argv[1])).get('state', ''))" "${dir}run_status.json")"
+    case "${state}" in
+      early_stopped | completed | collapse_aborted)
+        newest="${dir%/}"
+        ;;
+    esac
   done
   echo "${newest}"
 }
