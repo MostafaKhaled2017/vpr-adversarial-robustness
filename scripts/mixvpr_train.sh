@@ -54,6 +54,7 @@ esac
 
 exec python3 train.py \
   --model=mixvpr \
+  --validation_protocol=legacy \
   "${MODEL_WEIGHTS_ARGS[@]}" \
   "${FREEZE_BACKBONE_ARGS[@]}" \
   --eval_datasets_folder=datasets \

@@ -22,6 +22,7 @@ fi
 
 exec python3 train.py \
   --model=boq \
+  --validation_protocol=legacy \
   "${MODEL_WEIGHTS_ARGS[@]}" \
   --eval_datasets_folder=datasets \
   --gsv_cities_base_path=datasets/gsv_cities \

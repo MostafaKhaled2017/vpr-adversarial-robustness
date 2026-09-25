@@ -493,7 +493,7 @@ def run_training(
     # Spec D4: rank_pgd validates clean and rank-PGD recall on a fixed query sample and
     # selects the most robust epoch whose clean R@1 stays within
     # --selection_max_clean_drop of the initial model's (C0, kept across resumes).
-    rank_protocol = getattr(args, "validation_protocol", "legacy") == "rank_pgd"
+    rank_protocol = getattr(args, "validation_protocol", "rank_pgd") == "rank_pgd"
     initial_clean_r1 = resume_runtime_state.get("initial_clean_r1")
     if rank_protocol:
         validation_query_indices = sample_validation_queries(val_ds.get_positives(), args.val_queries, args.val_query_seed)

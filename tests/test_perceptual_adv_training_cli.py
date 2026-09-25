@@ -275,8 +275,9 @@ class MatchedCleanOnlyFineTuneTests(unittest.TestCase):
         self.assertEqual(args.checkpoint_selection_rule, "clean_recall")
         self.assertEqual(args.effective_selection_robust_weight, 0.0)
 
-    def test_adversarial_run_keeps_robust_weighted_selection(self):
+    def test_legacy_adversarial_run_keeps_robust_weighted_selection(self):
         args = self.parse(
+            "--validation_protocol=legacy",
             "--selection_robust_weight=0.75",
             "--attack",
             "PerceptualPGDAttack(model, bound=0.1, num_iterations=5)",

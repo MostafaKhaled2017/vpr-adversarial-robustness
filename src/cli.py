@@ -238,10 +238,11 @@ def build_parser():
     parser.add_argument(
         "--validation_protocol",
         choices=["legacy", "rank_pgd"],
-        default="legacy",
-        help="legacy: perceptual validation attacks and the weighted score. rank_pgd: clean and "
-        "rank-PGD L-inf recall on a fixed query sample, selecting the most robust epoch whose "
-        "clean R@1 stays within --selection_max_clean_drop of the initial model.",
+        default="rank_pgd",
+        help="rank_pgd (default): clean and rank-PGD L-inf recall on a fixed query sample, selecting "
+        "the most robust epoch whose clean R@1 stays within --selection_max_clean_drop of the "
+        "initial model. legacy: perceptual validation attacks and the weighted score, as used by "
+        "the Phase 1/Phase 2 runs.",
     )
     parser.add_argument("--val_queries", type=int, default=2000, help="Validation queries sampled for rank_pgd.")
     parser.add_argument("--val_query_seed", type=int, default=0, help="Seed of the rank_pgd validation query sample.")
@@ -378,6 +379,6 @@ def resolve_checkpoint_selection_rule(args):
     else:
         args.checkpoint_selection_rule = "robust_weighted"
         args.effective_selection_robust_weight = args.selection_robust_weight
-    if getattr(args, "validation_protocol", "legacy") == "rank_pgd":
+    if getattr(args, "validation_protocol", "rank_pgd") == "rank_pgd":
         args.checkpoint_selection_rule = "clean_recall" if args.is_clean_only else "clean_constrained_rank_pgd"
     return args

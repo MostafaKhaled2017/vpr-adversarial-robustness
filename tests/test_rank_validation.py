@@ -72,14 +72,18 @@ BASE = [
 
 
 class RankValidationCliTests(unittest.TestCase):
-    def test_defaults_keep_legacy_protocol(self):
+    def test_defaults_use_rank_pgd_protocol(self):
         args = parse_arguments(BASE)
-        self.assertEqual(args.validation_protocol, "legacy")
-        self.assertEqual(args.checkpoint_selection_rule, "robust_weighted")
+        self.assertEqual(args.validation_protocol, "rank_pgd")
+        self.assertEqual(args.checkpoint_selection_rule, "clean_constrained_rank_pgd")
         self.assertEqual(args.val_queries, 2000)
         self.assertEqual(args.val_query_seed, 0)
         self.assertEqual(args.val_rank_steps, 10)
         self.assertEqual(args.selection_max_clean_drop, 1.0)
+
+    def test_legacy_protocol_keeps_weighted_selection(self):
+        args = parse_arguments(BASE + ["--validation_protocol", "legacy"])
+        self.assertEqual(args.checkpoint_selection_rule, "robust_weighted")
 
     def test_rank_pgd_sets_selection_rule(self):
         args = parse_arguments(BASE + ["--validation_protocol", "rank_pgd"])

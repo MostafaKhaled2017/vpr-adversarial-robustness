@@ -38,6 +38,9 @@ fi
 # initialization separate lets a managed run replace it with --resume=<last_model> --continue.
 SUPERVLAD_RECIPE_FLAGS=(
   --model=supervlad
+  # Phase 1/Phase 2 runs select checkpoints with the original rule; scripts/mplc_v2_train.sh
+  # overrides this with --validation_protocol=rank_pgd (the last occurrence wins).
+  --validation_protocol=legacy
   --eval_datasets_folder=datasets
   --gsv_cities_base_path=datasets/gsv_cities
   --eval_dataset_name=msls

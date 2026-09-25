@@ -10,6 +10,7 @@ export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/third_party/SuperVLAD:${PYTHONPATH:
 
 exec python3 train.py \
   --model=supervlad \
+  --validation_protocol=legacy \
   --eval_datasets_folder=datasets \
   --gsv_cities_base_path=datasets/gsv_cities \
   --eval_dataset_name=msls \
