@@ -428,6 +428,7 @@ def build_checkpoint_state(
     reference_descriptors=None,
     initial_clean_r1=None,
     best_budget_scores=None,
+    best_checkpoint_epochs=None,
 ) -> Dict[str, object]:
     return {
         "epoch_num": epoch_num,
@@ -455,6 +456,7 @@ def build_checkpoint_state(
             else reference_descriptors.detach().cpu(),
             "initial_clean_r1": initial_clean_r1,
             "best_budget_scores": dict(best_budget_scores or {}),
+            "best_checkpoint_epochs": dict(best_checkpoint_epochs or {}),
         },
     }
 
@@ -520,6 +522,9 @@ def run_training(
     rank_protocol = getattr(args, "validation_protocol", "rank_pgd") == "rank_pgd"
     initial_clean_r1 = resume_runtime_state.get("initial_clean_r1")
     best_budget_scores = dict(resume_runtime_state.get("best_budget_scores", {}))
+    # Which validation epoch (as in validation_recalls.jsonl, -1 = initial) best_model.pth ("best")
+    # and each budget checkpoint currently hold, so an un-fine-tuned best checkpoint is visible.
+    best_checkpoint_epochs = dict(resume_runtime_state.get("best_checkpoint_epochs", {}))
     if rank_protocol:
         validation_query_indices = sample_validation_queries(val_ds.get_positives(), args.val_queries, args.val_query_seed)
         logging.info("Rank-PGD validation on %d sampled queries.", len(validation_query_indices))
@@ -561,6 +566,9 @@ def run_training(
         initial_budgets = improved_budgets(initial_scores, best_budget_scores)
         for key in initial_budgets:
             best_budget_scores[key] = float(initial_scores["robust_score"])
+            best_checkpoint_epochs[key] = -1
+        best_checkpoint_epochs["best"] = -1
+        logging.info("Best checkpoints by epoch: %s", best_checkpoint_epochs)
         initial_checkpoint_state = build_checkpoint_state(
             args,
             model,
@@ -577,6 +585,7 @@ def run_training(
             reference_descriptors=reference_descriptors,
             initial_clean_r1=initial_clean_r1,
             best_budget_scores=best_budget_scores,
+            best_checkpoint_epochs=best_checkpoint_epochs,
         )
         save_checkpoint(args, initial_checkpoint_state, True, filename="initial_validation_model.pth")
         if initial_budgets:
@@ -870,6 +879,10 @@ def run_training(
         epoch_budgets = improved_budgets(validation_scores, best_budget_scores)
         for key in epoch_budgets:
             best_budget_scores[key] = float(robust_score)
+            best_checkpoint_epochs[key] = epoch_num + 1
+        if is_best:
+            best_checkpoint_epochs["best"] = epoch_num + 1
+        logging.info("Best checkpoints by epoch: %s", best_checkpoint_epochs)
         checkpoint_state = build_checkpoint_state(
             args,
             model,
@@ -886,6 +899,7 @@ def run_training(
             reference_descriptors=reference_descriptors,
             initial_clean_r1=initial_clean_r1,
             best_budget_scores=best_budget_scores,
+            best_checkpoint_epochs=best_checkpoint_epochs,
         )
         save_checkpoint(args, checkpoint_state, is_best, filename="last_model.pth")
         if epoch_budgets:
@@ -934,6 +948,8 @@ def run_training(
             break
 
     logging.info("Best validation selection score: %.2f", best_score)
+    if best_checkpoint_epochs.get("best") == -1:
+        logging.warning("best_model.pth is the initial (un-fine-tuned) model: no epoch beat the initial validation.")
     best_model_state_dict = util.load_trusted_checkpoint(
         join(args.save_dir, "best_model.pth"),
         map_location=args.device,

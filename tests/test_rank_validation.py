@@ -226,9 +226,11 @@ class CheckpointRuntimeStateTests(unittest.TestCase):
             Namespace(tensorboard_dir="tensorboard"), model, optimizer, epoch_num=0, metrics={"NoAttack": clean},
             validation_scores={"clean_score": 1.0, "robust_score": 1.0, "selection_score": 1.0, "eligible_budgets": [1.0]},
             next_best_score=1.0, next_not_improved=0, initial_clean_r1=90.0, best_budget_scores={"1": 12.0},
+            best_checkpoint_epochs={"best": -1, "1": 0},
         )
         self.assertEqual(checkpoint["runtime_state"]["initial_clean_r1"], 90.0)
         self.assertEqual(checkpoint["runtime_state"]["best_budget_scores"], {"1": 12.0})
+        self.assertEqual(checkpoint["runtime_state"]["best_checkpoint_epochs"], {"best": -1, "1": 0})
 
     def test_record_adds_budgets_only_when_present(self):
         clean = {"recalls": {"R@1": 1.0, "R@5": 2.0, "R@10": 3.0, "R@100": 4.0}}
@@ -251,7 +253,7 @@ def scripted_metrics(clean, attacked):
 
 
 class RunTrainingRankProtocolTests(unittest.TestCase):
-    def run_scripted(self, scripted, is_clean_only=False):
+    def run_scripted(self, scripted, is_clean_only=False, start_epoch=0, resume_runtime_state=None):
         import tempfile
         from unittest import mock
 
@@ -272,13 +274,13 @@ class RunTrainingRankProtocolTests(unittest.TestCase):
             args = SimpleNamespace(
                 validation_protocol="rank_pgd", val_queries=10, val_query_seed=0, selection_clean_budgets=[1.0, 3.0, 5.0],
                 is_clean_only=is_clean_only, skip_initial_validation=False, lr_schedule="", lr_plateau_patience=None, lr=1e-4,
-                epochs_num=len(scripted) - 1, adv_warmup_epochs=0, randomize_attack=False, early_stop_min_delta=0.0, patience=5,
+                epochs_num=start_epoch + len(scripted) - (0 if resume_runtime_state else 1), adv_warmup_epochs=0, randomize_attack=False, early_stop_min_delta=0.0, patience=5,
                 save_dir=save_dir, tensorboard_dir=save_dir, device="cpu", test_method="hard_resize",
                 recall_values=[1, 5, 10, 100], mixed_precision=False,
             )
             outcome = train_loop.run_training(
                 args, model, torch.optim.Adam(model.parameters(), lr=1e-4), None, [], FakeValDataset(), None,
-                -math.inf, 0, 0, mock.MagicMock(), [], [],
+                -math.inf, start_epoch, 0, mock.MagicMock(), [], [], resume_runtime_state=resume_runtime_state,
             )
         return outcome, saved, copied
 
@@ -298,6 +300,9 @@ class RunTrainingRankProtocolTests(unittest.TestCase):
             [("initial_validation_model.pth", ["1", "3", "5"]), ("last_model.pth", ["3", "5"]), ("last_model.pth", ["1"])],
         )
         self.assertEqual(last[1][1]["runtime_state"]["best_budget_scores"], {"1": 20.0, "3": 50.0, "5": 50.0})
+        initial_state = [state for filename, _, state in saved if filename == "initial_validation_model.pth"][0]
+        self.assertEqual(initial_state["runtime_state"]["best_checkpoint_epochs"], {"best": -1, "1": -1, "3": -1, "5": -1})
+        self.assertEqual(last[1][1]["runtime_state"]["best_checkpoint_epochs"], {"best": 1, "1": 2, "3": 1, "5": 1})
         for _, _, state in saved:
             self.assertEqual(state["runtime_state"]["initial_clean_r1"], 90.0)
 
@@ -311,6 +316,23 @@ class RunTrainingRankProtocolTests(unittest.TestCase):
         )
         last_state = [state for filename, _, state in saved if filename == "last_model.pth"][-1]
         self.assertEqual(last_state["runtime_state"]["best_budget_scores"], {"1": 92.0, "3": 92.0, "5": 92.0})
+
+    def test_resume_keeps_recorded_checkpoint_epochs(self):
+        resume = {
+            "initial_clean_r1": 90.0,
+            "best_budget_scores": {"1": 20.0, "3": 50.0, "5": 50.0},
+            "best_checkpoint_epochs": {"best": 1, "1": 2, "3": 1, "5": 1},
+        }
+        # Epoch 3: clean 87 (drop 3), robust 60 -> new best and best within budgets 3 and 5.
+        _, saved, _ = self.run_scripted([scripted_metrics(87.0, 60.0)], start_epoch=2, resume_runtime_state=resume)
+        last_state = [state for filename, _, state in saved if filename == "last_model.pth"][-1]
+        self.assertEqual(last_state["runtime_state"]["best_checkpoint_epochs"], {"best": 3, "1": 2, "3": 3, "5": 3})
+
+    def test_warns_when_best_model_is_the_initial_model(self):
+        clean = lambda value: {"NoAttack": {"recalls": {f"R@{k}": value for k in (1, 5, 10, 100)}, "recalls_list": [value] * 4}}
+        with self.assertLogs(level="WARNING") as logs:
+            self.run_scripted([clean(90.0), clean(89.0)], is_clean_only=True)
+        self.assertTrue(any("best_model.pth is the initial" in line for line in logs.output))
 
 
 if __name__ == "__main__":
