@@ -109,7 +109,13 @@ def build_parser():
         help="Use the strongest configured attack loss for each training step.",
     )
     parser.add_argument("--continue", dest="continue_training", action="store_true", default=False)
-    parser.add_argument("--keep_every", type=int, default=1, help="Keep one intermediate checkpoint every N epochs.")
+    parser.add_argument(
+        "--keep_every",
+        type=int,
+        default=0,
+        help="Keep one intermediate checkpoint_epoch_<N>.pth every N epochs. 0 (default) keeps none: only "
+        "last_model.pth, best_model.pth and the clean-budget checkpoints are saved.",
+    )
     parser.add_argument("--clip_grad", type=float, default=1.0, help="Clip gradients to this absolute value.")
     parser.add_argument("--lpips_model", type=str, default=None, help="Optional LPIPS model override.")
     parser.add_argument("--lr_schedule", type=str, default=None, help="Epochs when the learning rate drops by 10x.")
@@ -317,8 +323,8 @@ def parse_arguments(argv=None):
             args.lr_schedule = "30,60,80"
         else:
             args.lr_schedule = "120"
-    if args.keep_every < 1:
-        raise ValueError("--keep_every must be at least 1")
+    if args.keep_every < 0:
+        raise ValueError("--keep_every must be non-negative")
     if args.batches_per_epoch is not None and args.batches_per_epoch < 1:
         raise ValueError("--batches_per_epoch must be at least 1")
     if args.lr_plateau_patience is not None and args.lr_plateau_patience < 1:

@@ -45,7 +45,7 @@ exec python3 train.py \
   --randomize_attack \
   --adv_negatives=5 \
   --adv_warmup_epochs="${ADV_WARMUP_EPOCHS}" \
-  --keep_every=6 \
+  --keep_every=0 \
   --val_batches="${VAL_BATCHES}" \
   --attack "FastLagrangePerceptualAttack(model, bound=0.1, num_iterations=5)" \
   --attack "PerceptualPGDAttack(model, bound=0.1, num_iterations=5)" \

@@ -71,7 +71,7 @@ SUPERVLAD_RECIPE_FLAGS=(
   --adv_align_weight=0.05
   --selection_robust_weight=0.75
   --early_stop_min_delta=0.0
-  --keep_every=6
+  --keep_every=0
   --val_batches=200
 )
 

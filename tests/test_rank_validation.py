@@ -253,7 +253,7 @@ def scripted_metrics(clean, attacked):
 
 
 class RunTrainingRankProtocolTests(unittest.TestCase):
-    def run_scripted(self, scripted, is_clean_only=False, start_epoch=0, resume_runtime_state=None):
+    def run_scripted(self, scripted, is_clean_only=False, start_epoch=0, resume_runtime_state=None, keep_every=0):
         import tempfile
         from unittest import mock
 
@@ -276,13 +276,24 @@ class RunTrainingRankProtocolTests(unittest.TestCase):
                 is_clean_only=is_clean_only, skip_initial_validation=False, lr_schedule="", lr_plateau_patience=None, lr=1e-4,
                 epochs_num=start_epoch + len(scripted) - (0 if resume_runtime_state else 1), adv_warmup_epochs=0, randomize_attack=False, early_stop_min_delta=0.0, patience=5,
                 save_dir=save_dir, tensorboard_dir=save_dir, device="cpu", test_method="hard_resize",
-                recall_values=[1, 5, 10, 100], mixed_precision=False,
+                recall_values=[1, 5, 10, 100], mixed_precision=False, keep_every=keep_every,
             )
             outcome = train_loop.run_training(
                 args, model, torch.optim.Adam(model.parameters(), lr=1e-4), None, [], FakeValDataset(), None,
                 -math.inf, start_epoch, 0, mock.MagicMock(), [], [], resume_runtime_state=resume_runtime_state,
             )
         return outcome, saved, copied
+
+    def test_no_periodic_checkpoints_by_default(self):
+        _, saved, _ = self.run_scripted([scripted_metrics(90.0, 10.0), scripted_metrics(87.0, 50.0), scripted_metrics(89.5, 20.0)])
+        self.assertFalse([filename for filename, _, _ in saved if filename.startswith("checkpoint_epoch_")])
+
+    def test_keep_every_saves_periodic_checkpoints(self):
+        _, saved, _ = self.run_scripted(
+            [scripted_metrics(90.0, 10.0), scripted_metrics(87.0, 50.0), scripted_metrics(89.5, 20.0)], keep_every=2
+        )
+        periodic = [filename for filename, _, _ in saved if filename.startswith("checkpoint_epoch_")]
+        self.assertEqual(periodic, ["checkpoint_epoch_0001.pth", "checkpoint_epoch_0002.pth"])
 
     def test_most_robust_epoch_is_best_and_budget_checkpoints_follow_clean_drop(self):
         # C0=90, initial robust 10. Epoch 1: clean 87 (drop 3), robust 50 -> best overall and

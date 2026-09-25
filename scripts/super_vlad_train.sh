@@ -28,7 +28,7 @@ exec python3 train.py \
   --mixed_precision \
   --randomize_attack \
   --adv_negatives=5 \
-  --keep_every=6 \
+  --keep_every=0 \
   --val_batches=200 \
   --attack "FastLagrangePerceptualAttack(model, bound=0.1, num_iterations=5)" \
   --attack "PerceptualPGDAttack(model, bound=0.1, num_iterations=5)" \

@@ -904,9 +904,10 @@ def run_training(
         save_checkpoint(args, checkpoint_state, is_best, filename="last_model.pth")
         if epoch_budgets:
             copy_budget_checkpoints(args, "last_model.pth", epoch_budgets)
-        intermediate_name = f"checkpoint_epoch_{epoch_num + 1:04d}.pth"
-        save_checkpoint(args, checkpoint_state, False, filename=intermediate_name)
-        maybe_remove_old_checkpoint(args, epoch_num + 1)
+        if args.keep_every > 0:
+            intermediate_name = f"checkpoint_epoch_{epoch_num + 1:04d}.pth"
+            save_checkpoint(args, checkpoint_state, False, filename=intermediate_name)
+            maybe_remove_old_checkpoint(args, epoch_num + 1)
         final_epoch = epoch_num
         logging.info(
             "Saved latest checkpoint after epoch %02d%s.",
