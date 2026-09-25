@@ -272,7 +272,8 @@ def scripted_metrics(clean, attacked):
 
 class RunTrainingRankProtocolTests(unittest.TestCase):
     def run_scripted(
-        self, scripted, is_clean_only=False, start_epoch=0, resume_runtime_state=None, keep_every=0, val_every=1, epochs_num=None
+        self, scripted, is_clean_only=False, start_epoch=0, resume_runtime_state=None, keep_every=0, val_every=1, epochs_num=None,
+        attack_ramp_epochs=0,
     ):
         import tempfile
         from unittest import mock
@@ -297,6 +298,7 @@ class RunTrainingRankProtocolTests(unittest.TestCase):
                 epochs_num=epochs_num or start_epoch + len(scripted) - (0 if resume_runtime_state else 1), adv_warmup_epochs=0, randomize_attack=False, early_stop_min_delta=0.0, patience=5,
                 save_dir=save_dir, tensorboard_dir=save_dir, device="cpu", test_method="hard_resize",
                 recall_values=[1, 5, 10, 100], mixed_precision=False, keep_every=keep_every, val_every=val_every,
+                attack_ramp_epochs=attack_ramp_epochs,
             )
             outcome = train_loop.run_training(
                 args, model, torch.optim.Adam(model.parameters(), lr=1e-4), None, [], FakeValDataset(), None,
@@ -327,6 +329,17 @@ class RunTrainingRankProtocolTests(unittest.TestCase):
         self.assertEqual(last[0]["not_improved_num"], 0)
         self.assertEqual(last[1]["runtime_state"]["best_checkpoint_epochs"]["best"], 2)
         self.assertEqual(last[2]["not_improved_num"], 1)
+
+    def test_non_improving_validations_during_the_ramp_do_not_count_toward_patience(self):
+        # Ramp of 2 epochs (no warm-up): only epoch 3 trains at full strength, so only it counts.
+        worse = [scripted_metrics(90.0, 50.0)] + [scripted_metrics(89.0, 10.0)] * 3
+        _, saved, _ = self.run_scripted(worse, attack_ramp_epochs=2)
+        last = [state for filename, _, state in saved if filename == "last_model.pth"]
+        self.assertEqual([state["not_improved_num"] for state in last], [0, 0, 1])
+
+        _, saved, _ = self.run_scripted(worse, attack_ramp_epochs=2, is_clean_only=True)
+        last = [state for filename, _, state in saved if filename == "last_model.pth"]
+        self.assertEqual([state["not_improved_num"] for state in last], [1, 2, 3])
 
     def test_most_robust_epoch_is_best_and_budget_checkpoints_follow_clean_drop(self):
         # C0=90, initial robust 10. Epoch 1: clean 87 (drop 3), robust 50 -> best overall and

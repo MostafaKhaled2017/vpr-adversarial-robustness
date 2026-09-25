@@ -192,6 +192,20 @@ def is_validation_epoch(epoch: int, val_every: int, num_epochs: int) -> bool:
     return epoch % val_every == 0 or epoch == num_epochs
 
 
+def counts_toward_patience(args, epoch_num: int) -> bool:
+    """Whether a non-improving validation after 0-based ``epoch_num`` counts toward patience.
+
+    With an attack ramp, the model trains against weaker attacks than validation uses until
+    ``adv_warmup_epochs + attack_ramp_epochs``, so a stalled robust score there reflects the
+    curriculum, not a plateau. Those validations don't count toward lr-plateau or
+    early-stopping patience; they still update the best and budget checkpoints.
+    """
+    ramp_epochs = int(getattr(args, "attack_ramp_epochs", 0))
+    if ramp_epochs <= 0 or args.is_clean_only:
+        return True
+    return epoch_num >= args.adv_warmup_epochs + ramp_epochs
+
+
 def collapse_aborts(args, collapse, epoch_num: int) -> bool:
     """Log and report whether k-NN overlap fell below --collapse_abort_knn."""
     abort_threshold = getattr(args, "collapse_abort_knn", None)
@@ -920,7 +934,13 @@ def run_training(
 
         is_best = selection_score > (best_score + args.early_stop_min_delta)
         next_best_score = selection_score if is_best else best_score
-        next_not_improved = 0 if is_best else not_improved + 1
+        if is_best:
+            next_not_improved = 0
+        elif counts_toward_patience(args, epoch_num):
+            next_not_improved = not_improved + 1
+        else:
+            next_not_improved = not_improved
+            logging.info("No validation improvement during the attack ramp; not counted toward patience.")
         if should_drop_lr_on_plateau(next_not_improved, args.lr_plateau_patience):
             current_lr *= args.lr_plateau_factor
             apply_lr_schedule(optimizer, current_lr)
