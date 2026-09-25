@@ -21,15 +21,23 @@
 #   MPLC_V2_FREEZE_TE     frozen DINOv2 blocks, both arms       (default: 8; <8 adds
 #                         --grad_checkpointing)
 #   MPLC_V2_CLEAN_BUDGETS clean-drop reporting budgets, points  (default: "1 3 5")
+#   MPLC_V2_LR            learning rate, both arms              (default: 1e-5)
+#   MPLC_V2_NUM_EPOCHS    maximum epochs, both arms             (default: 100; 9 for screens)
+#   MPLC_V2_ATTACK_MIX    training attacks (mplc arm): "all" = two perceptual attacks +
+#                         rank L-inf, one sampled per step; "linf" = rank L-inf only
+#                                                               (default: all)
+#   MPLC_V2_RUN_ROOT      resumable mode: each run lives in the fixed directory
+#                         <root>/<save_dir name>; a stopped run resumes from its last
+#                         checkpoint, a finished one is skipped   (default: unset)
 #   MPLC_V2_DRY_RUN=1     print the commands without running them
 #   PYTHON                python interpreter                    (default: python)
 #
 # The mplc arm anchors the attacked descriptor to the frozen initial model
 # (--align_target=initial, spec 2026-09-25 D1) and both arms select the most robust epoch,
 # keeping best_model_budget<b>.pth per clean budget (D2). Non-default mplc hyperparameters
-# (TAU/K/POOL/RAMP_EPOCHS/ABORT_KNN/ALIGN_WEIGHT/TRAIN_EPS) and a non-default FREEZE_TE (both
-# arms, so each depth has a matched clean twin) are named in the save_dir, e.g.
-# mplc_v2_supervlad_mplc_aw10_fte4_s<seed>. Only all-default runs are auto-discovered by
+# (TAU/K/POOL/RAMP_EPOCHS/ABORT_KNN/ALIGN_WEIGHT/TRAIN_EPS/ATTACK_MIX) and a non-default
+# FREEZE_TE/LR/NUM_EPOCHS (both arms, so each setting has a matched clean twin) are named in
+# the save_dir, e.g. mplc_v2_supervlad_mplc_aw10_mixlinf_fte4_lr3e-6_ep9_s<seed>. Only all-default runs are auto-discovered by
 # scripts/mplc_v2_eval.sh; evaluate others via --model.
 set -euo pipefail
 
@@ -53,6 +61,10 @@ ALIGN_WEIGHT=${MPLC_V2_ALIGN_WEIGHT:-1.0}
 TRAIN_EPS=${MPLC_V2_TRAIN_EPS:-0.0685}
 FREEZE_TE=${MPLC_V2_FREEZE_TE:-8}
 CLEAN_BUDGETS=${MPLC_V2_CLEAN_BUDGETS:-"1 3 5"}
+LR=${MPLC_V2_LR:-1e-5}
+NUM_EPOCHS=${MPLC_V2_NUM_EPOCHS:-100}
+ATTACK_MIX=${MPLC_V2_ATTACK_MIX:-all}
+RUN_ROOT=${MPLC_V2_RUN_ROOT:-}
 DRY_RUN=${MPLC_V2_DRY_RUN:-0}
 
 run() {
@@ -62,14 +74,25 @@ run() {
   fi
 }
 
-# The MPLC arm's training attacks: the two perceptual attacks shared with the Phase 1/2
-# adversarial arm, plus the rank-margin attack (Task 5) that ascends the ranking
-# objective directly against all positives.
-MPLC_ATTACK_FLAGS=(
-  --attack "FastLagrangePerceptualAttack(model, bound=0.1, num_iterations=5)"
-  --attack "PerceptualPGDAttack(model, bound=0.1, num_iterations=5)"
-  --attack "RankLinfAttack(model, epsilon=${TRAIN_EPS}, steps=5)"
-)
+# The MPLC arm's training attacks: the rank-margin attack (Task 5) that ascends the
+# ranking objective directly against all positives, plus (mix "all") the two perceptual
+# attacks shared with the Phase 1/2 adversarial arm.
+case "${ATTACK_MIX}" in
+  all)
+    MPLC_ATTACK_FLAGS=(
+      --attack "FastLagrangePerceptualAttack(model, bound=0.1, num_iterations=5)"
+      --attack "PerceptualPGDAttack(model, bound=0.1, num_iterations=5)"
+      --attack "RankLinfAttack(model, epsilon=${TRAIN_EPS}, steps=5)"
+    )
+    ;;
+  linf)
+    MPLC_ATTACK_FLAGS=(--attack "RankLinfAttack(model, epsilon=${TRAIN_EPS}, steps=5)")
+    ;;
+  *)
+    echo "unknown MPLC_V2_ATTACK_MIX: ${ATTACK_MIX} (expected all or linf)" >&2
+    exit 2
+    ;;
+esac
 
 # A run is finished, and should be skipped, when its run_status.json records a terminal
 # state. best_model.pth alone is not a reliable finished marker (it also exists mid-run).
@@ -100,12 +123,18 @@ mplc_override_suffix() {
   [ "${ABORT_KNN}" = "0.15" ] || suffix="${suffix}_abort${ABORT_KNN}"
   [ "${ALIGN_WEIGHT}" = "1.0" ] || suffix="${suffix}_aw${ALIGN_WEIGHT}"
   [ "${TRAIN_EPS}" = "0.0685" ] || suffix="${suffix}_eps${TRAIN_EPS}"
+  [ "${ATTACK_MIX}" = "all" ] || suffix="${suffix}_mix${ATTACK_MIX}"
   echo "${suffix}"
 }
 
-# Backbone depth applies to both arms, so each freeze_te gets its own matched clean twin.
-fte_suffix() {
-  [ "${FREEZE_TE}" = "8" ] || echo "_fte${FREEZE_TE}"
+# Backbone depth, lr and epochs apply to both arms, so each setting gets its own matched
+# clean twin.
+shared_suffix() {
+  local suffix=""
+  [ "${FREEZE_TE}" = "8" ] || suffix="${suffix}_fte${FREEZE_TE}"
+  [ "${LR}" = "1e-5" ] || suffix="${suffix}_lr${LR}"
+  [ "${NUM_EPOCHS}" = "100" ] || suffix="${suffix}_ep${NUM_EPOCHS}"
+  echo "${suffix}"
 }
 
 # shellcheck disable=SC2206 # CLEAN_BUDGETS is a space-separated list by design.
@@ -117,11 +146,14 @@ COMMON_FLAGS=(
 if [ "${FREEZE_TE}" -lt 8 ]; then
   COMMON_FLAGS+=(--grad_checkpointing)
 fi
+# These override the recipe's --lr / --num_epochs (argparse keeps the last value).
+[ "${LR}" = "1e-5" ] || COMMON_FLAGS+=(--lr="${LR}")
+[ "${NUM_EPOCHS}" = "100" ] || COMMON_FLAGS+=(--num_epochs="${NUM_EPOCHS}")
 
 for arm in ${ARMS}; do
-  name="mplc_v2_supervlad_${arm}$(fte_suffix)_s${SEED}"
+  name="mplc_v2_supervlad_${arm}$(shared_suffix)_s${SEED}"
   if [ "${arm}" = "mplc" ]; then
-    name="mplc_v2_supervlad_mplc$(mplc_override_suffix)$(fte_suffix)_s${SEED}"
+    name="mplc_v2_supervlad_mplc$(mplc_override_suffix)$(shared_suffix)_s${SEED}"
   fi
 
   arm_flags=()
@@ -149,16 +181,53 @@ for arm in ${ARMS}; do
       ;;
   esac
 
-  finished_dir=""
-  if finished_dir="$(finished_run_dir "${name}")"; then
-    echo "=== SKIP ${name}: finished at ${finished_dir}"
-    continue
+  init_flags=("${SUPERVLAD_INIT_FLAGS[@]}")
+  if [ -n "${RUN_ROOT}" ]; then
+    # Resumable mode: a fixed run directory, classified by what it already holds.
+    managed_dir="${RUN_ROOT}/${name}"
+    state="pending"
+    checkpoint=""
+    if [ -d "${managed_dir}" ]; then
+      IFS=$'\t' read -r state checkpoint \
+        <<<"$("${PYTHON}" -m src.phase2_run_group classify --config-dir "${managed_dir}")"
+    fi
+    case "${state}" in
+      completed | early_stopped | collapse_aborted)
+        echo "=== SKIP ${name}: ${state} at ${managed_dir}"
+        continue
+        ;;
+      resumable)
+        echo "=== RESUME ${name} from ${checkpoint}"
+        init_flags=(--resume="${checkpoint}" --continue)
+        ;;
+      invalid)
+        # Stopped before its first checkpoint (e.g. during the initial validation): keep
+        # the partial directory for inspection and start over.
+        stale="${managed_dir}.stale-$(date +%Y%m%d-%H%M%S)"
+        echo "=== RESTART ${name}: no checkpoint in ${managed_dir}, moved to ${stale}"
+        [ "${DRY_RUN}" = "1" ] || mv "${managed_dir}" "${stale}"
+        ;;
+      pending)
+        echo "=== TRAIN ${name}"
+        ;;
+      *)
+        echo "unexpected run state for ${managed_dir}: ${state}" >&2
+        exit 1
+        ;;
+    esac
+    init_flags+=(--run_dir="${managed_dir}")
+  else
+    finished_dir=""
+    if finished_dir="$(finished_run_dir "${name}")"; then
+      echo "=== SKIP ${name}: finished at ${finished_dir}"
+      continue
+    fi
+    echo "=== TRAIN ${name}"
   fi
 
-  echo "=== TRAIN ${name}"
   run "${PYTHON}" train.py \
     "${SUPERVLAD_RECIPE_FLAGS[@]}" \
-    "${SUPERVLAD_INIT_FLAGS[@]}" \
+    "${init_flags[@]}" \
     --validation_protocol=rank_pgd \
     "${COMMON_FLAGS[@]}" \
     --seed="${SEED}" \

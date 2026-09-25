@@ -135,6 +135,45 @@ class MplcV2TrainScriptTests(unittest.TestCase):
         self.assertIn("RankLinfAttack(model, epsilon=0.137, steps=5)", result.stdout)
         self.assertIn("--adv_align_weight=10", result.stdout)
 
+    def test_lr_and_epochs_override_both_arms_after_recipe(self):
+        result = run_script(TRAIN_SCRIPT, {"MPLC_V2_LR": "3e-6", "MPLC_V2_NUM_EPOCHS": "9", "MPLC_V2_FREEZE_TE": "4"})
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        commands = [line for line in result.stdout.splitlines() if line.startswith("+ ")]
+        self.assertEqual(len(commands), 2, result.stdout)
+        self.assertIn("--save_dir=mplc_v2_supervlad_clean_ft_fte4_lr3e-6_ep9_s0", commands[0])
+        self.assertIn("--save_dir=mplc_v2_supervlad_mplc_fte4_lr3e-6_ep9_s0", commands[1])
+        for command in commands:
+            # argparse keeps the last value, so the override must follow the recipe's default.
+            self.assertGreater(command.rindex("--lr=3e-6"), command.index("--lr=1e-5"))
+            self.assertGreater(command.rindex("--num_epochs=9"), command.index("--num_epochs=100"))
+
+    def test_default_lr_and_epochs_add_no_flags(self):
+        result = run_script(TRAIN_SCRIPT)
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        for command in [line for line in result.stdout.splitlines() if line.startswith("+ ")]:
+            self.assertEqual(command.count("--lr="), 1)
+            self.assertEqual(command.count("--num_epochs="), 1)
+
+    def test_linf_attack_mix_keeps_only_rank_attack(self):
+        result = run_script(TRAIN_SCRIPT, {"MPLC_V2_ATTACK_MIX": "linf"})
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        commands = [line for line in result.stdout.splitlines() if line.startswith("+ ")]
+        self.assertIn("--save_dir=mplc_v2_supervlad_clean_ft_s0", commands[0])
+        self.assertNotIn("--attack", commands[0])
+        self.assertIn("--save_dir=mplc_v2_supervlad_mplc_mixlinf_s0", commands[1])
+        self.assertEqual(commands[1].count("--attack "), 1)
+        self.assertIn("RankLinfAttack(model, epsilon=0.0685, steps=5)", commands[1])
+        self.assertNotIn("Perceptual", commands[1])
+
+    def test_unknown_attack_mix_exits_with_status_2(self):
+        result = run_script(TRAIN_SCRIPT, {"MPLC_V2_ATTACK_MIX": "l2"})
+
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("unknown MPLC_V2_ATTACK_MIX", result.stdout)
+
 
 class MplcV2EvalScriptTests(unittest.TestCase):
     def test_explicit_models_and_single_dataset(self):
