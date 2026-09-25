@@ -1,5 +1,8 @@
-"""Rank-PGD validation on a fixed random MSLS-val sample and clean-drop-constrained
-checkpoint selection (spec D4)."""
+"""Rank-PGD validation on a fixed random MSLS-val sample and checkpoint selection (spec D2).
+
+The best checkpoint is the most robust epoch (clean R@1 for clean-only runs); each
+--selection_clean_budgets entry additionally keeps a reporting checkpoint, the best such
+epoch whose clean R@1 stays within that budget of the initial model's."""
 from types import SimpleNamespace
 from typing import Dict, Optional, Sequence
 
@@ -112,13 +115,15 @@ def select_checkpoint(
 
     Adversarial runs select on R. ``eligible_budgets`` lists the clean-drop budgets b with
     C >= C0 - b (``initial_clean_r1=None`` marks the initial validation, eligible for every
-    budget); they only decide the per-budget reporting checkpoints. Clean-only runs select on C.
+    budget); they only decide the per-budget reporting checkpoints. Clean-only runs select on C
+    (and score it as R), so they get the same per-budget checkpoints.
     """
     clean = float(metrics["NoAttack"]["recalls"]["R@1"])
     if is_clean_only:
-        return {"clean_score": clean, "robust_score": clean, "selection_score": clean, "eligible_budgets": []}
-    attacked = [float(value["recalls"]["R@1"]) for name, value in metrics.items() if name != "NoAttack"]
-    robust = float(np.mean(attacked))
+        robust = clean
+    else:
+        attacked = [float(value["recalls"]["R@1"]) for name, value in metrics.items() if name != "NoAttack"]
+        robust = float(np.mean(attacked))
     eligible_budgets = [
         float(budget) for budget in clean_budgets if initial_clean_r1 is None or clean >= initial_clean_r1 - budget
     ]
