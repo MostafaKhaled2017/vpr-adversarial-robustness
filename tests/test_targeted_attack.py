@@ -92,5 +92,37 @@ class TargetedCsvTests(unittest.TestCase):
         self.assertEqual(rows[0]["targeted_success_rate"], 40.0)
 
 
+class TargetedValidationTests(unittest.TestCase):
+    def _base_args(self):
+        return rank_eval.build_parser().parse_args(
+            [
+                "--datasets",
+                "msls",
+                "--model_type",
+                "supervlad",
+                "--model_paths",
+                "base.pth",
+                "--epsilons",
+                "0.01",
+                "--rank_attack_goal",
+                "targeted",
+            ]
+        )
+
+    def test_targeted_rejects_max_dataset_samples(self):
+        args = self._base_args()
+        args.max_dataset_samples = 100
+
+        with self.assertRaisesRegex(ValueError, "--rank_attack_goal targeted"):
+            rank_eval.validate_arguments(args)
+
+    def test_targeted_rejects_audit_sample_database_size(self):
+        args = self._base_args()
+        args.audit_sample_database_size = 10
+
+        with self.assertRaisesRegex(ValueError, "--rank_attack_goal targeted"):
+            rank_eval.validate_arguments(args)
+
+
 if __name__ == "__main__":
     unittest.main()

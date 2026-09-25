@@ -329,8 +329,13 @@ def validate_arguments(args) -> None:
         raise ValueError("--attack_image_amplification must be positive.")
     if args.target_rank < 1:
         raise ValueError("--target_rank must be at least 1.")
-    if args.rank_attack_goal == "targeted" and args.audit_sample_database_size is not None:
-        raise ValueError("--rank_attack_goal targeted is not supported with --audit_sample_database_size.")
+    if args.rank_attack_goal == "targeted" and (
+        args.audit_sample_database_size is not None or args.max_dataset_samples is not None
+    ):
+        raise ValueError(
+            "--rank_attack_goal targeted requires the full gallery (no --audit_sample_database_size / "
+            "--max_dataset_samples)."
+        )
     if args.audit_sample_database_size is not None:
         if not args.audit_attack_implementation:
             raise ValueError("--audit_sample_database_size requires --audit_attack_implementation.")
