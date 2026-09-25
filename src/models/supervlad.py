@@ -18,6 +18,8 @@ def encode_cross_image(encoder: nn.Module, tokens: Tensor, independent: bool) ->
     the attention sequence and every image attends to the others in its batch. That makes a
     query's descriptor depend on its batch neighbours. ``independent=True`` uses a length-1
     sequence, which is exactly upstream's computation at batch size 1, at batched speed.
+    Set via ``forward(x, queryflag=1)`` when encoding queries and database images independently
+    in evaluation to avoid cross-image batch effects.
     """
     batch_size = tokens.shape[0]
     if independent:
@@ -29,7 +31,10 @@ def _query_mode_model_class():
     from model import network
 
     class QueryModeSuperVLAD(network.SuperVLADModel):
-        """SuperVLAD whose ``queryflag=1`` encodes each image independently (spec D1)."""
+        """SuperVLAD whose ``queryflag=1`` encodes each image independently (spec D1).
+
+        Used to encode both query and database images in evaluation without cross-image batch effects.
+        """
 
         def forward(self, x, queryflag=0):
             if not (self.crossimage_encoder and self.arch_name.startswith("dino")):

@@ -575,6 +575,7 @@ def extract_database_features(args, eval_ds, model: nn.Module) -> np.ndarray:
         desc="Database",
         test_method="hard_resize",
         batch_size=args.infer_batch_size,
+        queryflag=1,
     )
     return features["model"]
 
@@ -1544,6 +1545,7 @@ def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, 
         desc=f"{dataset_name}:audit database",
         test_method="hard_resize",
         batch_size=args.infer_batch_size,
+        queryflag=1,
     )
     query_features, query_times, query_input_seconds = extract_features_for_models(
         args,
@@ -1747,6 +1749,7 @@ def prepare_dataset_context(
             desc=f"{dataset_name}:database",
             test_method="hard_resize",
             batch_size=args.infer_batch_size,
+            queryflag=1,
         )
         query_dataset_indices = range(eval_ds.database_num, eval_ds.database_num + eval_ds.queries_num)
         query_features, query_times, query_input_seconds = extract_features_for_models(
@@ -1848,6 +1851,7 @@ def prepare_dataset_context(
         desc=f"{dataset_name}:sampled database",
         test_method="hard_resize",
         batch_size=args.infer_batch_size,
+        queryflag=1,
     )
     query_features, query_times, query_input_seconds = extract_features_for_models(
         args,

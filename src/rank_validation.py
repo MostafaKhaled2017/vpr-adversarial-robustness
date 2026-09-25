@@ -55,7 +55,7 @@ def evaluate_rank_validation(args, model: nn.Module, val_ds, query_indices: np.n
     descriptor_model.eval()
     try:
         val_ds.test_method = "hard_resize"
-        database = _extract(args, val_ds, descriptor_model, range(val_ds.database_num), queryflag=0)
+        database = _extract(args, val_ds, descriptor_model, range(val_ds.database_num), queryflag=1)
         val_ds.test_method = args.test_method
         queries = _extract(
             args, val_ds, descriptor_model, val_ds.database_num + query_indices, queryflag=1

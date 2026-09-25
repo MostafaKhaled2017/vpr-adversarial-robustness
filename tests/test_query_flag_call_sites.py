@@ -101,7 +101,7 @@ class RankEvalQueryFlagTests(unittest.TestCase):
 
         self.assertEqual(recorded["queryflag"], 1)
 
-    def test_extract_database_features_passes_queryflag_zero(self):
+    def test_extract_database_features_passes_queryflag_one(self):
         import src.rank_eval as rank_eval
 
         recorded = {}
@@ -119,7 +119,7 @@ class RankEvalQueryFlagTests(unittest.TestCase):
         finally:
             rank_eval.extract_features_for_models = original
 
-        self.assertEqual(recorded["queryflag"], 0)
+        self.assertEqual(recorded["queryflag"], 1)
 
 
 if __name__ == "__main__":

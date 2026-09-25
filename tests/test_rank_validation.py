@@ -144,6 +144,32 @@ def rank_args(**overrides):
 
 
 class EvaluateRankValidationTests(unittest.TestCase):
+    def test_database_features_use_queryflag_one(self):
+        """Database extraction in evaluate_rank_validation must use queryflag=1."""
+        import src.rank_validation as rank_val_module
+
+        recorded_calls = []
+
+        def fake_extract(args, dataset, model, indices, queryflag):
+            recorded_calls.append({"queryflag": queryflag, "indices_len": len(list(indices))})
+            return np.zeros((len(list(indices)), 2), dtype=np.float32)
+
+        original_extract = rank_val_module._extract
+        rank_val_module._extract = fake_extract
+        try:
+            dataset = FakeValDataset()
+            model = LinearDescriptor()
+            args = rank_args()
+            evaluate_rank_validation(args, model, dataset, np.array([0, 1, 3]))
+
+            # Should have called _extract for database with queryflag=1
+            database_calls = [c for c in recorded_calls if c["indices_len"] == dataset.database_num]
+            self.assertTrue(len(database_calls) > 0, "No database extraction calls found")
+            for call in database_calls:
+                self.assertEqual(call["queryflag"], 1, f"Database extraction should use queryflag=1, got {call['queryflag']}")
+        finally:
+            rank_val_module._extract = original_extract
+
     def test_adversarial_run_reports_clean_and_every_epsilon(self):
         model = LinearDescriptor()
         result = evaluate_rank_validation(rank_args(), model, FakeValDataset(), np.array([0, 1, 3]))
