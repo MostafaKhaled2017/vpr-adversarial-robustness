@@ -216,3 +216,9 @@ def maybe_remove_old_checkpoint(args, checkpoint_epoch: int) -> None:
     checkpoint_name = join(args.save_dir, f"checkpoint_epoch_{checkpoint_epoch:04d}.pth")
     if exists(checkpoint_name):
         os.remove(checkpoint_name)
+
+
+def copy_budget_checkpoints(args, source_filename: str, budget_keys) -> None:
+    """Copy ``source_filename`` to ``best_model_budget<b>.pth`` for each improved budget (spec D2)."""
+    for key in budget_keys:
+        atomic_copy(Path(args.save_dir) / source_filename, Path(args.save_dir) / f"best_model_budget{key}.pth")

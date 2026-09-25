@@ -1,6 +1,5 @@
 """Rank-PGD validation on a fixed random MSLS-val sample and clean-drop-constrained
 checkpoint selection (spec D4)."""
-import math
 from types import SimpleNamespace
 from typing import Dict, Optional, Sequence
 
@@ -107,24 +106,25 @@ def evaluate_rank_validation(args, model: nn.Module, val_ds, query_indices: np.n
 
 
 def select_checkpoint(
-    metrics: Dict[str, object], initial_clean_r1: Optional[float], max_clean_drop: float, is_clean_only: bool
+    metrics: Dict[str, object], initial_clean_r1: Optional[float], clean_budgets: Sequence[float], is_clean_only: bool
 ) -> Dict[str, object]:
-    """Clean-drop-constrained selection: C = clean R@1, R = mean attacked R@1.
+    """Robust-score selection (spec D2): C = clean R@1, R = mean attacked R@1.
 
-    Adversarial runs select on R among epochs whose C stays within ``max_clean_drop`` of the
-    initial C (``initial_clean_r1=None`` marks the initial validation, eligible by
-    definition); ineligible epochs score ``-inf`` so they never become best. Clean-only runs
-    select on C.
+    Adversarial runs select on R. ``eligible_budgets`` lists the clean-drop budgets b with
+    C >= C0 - b (``initial_clean_r1=None`` marks the initial validation, eligible for every
+    budget); they only decide the per-budget reporting checkpoints. Clean-only runs select on C.
     """
     clean = float(metrics["NoAttack"]["recalls"]["R@1"])
     if is_clean_only:
-        return {"clean_score": clean, "robust_score": clean, "selection_score": clean, "eligible": True}
+        return {"clean_score": clean, "robust_score": clean, "selection_score": clean, "eligible_budgets": []}
     attacked = [float(value["recalls"]["R@1"]) for name, value in metrics.items() if name != "NoAttack"]
     robust = float(np.mean(attacked))
-    eligible = initial_clean_r1 is None or clean >= initial_clean_r1 - max_clean_drop
+    eligible_budgets = [
+        float(budget) for budget in clean_budgets if initial_clean_r1 is None or clean >= initial_clean_r1 - budget
+    ]
     return {
         "clean_score": clean,
         "robust_score": robust,
-        "selection_score": robust if eligible else -math.inf,
-        "eligible": bool(eligible),
+        "selection_score": robust,
+        "eligible_budgets": eligible_budgets,
     }

@@ -240,8 +240,8 @@ def build_parser():
         choices=["legacy", "rank_pgd"],
         default="rank_pgd",
         help="rank_pgd (default): clean and rank-PGD L-inf recall on a fixed query sample, selecting "
-        "the most robust epoch whose clean R@1 stays within --selection_max_clean_drop of the "
-        "initial model. legacy: perceptual validation attacks and the weighted score, as used by "
+        "the most robust epoch and keeping one extra checkpoint per --selection_clean_budgets entry. "
+        "legacy: perceptual validation attacks and the weighted score, as used by "
         "the Phase 1/Phase 2 runs.",
     )
     parser.add_argument("--val_queries", type=int, default=2000, help="Validation queries sampled for rank_pgd.")
@@ -255,10 +255,13 @@ def build_parser():
         help="Rank-PGD L-inf budgets in rank_pgd validation.",
     )
     parser.add_argument(
-        "--selection_max_clean_drop",
+        "--selection_clean_budgets",
         type=float,
-        default=1.0,
-        help="Largest clean R@1 drop (points) from the initial validation for an epoch to be selectable.",
+        nargs="+",
+        default=[1.0, 3.0, 5.0],
+        help="Clean R@1 drops (points) from the initial validation. For each budget b, "
+        "best_model_budget<b>.pth keeps the most robust epoch whose clean R@1 is within b. "
+        "Reporting views only: best_model.pth and early stopping follow the robust score.",
     )
     parser.add_argument(
         "--early_stop_min_delta",
@@ -339,8 +342,8 @@ def parse_arguments(argv=None):
         raise ValueError("--val_rank_steps must be at least 1")
     if any(epsilon <= 0 for epsilon in args.val_rank_epsilons):
         raise ValueError("--val_rank_epsilons must be positive")
-    if args.selection_max_clean_drop < 0:
-        raise ValueError("--selection_max_clean_drop must be non-negative")
+    if any(budget < 0 for budget in args.selection_clean_budgets):
+        raise ValueError("--selection_clean_budgets must be non-negative")
     if args.weight_decay is not None and args.weight_decay < 0:
         raise ValueError("--weight_decay must be non-negative")
     if args.train_resize is None:
@@ -380,5 +383,5 @@ def resolve_checkpoint_selection_rule(args):
         args.checkpoint_selection_rule = "robust_weighted"
         args.effective_selection_robust_weight = args.selection_robust_weight
     if getattr(args, "validation_protocol", "rank_pgd") == "rank_pgd":
-        args.checkpoint_selection_rule = "clean_recall" if args.is_clean_only else "clean_constrained_rank_pgd"
+        args.checkpoint_selection_rule = "clean_recall" if args.is_clean_only else "robust_rank_pgd"
     return args

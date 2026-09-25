@@ -28,27 +28,26 @@ def metrics(clean, *attacked):
 
 
 class SelectCheckpointTests(unittest.TestCase):
-    def test_eligible_epoch_scores_mean_attacked_r1(self):
-        scores = select_checkpoint(metrics(90.0, 20.0, 10.0), initial_clean_r1=90.5, max_clean_drop=1.0, is_clean_only=False)
-        self.assertTrue(scores["eligible"])
+    def test_adversarial_run_selects_on_mean_attacked_r1(self):
+        scores = select_checkpoint(metrics(80.0, 20.0, 10.0), initial_clean_r1=90.0, clean_budgets=[1.0], is_clean_only=False)
         self.assertEqual(scores["robust_score"], 15.0)
         self.assertEqual(scores["selection_score"], 15.0)
 
-    def test_clean_drop_beyond_limit_is_ineligible(self):
-        scores = select_checkpoint(metrics(88.0, 40.0, 30.0), initial_clean_r1=90.0, max_clean_drop=1.0, is_clean_only=False)
-        self.assertFalse(scores["eligible"])
-        self.assertEqual(scores["selection_score"], -math.inf)
+    def test_eligible_budgets_follow_clean_drop(self):
+        scores = select_checkpoint(metrics(87.0, 40.0), 90.0, [1.0, 3.0, 5.0], False)
+        self.assertEqual(scores["eligible_budgets"], [3.0, 5.0])
 
-    def test_drop_exactly_at_limit_is_eligible(self):
-        self.assertTrue(select_checkpoint(metrics(89.0, 1.0), 90.0, 1.0, False)["eligible"])
+    def test_drop_exactly_at_budget_is_eligible(self):
+        self.assertEqual(select_checkpoint(metrics(89.0, 1.0), 90.0, [1.0], False)["eligible_budgets"], [1.0])
 
-    def test_initial_validation_is_always_eligible(self):
-        self.assertTrue(select_checkpoint(metrics(50.0, 1.0), None, 1.0, False)["eligible"])
+    def test_initial_validation_is_eligible_for_every_budget(self):
+        self.assertEqual(select_checkpoint(metrics(50.0, 1.0), None, [1.0, 3.0], False)["eligible_budgets"], [1.0, 3.0])
 
     def test_clean_only_selects_on_clean_r1(self):
-        scores = select_checkpoint(metrics(91.0), 90.0, 1.0, True)
+        scores = select_checkpoint(metrics(91.0), 90.0, [1.0], True)
         self.assertEqual(scores["selection_score"], 91.0)
         self.assertEqual(scores["robust_score"], 91.0)
+        self.assertEqual(scores["eligible_budgets"], [])
 
 
 class SampleQueriesTests(unittest.TestCase):
@@ -65,6 +64,20 @@ class SampleQueriesTests(unittest.TestCase):
         self.assertEqual(sample_validation_queries(positives, 10, seed=0).tolist(), [0, 2])
 
 
+class ImprovedBudgetsTests(unittest.TestCase):
+    def test_only_eligible_strict_improvements_are_returned(self):
+        from src import train_loop
+
+        best = {"1": 10.0, "3": 50.0}
+        scores = {"robust_score": 20.0, "eligible_budgets": [1.0, 3.0, 5.0]}
+        self.assertEqual(train_loop.improved_budgets(scores, best), ["1", "5"])
+
+    def test_legacy_scores_without_budgets_improve_nothing(self):
+        from src import train_loop
+
+        self.assertEqual(train_loop.improved_budgets({"robust_score": 99.0}, {}), [])
+
+
 BASE = [
     "--eval_datasets_folder", "/tmp", "--device", "cpu",
     "--model=supervlad", "--attack", "PerceptualPGDAttack(model, bound=0.1, num_iterations=5)",
@@ -75,11 +88,11 @@ class RankValidationCliTests(unittest.TestCase):
     def test_defaults_use_rank_pgd_protocol(self):
         args = parse_arguments(BASE)
         self.assertEqual(args.validation_protocol, "rank_pgd")
-        self.assertEqual(args.checkpoint_selection_rule, "clean_constrained_rank_pgd")
+        self.assertEqual(args.checkpoint_selection_rule, "robust_rank_pgd")
         self.assertEqual(args.val_queries, 2000)
         self.assertEqual(args.val_query_seed, 0)
         self.assertEqual(args.val_rank_steps, 10)
-        self.assertEqual(args.selection_max_clean_drop, 1.0)
+        self.assertEqual(args.selection_clean_budgets, [1.0, 3.0, 5.0])
 
     def test_legacy_protocol_keeps_weighted_selection(self):
         args = parse_arguments(BASE + ["--validation_protocol", "legacy"])
@@ -87,7 +100,7 @@ class RankValidationCliTests(unittest.TestCase):
 
     def test_rank_pgd_sets_selection_rule(self):
         args = parse_arguments(BASE + ["--validation_protocol", "rank_pgd"])
-        self.assertEqual(args.checkpoint_selection_rule, "clean_constrained_rank_pgd")
+        self.assertEqual(args.checkpoint_selection_rule, "robust_rank_pgd")
         self.assertEqual(args.val_rank_epsilons, [0.01, 0.1])
 
     def test_rank_pgd_clean_only_selects_on_clean_recall(self):
@@ -103,7 +116,7 @@ class RankValidationCliTests(unittest.TestCase):
             ["--val_queries", "0"],
             ["--val_rank_steps", "0"],
             ["--val_rank_epsilons", "0.01", "0"],
-            ["--selection_max_clean_drop", "-0.5"],
+            ["--selection_clean_budgets", "1", "-0.5"],
         ):
             with self.subTest(extra=extra), self.assertRaises(ValueError):
                 parse_arguments(BASE + ["--validation_protocol", "rank_pgd", *extra])
@@ -201,27 +214,28 @@ class EvaluateRankValidationTests(unittest.TestCase):
 
 
 class CheckpointRuntimeStateTests(unittest.TestCase):
-    def test_initial_clean_r1_is_stored_in_runtime_state(self):
+    def test_budget_scores_are_stored_in_runtime_state(self):
         model = nn.Linear(2, 2)
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
         clean = {"recalls_list": [1.0, 2.0, 3.0, 4.0], "recalls": {"R@1": 1.0, "R@5": 2.0, "R@10": 3.0, "R@100": 4.0}}
         checkpoint = build_checkpoint_state(
             Namespace(tensorboard_dir="tensorboard"), model, optimizer, epoch_num=0, metrics={"NoAttack": clean},
-            validation_scores={"clean_score": 1.0, "robust_score": 1.0, "selection_score": 1.0, "eligible": True},
-            next_best_score=1.0, next_not_improved=0, initial_clean_r1=90.0,
+            validation_scores={"clean_score": 1.0, "robust_score": 1.0, "selection_score": 1.0, "eligible_budgets": [1.0]},
+            next_best_score=1.0, next_not_improved=0, initial_clean_r1=90.0, best_budget_scores={"1": 12.0},
         )
         self.assertEqual(checkpoint["runtime_state"]["initial_clean_r1"], 90.0)
+        self.assertEqual(checkpoint["runtime_state"]["best_budget_scores"], {"1": 12.0})
 
-    def test_record_adds_eligibility_only_when_present(self):
+    def test_record_adds_budgets_only_when_present(self):
         clean = {"recalls": {"R@1": 1.0, "R@5": 2.0, "R@10": 3.0, "R@100": 4.0}}
         legacy = build_validation_metrics_record(0, {"NoAttack": clean}, {"clean_score": 1.0, "robust_score": 1.0, "selection_score": 1.0})
-        self.assertNotIn("eligible", legacy)
+        self.assertNotIn("eligible_budgets", legacy)
         self.assertNotIn("initial_clean_r1", legacy)
         rank = build_validation_metrics_record(
-            1, {"NoAttack": clean}, {"clean_score": 1.0, "robust_score": 1.0, "selection_score": -math.inf, "eligible": False},
+            1, {"NoAttack": clean}, {"clean_score": 1.0, "robust_score": 1.0, "selection_score": 1.0, "eligible_budgets": [3.0]},
             initial_clean_r1=90.0,
         )
-        self.assertFalse(rank["eligible"])
+        self.assertEqual(rank["eligible_budgets"], [3.0])
         self.assertEqual(rank["initial_clean_r1"], 90.0)
 
 
@@ -233,26 +247,28 @@ def scripted_metrics(clean, attacked):
 
 
 class RunTrainingRankProtocolTests(unittest.TestCase):
-    def test_ineligible_epoch_is_never_best_and_initial_clean_r1_is_kept(self):
+    def test_most_robust_epoch_is_best_and_budget_checkpoints_follow_clean_drop(self):
         import tempfile
         from unittest import mock
 
         from src import train_loop
 
-        # Initial C0=90; epoch 1 is more robust but drops clean R@1 by 3 (ineligible);
-        # epoch 2 stays within the limit and becomes best.
+        # C0=90, initial robust 10. Epoch 1: clean 87 (drop 3), robust 50 -> best overall and
+        # best within budgets 3 and 5. Epoch 2: clean 89.5, robust 20 -> best within budget 1 only.
         results = iter([scripted_metrics(90.0, 10.0), scripted_metrics(87.0, 50.0), scripted_metrics(89.5, 20.0)])
-        saved = []
+        saved, copied = [], []
         model = nn.Linear(2, 2)
         with tempfile.TemporaryDirectory() as save_dir, mock.patch.object(
             train_loop, "evaluate_rank_validation", side_effect=lambda *a, **k: next(results)
         ), mock.patch.object(
             train_loop, "save_checkpoint", side_effect=lambda args, state, is_best, filename: saved.append((filename, is_best, state))
+        ), mock.patch.object(
+            train_loop, "copy_budget_checkpoints", side_effect=lambda args, source, keys: copied.append((source, list(keys)))
         ), mock.patch.object(train_loop, "maybe_remove_old_checkpoint"), mock.patch.object(
             train_loop.util, "load_trusted_checkpoint", return_value={"model_state_dict": model.state_dict()}
         ), mock.patch.object(train_loop.test, "test", return_value=([0.0] * 4, "")):
             args = SimpleNamespace(
-                validation_protocol="rank_pgd", val_queries=10, val_query_seed=0, selection_max_clean_drop=1.0,
+                validation_protocol="rank_pgd", val_queries=10, val_query_seed=0, selection_clean_budgets=[1.0, 3.0, 5.0],
                 is_clean_only=False, skip_initial_validation=False, lr_schedule="", lr_plateau_patience=None, lr=1e-4,
                 epochs_num=2, adv_warmup_epochs=0, randomize_attack=False, early_stop_min_delta=0.0, patience=5,
                 save_dir=save_dir, tensorboard_dir=save_dir, device="cpu", test_method="hard_resize",
@@ -264,9 +280,14 @@ class RunTrainingRankProtocolTests(unittest.TestCase):
             )
         self.assertEqual(outcome["state"], "completed")
         last = [(is_best, state) for filename, is_best, state in saved if filename == "last_model.pth"]
-        self.assertEqual([is_best for is_best, _ in last], [False, True])
-        self.assertEqual(last[0][1]["not_improved_num"], 1)
-        self.assertEqual(last[1][1]["best_r5"], 20.0)
+        self.assertEqual([is_best for is_best, _ in last], [True, False])
+        self.assertEqual(last[0][1]["best_r5"], 50.0)
+        self.assertEqual(last[1][1]["not_improved_num"], 1)
+        self.assertEqual(
+            copied,
+            [("initial_validation_model.pth", ["1", "3", "5"]), ("last_model.pth", ["3", "5"]), ("last_model.pth", ["1"])],
+        )
+        self.assertEqual(last[1][1]["runtime_state"]["best_budget_scores"], {"1": 20.0, "3": 50.0, "5": 50.0})
         for _, _, state in saved:
             self.assertEqual(state["runtime_state"]["initial_clean_r1"], 90.0)
 

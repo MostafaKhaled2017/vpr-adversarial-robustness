@@ -1,6 +1,7 @@
 import csv
 import json
 import logging
+import math
 from dataclasses import replace
 from datetime import datetime
 from os.path import exists, join
@@ -16,6 +17,7 @@ import util
 from .checkpoints import (
     apply_lr_schedule,
     capture_rng_state,
+    copy_budget_checkpoints,
     maybe_remove_old_checkpoint,
     save_checkpoint,
     restore_rng_state,
@@ -282,15 +284,28 @@ def log_validation_recalls(epoch_label: str, metrics: Dict[str, object]) -> None
         logging.info("Validation recalls %s attacked/mean: %s", epoch_label, format_reported_recalls(attacked_mean))
 
 
-def log_rank_selection(scores: Dict[str, object], initial_clean_r1: float, max_clean_drop: float) -> None:
+def log_rank_selection(scores: Dict[str, object], initial_clean_r1: float) -> None:
     logging.info(
-        "Selection: clean R@1 %.2f (initial %.2f, limit %.2f), mean attacked R@1 %.2f, eligible=%s",
+        "Selection: clean R@1 %.2f (initial %.2f), mean attacked R@1 %.2f, within clean budgets %s",
         scores["clean_score"],
         initial_clean_r1,
-        initial_clean_r1 - max_clean_drop,
         scores["robust_score"],
-        scores["eligible"],
+        [budget_key(budget) for budget in scores["eligible_budgets"]],
     )
+
+
+def budget_key(budget: float) -> str:
+    return f"{float(budget):g}"
+
+
+def improved_budgets(validation_scores: Dict[str, object], best_budget_scores: Dict[str, float]) -> List[str]:
+    """Budgets whose best robust score this validation strictly beats (spec D2)."""
+    robust = float(validation_scores["robust_score"])
+    return [
+        budget_key(budget)
+        for budget in validation_scores.get("eligible_budgets", [])
+        if robust > best_budget_scores.get(budget_key(budget), -math.inf)
+    ]
 
 
 def build_validation_metrics_record(
@@ -320,8 +335,8 @@ def build_validation_metrics_record(
         "selection_score": validation_scores["selection_score"],
         "collapse": collapse,
     }
-    if "eligible" in validation_scores:
-        record["eligible"] = validation_scores["eligible"]
+    if "eligible_budgets" in validation_scores:
+        record["eligible_budgets"] = list(validation_scores["eligible_budgets"])
     if initial_clean_r1 is not None:
         record["initial_clean_r1"] = initial_clean_r1
     return record
@@ -406,6 +421,7 @@ def build_checkpoint_state(
     collapse_sample_indices=None,
     reference_descriptors=None,
     initial_clean_r1=None,
+    best_budget_scores=None,
 ) -> Dict[str, object]:
     return {
         "epoch_num": epoch_num,
@@ -432,6 +448,7 @@ def build_checkpoint_state(
             if reference_descriptors is None
             else reference_descriptors.detach().cpu(),
             "initial_clean_r1": initial_clean_r1,
+            "best_budget_scores": dict(best_budget_scores or {}),
         },
     }
 
@@ -490,11 +507,12 @@ def run_training(
     current_lr = float(optimizer.param_groups[0]["lr"])
     restore_rng_state(resume_runtime_state.get("rng_state"))
 
-    # Spec D4: rank_pgd validates clean and rank-PGD recall on a fixed query sample and
-    # selects the most robust epoch whose clean R@1 stays within
-    # --selection_max_clean_drop of the initial model's (C0, kept across resumes).
+    # Spec D2/D4: rank_pgd validates clean and rank-PGD recall on a fixed query sample and
+    # selects the most robust epoch, keeping one extra checkpoint per --selection_clean_budgets
+    # entry whose clean R@1 stays within that budget of the initial model's C0 (kept across resumes).
     rank_protocol = getattr(args, "validation_protocol", "rank_pgd") == "rank_pgd"
     initial_clean_r1 = resume_runtime_state.get("initial_clean_r1")
+    best_budget_scores = dict(resume_runtime_state.get("best_budget_scores", {}))
     if rank_protocol:
         validation_query_indices = sample_validation_queries(val_ds.get_positives(), args.val_queries, args.val_query_seed)
         logging.info("Rank-PGD validation on %d sampled queries.", len(validation_query_indices))
@@ -505,7 +523,7 @@ def run_training(
             scores = select_checkpoint(
                 metrics,
                 None if epoch_initial else initial_clean_r1,
-                args.selection_max_clean_drop,
+                args.selection_clean_budgets,
                 args.is_clean_only,
             )
             return metrics, scores
@@ -524,7 +542,7 @@ def run_training(
         initial_metrics, initial_scores = validate(True)
         if rank_protocol:
             initial_clean_r1 = initial_scores["clean_score"]
-            log_rank_selection(initial_scores, initial_clean_r1, args.selection_max_clean_drop)
+            log_rank_selection(initial_scores, initial_clean_r1)
         initial_record = build_validation_metrics_record(
             -1, initial_metrics, initial_scores, initial_clean_r1=initial_clean_r1
         )
@@ -533,6 +551,9 @@ def run_training(
 
         best_score = initial_scores["selection_score"]
         not_improved = 0
+        initial_budgets = improved_budgets(initial_scores, best_budget_scores)
+        for key in initial_budgets:
+            best_budget_scores[key] = float(initial_scores["robust_score"])
         initial_checkpoint_state = build_checkpoint_state(
             args,
             model,
@@ -548,8 +569,11 @@ def run_training(
             collapse_sample_indices=collapse_sample_indices,
             reference_descriptors=reference_descriptors,
             initial_clean_r1=initial_clean_r1,
+            best_budget_scores=best_budget_scores,
         )
         save_checkpoint(args, initial_checkpoint_state, True, filename="initial_validation_model.pth")
+        if initial_budgets:
+            copy_budget_checkpoints(args, "initial_validation_model.pth", initial_budgets)
         writer.add_scalar("val_initial/clean_score", initial_scores["clean_score"], 0)
         writer.add_scalar("val_initial/robust_score", initial_scores["robust_score"], 0)
         writer.add_scalar("val_initial/selection_score", initial_scores["selection_score"], 0)
@@ -809,7 +833,7 @@ def run_training(
         append_validation_metrics(args, validation_record)
         log_validation_recalls(f"after epoch {epoch_num + 1:02d}", metrics)
         if rank_protocol and initial_clean_r1 is not None:
-            log_rank_selection(validation_scores, initial_clean_r1, args.selection_max_clean_drop)
+            log_rank_selection(validation_scores, initial_clean_r1)
         log_collapse_report(writer, collapse, epoch_num)
 
         writer.add_scalar("val/clean_score", clean_score, epoch_num)
@@ -828,6 +852,9 @@ def run_training(
                 current_lr,
             )
 
+        epoch_budgets = improved_budgets(validation_scores, best_budget_scores)
+        for key in epoch_budgets:
+            best_budget_scores[key] = float(robust_score)
         checkpoint_state = build_checkpoint_state(
             args,
             model,
@@ -843,8 +870,11 @@ def run_training(
             collapse_sample_indices=collapse_sample_indices,
             reference_descriptors=reference_descriptors,
             initial_clean_r1=initial_clean_r1,
+            best_budget_scores=best_budget_scores,
         )
         save_checkpoint(args, checkpoint_state, is_best, filename="last_model.pth")
+        if epoch_budgets:
+            copy_budget_checkpoints(args, "last_model.pth", epoch_budgets)
         intermediate_name = f"checkpoint_epoch_{epoch_num + 1:04d}.pth"
         save_checkpoint(args, checkpoint_state, False, filename=intermediate_name)
         maybe_remove_old_checkpoint(args, epoch_num + 1)
