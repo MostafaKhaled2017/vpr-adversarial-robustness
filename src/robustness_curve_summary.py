@@ -14,6 +14,8 @@ from typing import Dict, List, Mapping, Optional, Sequence
 from src.config import normalized_epsilon_to_raw_pixels
 
 CLEAN_CONDITION = "clean_all_queries"
+# Attacked R@1 is measured on the valid-query subset, so the curve's eps=0 point uses the same subset.
+CURVE_ANCHOR_CONDITION = "clean_attacked_subset"
 EPSILON_PATTERN = re.compile(r"_eps_[^_]+")
 
 
@@ -43,9 +45,12 @@ def summarize(rows: Sequence[Mapping[str, str]], reference_model: Optional[str] 
 
     Returns:
         List of summary dicts with keys: dataset, model, family, clean_r1, r1_by_epsilon,
-        auc, clean_drop_vs_reference, mean_targeted_success
+        auc, clean_drop_vs_reference, mean_targeted_success. clean_r1 and the clean drop use
+        clean_all_queries; the AUC's eps=0 point uses clean_attacked_subset (falling back to
+        clean_all_queries when absent).
     """
     clean: Dict[tuple, float] = {}
+    anchors: Dict[tuple, float] = {}
     curves: Dict[tuple, Dict[float, float]] = defaultdict(dict)
     successes: Dict[tuple, List[float]] = defaultdict(list)
 
@@ -53,6 +58,8 @@ def summarize(rows: Sequence[Mapping[str, str]], reference_model: Optional[str] 
         key = (row["dataset"], row["model"])
         if row["condition"] == CLEAN_CONDITION:
             clean[key] = float(row["R@1"])
+        elif row["condition"] == CURVE_ANCHOR_CONDITION:
+            anchors[key] = float(row["R@1"])
         if row.get("epsilon"):
             family_key = (*key, EPSILON_PATTERN.sub("", row["condition"]))
             curves[family_key][float(row["epsilon"])] = float(row["R@1"])
@@ -63,6 +70,7 @@ def summarize(rows: Sequence[Mapping[str, str]], reference_model: Optional[str] 
     for (dataset, model, family), curve in sorted(curves.items()):
         epsilons = sorted(curve)
         clean_r1 = clean[(dataset, model)]
+        anchor_r1 = anchors.get((dataset, model), clean_r1)
         reference = clean.get((dataset, reference_model)) if reference_model else None
         summary.append(
             {
@@ -71,7 +79,7 @@ def summarize(rows: Sequence[Mapping[str, str]], reference_model: Optional[str] 
                 "family": family,
                 "clean_r1": clean_r1,
                 "r1_by_epsilon": {epsilon: curve[epsilon] for epsilon in epsilons},
-                "auc": normalized_auc(epsilons, [curve[epsilon] for epsilon in epsilons], clean_r1),
+                "auc": normalized_auc(epsilons, [curve[epsilon] for epsilon in epsilons], anchor_r1),
                 "clean_drop_vs_reference": (reference - clean_r1) if reference is not None else None,
                 "mean_targeted_success": sum(successes[dataset, model, family]) / len(successes[dataset, model, family]) if successes[dataset, model, family] else None,
             }

@@ -10,9 +10,11 @@ def row(model, condition, epsilon, r1, success=""):
 
 ROWS = [
     row("clean_ft", "clean_all_queries", "", "80"),
+    row("clean_ft", "clean_attacked_subset", "", "76"),
     row("clean_ft", "rank_pgd_linf_eps_0.5", "0.5", "40"),
     row("clean_ft", "rank_pgd_linf_eps_1", "1.0", "20"),
     row("mplc", "clean_all_queries", "", "78"),
+    row("mplc", "clean_attacked_subset", "", "74"),
     row("mplc", "rank_pgd_linf_eps_0.5", "0.5", "60"),
     row("mplc", "rank_pgd_linf_eps_1", "1.0", "50"),
     row("mplc", "rank_pgd_linf_eps_1_targeted", "1.0", "70", "12.5"),
@@ -31,10 +33,19 @@ class SummarizeTests(unittest.TestCase):
         by_key = {(item["model"], item["family"]): item for item in summary}
         self.assertEqual(set(by_key), {("clean_ft", "rank_pgd_linf"), ("mplc", "rank_pgd_linf"), ("mplc", "rank_pgd_linf_targeted")})
         mplc = by_key[("mplc", "rank_pgd_linf")]
-        self.assertAlmostEqual(mplc["auc"], ((78 + 60) / 2 * 0.5 + (60 + 50) / 2 * 0.5) / 1.0)
+        # The eps=0 anchor is clean R@1 over the attacked queries (74), not all queries (78).
+        self.assertAlmostEqual(mplc["auc"], ((74 + 60) / 2 * 0.5 + (60 + 50) / 2 * 0.5) / 1.0)
+        self.assertAlmostEqual(mplc["clean_r1"], 78.0)
         self.assertAlmostEqual(mplc["clean_drop_vs_reference"], 2.0)
         self.assertEqual(mplc["r1_by_epsilon"], {0.5: 60.0, 1.0: 50.0})
         self.assertEqual(by_key[("mplc", "rank_pgd_linf_targeted")]["mean_targeted_success"], 12.5)
+
+    def test_curve_anchor_falls_back_to_all_queries_without_subset_row(self):
+        rows = [r for r in ROWS if r["condition"] != "clean_attacked_subset"]
+        by_key = {(item["model"], item["family"]): item for item in summarize(rows)}
+        mplc = by_key[("mplc", "rank_pgd_linf")]
+        self.assertAlmostEqual(mplc["auc"], ((78 + 60) / 2 * 0.5 + (60 + 50) / 2 * 0.5) / 1.0)
+        self.assertAlmostEqual(mplc["clean_r1"], 78.0)
 
 
 if __name__ == "__main__":
