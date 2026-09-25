@@ -12,13 +12,13 @@ TRAIN_SCRIPT = REPO_ROOT / "scripts" / "mplc_v2_train.sh"
 EVAL_SCRIPT = REPO_ROOT / "scripts" / "mplc_v2_eval.sh"
 
 
-def run_script(script, extra_env=None):
+def run_script(script, extra_env=None, args=()):
     environment = os.environ.copy()
     environment.update({"MPLC_V2_DRY_RUN": "1", "PYTHON": sys.executable})
     if extra_env:
         environment.update(extra_env)
     return subprocess.run(
-        ["bash", str(script)],
+        ["bash", str(script), *args],
         cwd=REPO_ROOT,
         env=environment,
         text=True,
@@ -194,6 +194,70 @@ class MplcV2EvalScriptTests(unittest.TestCase):
             )
         finally:
             shutil.rmtree(base, ignore_errors=True)
+
+
+def eval_lines(output):
+    return [line for line in output.splitlines() if line.startswith("+ ") and "eval.py" in line]
+
+
+class MplcV2EvalScriptOptionTests(unittest.TestCase):
+    def setUp(self):
+        self.base = REPO_ROOT / "logs" / "mplc_v2_supervlad_mplc_s94"
+        run_dir = self.base / "2024-01-01_run"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "best_model.pth").write_text("x", encoding="utf-8")
+        (run_dir / "run_status.json").write_text(json.dumps({"state": "completed"}), encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.base, ignore_errors=True)
+
+    def test_datasets_option_runs_one_eval_per_dataset(self):
+        result = run_script(EVAL_SCRIPT, args=["--datasets", "sped nordland", "--seeds", "94"])
+        self.assertEqual(result.returncode, 0, result.stdout)
+        lines = eval_lines(result.stdout)
+        self.assertEqual(len(lines), 2, result.stdout)
+        self.assertIn("--datasets sped", lines[0])
+        self.assertIn("--datasets nordland", lines[1])
+
+    def test_arms_and_no_pretrained_select_models(self):
+        result = run_script(
+            EVAL_SCRIPT, args=["--datasets", "sped", "--seeds", "94", "--arms", "mplc", "--no-pretrained"]
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        (line,) = eval_lines(result.stdout)
+        self.assertIn("--model_tags mplc_s94 ", line)
+        self.assertNotIn("pretrained", line.split("--model_tags", 1)[1].split("--", 1)[0])
+        self.assertNotIn("WARNING: no finished checkpoint for mplc_v2_supervlad_clean_ft_s94", result.stdout)
+
+    def test_explicit_models_replace_discovery(self):
+        result = run_script(
+            EVAL_SCRIPT,
+            args=["--datasets", "sped", "--model", "a=x/a.pth", "--model", "b=x/b.pth"],
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        (line,) = eval_lines(result.stdout)
+        self.assertIn("--model_paths x/a.pth x/b.pth ", line)
+        self.assertIn("--model_tags a b ", line)
+        self.assertNotIn("WARNING: no finished checkpoint", result.stdout)
+
+    def test_explicit_models_with_discovered(self):
+        result = run_script(
+            EVAL_SCRIPT,
+            args=["--datasets", "sped", "--seeds", "94", "--arms", "mplc", "--model", "a=x/a.pth", "--with-discovered"],
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        (line,) = eval_lines(result.stdout)
+        self.assertIn("--model_tags a pretrained mplc_s94 ", line)
+
+    def test_invalid_arm_and_unknown_option_exit_2(self):
+        self.assertEqual(run_script(EVAL_SCRIPT, args=["--arms", "pat"]).returncode, 2)
+        self.assertEqual(run_script(EVAL_SCRIPT, args=["--bogus"]).returncode, 2)
+        self.assertEqual(run_script(EVAL_SCRIPT, args=["--model", "no_equals_sign"]).returncode, 2)
+
+    def test_help_exits_zero(self):
+        result = run_script(EVAL_SCRIPT, args=["--help"])
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("--datasets", result.stdout)
 
 
 if __name__ == "__main__":
