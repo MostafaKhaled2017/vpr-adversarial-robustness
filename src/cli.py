@@ -131,6 +131,12 @@ def build_parser():
         help="Load only model weights from --resume and reset optimizer and epoch state.",
     )
     parser.add_argument(
+        "--grad_checkpointing",
+        action="store_true",
+        help="Recompute DINOv2 block activations during backward so deeper fine-tuning "
+        "(--freeze_te < 8) fits in GPU memory. Outputs, gradients and checkpoint keys are unchanged.",
+    )
+    parser.add_argument(
         "--adv_loss_weight",
         type=float,
         default=1.0,

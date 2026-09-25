@@ -18,6 +18,7 @@ from src.cli import parse_arguments
 from src.components import build_anchor_model, build_training_components
 from src.config import create_summary_writer, validate_cuda_runtime
 from src.faiss_utils import validate_faiss_runtime
+from src.grad_checkpoint import checkpoint_backbone_blocks_in_place
 from src.losses import configure_metric_learning
 from src.train_loop import run_training
 
@@ -67,6 +68,8 @@ def main():
         maybe_copy_resume_checkpoint(args, model)
         # Spec D1: the anchor is built before gradient checkpointing patches block forwards.
         anchor_model = build_anchor_model(args, model) if args.align_target == "initial" else None
+        if args.grad_checkpointing:
+            checkpoint_backbone_blocks_in_place(model)
 
         train_attacks = instantiate_attacks(model, args.attack, args)
         validation_attacks = [instantiate_attacks(model, [attack_string], args)[0] for attack_string in args.attack]

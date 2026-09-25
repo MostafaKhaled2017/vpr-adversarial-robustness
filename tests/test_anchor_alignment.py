@@ -78,6 +78,10 @@ class AlignTargetCliTests(unittest.TestCase):
         args = parse_arguments(BASE + ["--align_target", "initial", "--resume", "w.pth"])
         self.assertEqual(args.align_target, "initial")
 
+    def test_grad_checkpointing_flag(self):
+        self.assertFalse(parse_arguments(BASE).grad_checkpointing)
+        self.assertTrue(parse_arguments(BASE + ["--grad_checkpointing"]).grad_checkpointing)
+
 
 class BuildAnchorModelTests(unittest.TestCase):
     def test_anchor_loads_initial_model_from_save_dir(self):
