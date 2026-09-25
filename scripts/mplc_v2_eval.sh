@@ -16,8 +16,15 @@
 #                                    these models run (no discovery, no pretrained)
 #                                    unless --with-discovered is also passed
 #   --with-discovered                add discovered runs (and pretrained) to --model ones
-#   --epsilons "0.01 0.1"            attack budgets                 (MPLC_V2_EPSILONS)
+#   --epsilons "0.01712 0.03425 0.0685 0.137"  normalized L-inf budgets, <=1/2/4/8 per 255 (MPLC_V2_EPSILONS)
 #   --output-root DIR                evaluation output root         (MPLC_V2_OUTPUT_ROOT)
+#   --attack NAME                    rank_pgd_linf | rank_apgd_linf | rank_pgd_l2 (MPLC_V2_ATTACK)
+#   --steps N / --restarts N         attack steps / restarts (20 / 1)  (MPLC_V2_STEPS/_RESTARTS)
+#   --goal untargeted|targeted       query attack goal              (MPLC_V2_GOAL)
+#   --checkpoint FILE                run checkpoint to evaluate, e.g. best_model_budget3.pth
+#                                    (default best_model.pth)       (MPLC_V2_CHECKPOINT)
+#   --shared-attacks                 craft attacks on the first model and replay them on the
+#                                    others (transfer check)        (MPLC_V2_SHARED_ATTACKS=1)
 #   --dry-run                        print the commands only        (MPLC_V2_DRY_RUN=1)
 #   -h, --help                       show this help
 #
@@ -52,8 +59,14 @@ PYTHON=${PYTHON:-python}
 SEEDS=${MPLC_V2_SEEDS:-"0 1"}
 ARMS=${MPLC_V2_ARMS:-"clean_ft mplc"}
 DATASETS=${MPLC_V2_DATASETS:-"msls sped nordland"}
-EPSILONS=${MPLC_V2_EPSILONS:-"0.01 0.1"}
+EPSILONS=${MPLC_V2_EPSILONS:-"0.01712 0.03425 0.0685 0.137"}
 OUTPUT_ROOT=${MPLC_V2_OUTPUT_ROOT:-output/mplc_v2}
+ATTACK=${MPLC_V2_ATTACK:-rank_pgd_linf}
+STEPS=${MPLC_V2_STEPS:-20}
+RESTARTS=${MPLC_V2_RESTARTS:-1}
+GOAL=${MPLC_V2_GOAL:-untargeted}
+CHECKPOINT=${MPLC_V2_CHECKPOINT:-best_model.pth}
+SHARED_ATTACKS=${MPLC_V2_SHARED_ATTACKS:-0}
 DRY_RUN=${MPLC_V2_DRY_RUN:-0}
 EXPLICIT_MODELS=${MPLC_V2_MODELS:-}
 INCLUDE_PRETRAINED=1
@@ -65,7 +78,7 @@ usage() {
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --datasets | --seeds | --arms | --model | --epsilons | --output-root)
+    --datasets | --seeds | --arms | --model | --epsilons | --output-root | --attack | --steps | --restarts | --goal | --checkpoint)
       [ $# -ge 2 ] || { echo "$1 requires a value" >&2; exit 2; }
       case "$1" in
         --datasets) DATASETS=$2 ;;
@@ -74,11 +87,17 @@ while [ $# -gt 0 ]; do
         --model) EXPLICIT_MODELS="${EXPLICIT_MODELS:+${EXPLICIT_MODELS} }$2" ;;
         --epsilons) EPSILONS=$2 ;;
         --output-root) OUTPUT_ROOT=$2 ;;
+        --attack) ATTACK=$2 ;;
+        --steps) STEPS=$2 ;;
+        --restarts) RESTARTS=$2 ;;
+        --goal) GOAL=$2 ;;
+        --checkpoint) CHECKPOINT=$2 ;;
       esac
       shift 2
       ;;
     --no-pretrained) INCLUDE_PRETRAINED=0; shift ;;
     --with-discovered) WITH_DISCOVERED=1; shift ;;
+    --shared-attacks) SHARED_ATTACKS=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h | --help) usage; exit 0 ;;
     *) echo "unknown argument: $1 (see --help)" >&2; exit 2 ;;
@@ -94,6 +113,20 @@ done
 for dataset in ${DATASETS}; do
   [ -d "datasets/${dataset}/images/test" ] || echo "WARNING: datasets/${dataset}/images/test not found" >&2
 done
+
+case "${GOAL}" in
+  untargeted | targeted) ;;
+  *) echo "unknown goal: ${GOAL} (expected untargeted or targeted)" >&2; exit 2 ;;
+esac
+
+OUTPUT_SUFFIX=""
+[ "${ATTACK}" = "rank_pgd_linf" ] || OUTPUT_SUFFIX="${OUTPUT_SUFFIX}_${ATTACK}"
+[ "${GOAL}" = "untargeted" ] || OUTPUT_SUFFIX="${OUTPUT_SUFFIX}_${GOAL}"
+EXTRA_EVAL_FLAGS=()
+if [ "${SHARED_ATTACKS}" = "1" ]; then
+  OUTPUT_SUFFIX="${OUTPUT_SUFFIX}_shared"
+  EXTRA_EVAL_FLAGS+=(--shared_attacks)
+fi
 
 run() {
   echo "+ $*"
@@ -143,8 +176,10 @@ if [ -z "${EXPLICIT_MODELS}" ] || [ "${WITH_DISCOVERED}" = "1" ]; then
       name="mplc_v2_supervlad_${arm}_s${seed}"
       run_dir="$(latest_finished_run "${name}")"
       if [ -n "${run_dir}" ]; then
-        MODEL_PATHS+=("${run_dir}/best_model.pth")
-        MODEL_TAGS+=("${arm}_s${seed}")
+        MODEL_PATHS+=("${run_dir}/${CHECKPOINT}")
+        tag="${arm}_s${seed}"
+        [ "${CHECKPOINT}" = "best_model.pth" ] || tag="${tag}_${CHECKPOINT%.pth}"
+        MODEL_TAGS+=("${tag}")
       else
         echo "WARNING: no finished checkpoint for ${name}" >&2
       fi
@@ -166,8 +201,9 @@ for dataset in ${DATASETS}; do
     --model_paths "${MODEL_PATHS[@]}" \
     --model_tags "${MODEL_TAGS[@]}" \
     --test_method=hard_resize \
-    --rank_attack=rank_pgd_linf --rank_steps=20 --rank_restarts=1 \
+    --rank_attack="${ATTACK}" --rank_steps="${STEPS}" --rank_restarts="${RESTARTS}" \
+    --rank_attack_goal="${GOAL}" "${EXTRA_EVAL_FLAGS[@]+"${EXTRA_EVAL_FLAGS[@]}"}" \
     --epsilons ${EPSILONS} \
-    --output_json="${OUTPUT_ROOT}/supervlad_${dataset}/rank_eval_results.json" \
-    --output_csv="${OUTPUT_ROOT}/supervlad_${dataset}/rank_eval_results.csv"
+    --output_json="${OUTPUT_ROOT}/supervlad_${dataset}${OUTPUT_SUFFIX}/rank_eval_results.json" \
+    --output_csv="${OUTPUT_ROOT}/supervlad_${dataset}${OUTPUT_SUFFIX}/rank_eval_results.csv"
 done

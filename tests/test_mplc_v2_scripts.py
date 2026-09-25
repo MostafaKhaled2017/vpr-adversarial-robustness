@@ -292,6 +292,38 @@ class MplcV2EvalScriptOptionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("--datasets", result.stdout)
 
+    def test_default_epsilon_grid_is_pixel_referenced(self):
+        result = run_script(EVAL_SCRIPT, args=["--datasets", "sped", "--seeds", "94", "--arms", "mplc"])
+        (line,) = eval_lines(result.stdout)
+        self.assertIn("--epsilons 0.01712 0.03425 0.0685 0.137 ", line)
+        self.assertIn("--rank_attack_goal=untargeted", line)
+        self.assertIn("output/mplc_v2/supervlad_sped/rank_eval_results.json", line)
+
+    def test_attack_goal_and_shared_options_reach_eval_and_output_dir(self):
+        result = run_script(
+            EVAL_SCRIPT,
+            args=["--datasets", "sped", "--seeds", "94", "--arms", "mplc", "--attack", "rank_apgd_linf",
+                  "--steps", "100", "--restarts", "3", "--goal", "targeted", "--shared-attacks"],
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        (line,) = eval_lines(result.stdout)
+        for expected in ("--rank_attack=rank_apgd_linf", "--rank_steps=100", "--rank_restarts=3",
+                         "--rank_attack_goal=targeted", "--shared_attacks",
+                         "supervlad_sped_rank_apgd_linf_targeted_shared/rank_eval_results.csv"):
+            self.assertIn(expected, line)
+
+    def test_checkpoint_option_selects_budget_file_and_tags_it(self):
+        result = run_script(
+            EVAL_SCRIPT,
+            args=["--datasets", "sped", "--seeds", "94", "--arms", "mplc", "--no-pretrained", "--checkpoint", "best_model_budget3.pth"],
+        )
+        (line,) = eval_lines(result.stdout)
+        self.assertIn("2024-01-01_run/best_model_budget3.pth", line)
+        self.assertIn("--model_tags mplc_s94_best_model_budget3 ", line)
+
+    def test_invalid_goal_exits_2(self):
+        self.assertEqual(run_script(EVAL_SCRIPT, args=["--goal", "sideways"]).returncode, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
