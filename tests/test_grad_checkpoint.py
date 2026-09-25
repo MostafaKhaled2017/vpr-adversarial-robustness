@@ -150,6 +150,16 @@ class InPlaceCheckpointTests(unittest.TestCase):
         x = torch.randn(2, 8, requires_grad=True)
         torch.testing.assert_close(clone(x), x)  # zero Linear -> each block is identity (x + relu(0))
 
+    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA for nn.parallel.replicate")
+    def test_dataparallel_replica_still_checkpoints_every_block(self):
+        # A DataParallel replica has empty self.parameters(); checkpointing must not depend on it.
+        model = _Model().cuda()
+        checkpoint_backbone_blocks_in_place(model)
+        replica = torch.nn.parallel.replicate(model, [0, 0])[0]
+        with mock.patch("src.grad_checkpoint.checkpoint", wraps=torch.utils.checkpoint.checkpoint) as spy:
+            replica(torch.randn(2, 8, device="cuda")).sum().backward()
+        self.assertEqual(spy.call_count, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

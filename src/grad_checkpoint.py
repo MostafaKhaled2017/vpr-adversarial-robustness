@@ -50,9 +50,7 @@ def _checkpointed_class(cls):
     if cls not in _CHECKPOINTED_CLASSES:
 
         def forward(self, x, *args, **kwargs):
-            trainable = x.requires_grad if isinstance(x, torch.Tensor) else False
-            trainable = trainable or any(parameter.requires_grad for parameter in self.parameters())
-            if torch.is_grad_enabled() and trainable:
+            if torch.is_grad_enabled():
                 return checkpoint(cls.forward, self, x, *args, use_reentrant=False, **kwargs)
             return cls.forward(self, x, *args, **kwargs)
 
@@ -64,13 +62,14 @@ def checkpoint_backbone_blocks_in_place(model: nn.Module) -> nn.Module:
     """Checkpoint every ``model.backbone.blocks`` entry without changing the module tree.
 
     Unlike :func:`enable_backbone_grad_checkpointing`, ``state_dict`` keys stay unchanged, so
-    checkpoints saved during training load into plain models with ``strict=True``. Blocks
-    with trainable parameters are checkpointed even when their input needs no gradient
-    (the first trainable block after ``--freeze_te``). Safe to call more than once. Each block's
-    class is swapped for a checkpointing subclass rather than patching its bound ``forward``, so
-    ``forward`` is resolved on the class and always sees the actual module (including copies made
-    by ``copy.deepcopy`` or ``nn.DataParallel`` replication); whole-model pickling of a
-    checkpointed model is therefore not supported, though ``state_dict`` saving is unaffected.
+    checkpoints saved during training load into plain models with ``strict=True``. Every block is
+    checkpointed while grad is enabled, regardless of whether its input requires grad or it has
+    trainable parameters (a frozen block with a no-grad input builds no graph, so checkpointing it
+    costs nothing extra). Safe to call more than once. Each block's class is swapped for a
+    checkpointing subclass rather than patching its bound ``forward``, so ``forward`` is resolved
+    on the class and always sees the actual module (including copies made by ``copy.deepcopy`` or
+    ``nn.DataParallel`` replication); whole-model pickling of a checkpointed model is therefore not
+    supported, though ``state_dict`` saving is unaffected.
     """
     target = model.module if isinstance(model, nn.DataParallel) else model
     blocks = getattr(getattr(target, "backbone", None), "blocks", None)
