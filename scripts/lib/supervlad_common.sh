@@ -29,7 +29,12 @@
 # baselines, ablations and Step 4. It is deliberately not an environment override. The
 # launchers refuse to reuse or resume a run trained at another size, and the Step 1 sweep
 # records it in sweep_config.yaml. Change it only before any sprint 5 run exists.
-SUPERVLAD_TRAIN_BATCH_SIZE=32
+SUPERVLAD_TRAIN_BATCH_SIZE=24
+
+# At freeze_te=8 no gradient checkpointing is used, yet the training attacks backpropagate
+# through all 12 blocks; batch 32 ran out of memory on a 24 GB GPU. Expandable segments
+# recover the reserved-but-fragmented memory. Allocator setting only; results are unchanged.
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 # Initialization. Default: fine-tune from the pretrained SuperVLAD release.
 # Set SUPERVLAD_FROM_SCRATCH=1 to train the VLAD head from scratch on the DINOv2 backbone.

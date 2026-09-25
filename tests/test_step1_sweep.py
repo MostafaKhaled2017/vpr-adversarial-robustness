@@ -259,13 +259,13 @@ class LauncherResumableModeTests(unittest.TestCase):
             (run_dir / "run_status.json").write_text(json.dumps({"state": "completed"}))
             self.assertEqual(self.dry_run(root).returncode, 1)
 
-            (run_dir / "training_config.yaml").write_text("train_batch_size: 32\n")
+            (run_dir / "training_config.yaml").write_text("train_batch_size: 24\n")
             self.assertIn("=== SKIP", self.dry_run(root).stdout)
 
     def test_recipe_uses_the_single_batch_size(self):
         with tempfile.TemporaryDirectory() as tmp:
             result = self.dry_run(tmp)
-        self.assertIn("--batch_size=32", result.stdout)
+        self.assertIn("--batch_size=24", result.stdout)
         self.assertNotIn("--batch_size=16", result.stdout)
 
 
