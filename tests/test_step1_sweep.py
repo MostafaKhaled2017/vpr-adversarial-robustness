@@ -28,8 +28,8 @@ def write_run(run_dir, state="completed", records=()):
 
 
 def finished(robust, clean=89.0, state="completed"):
-    """A finished screen whose budget-3 checkpoint scores ``robust`` (None = no eligible epoch)."""
-    budgets = (3.0, 5.0) if robust is not None else (5.0,)
+    """A finished screen whose budget-5 checkpoint scores ``robust`` (None = no eligible epoch)."""
+    budgets = (5.0,) if robust is not None else ()
     return [record(-1, 90.0, 10.0), record(0, clean, 0.0 if robust is None else robust, budgets)], state
 
 
@@ -195,7 +195,7 @@ class OutputTests(unittest.TestCase):
             sweep.main(["next", "--root", str(root), "--epochs", "6", "--batch-size", "32", "--no-freeze"])
             self.assertFalse((root / sweep.CONFIG_NAME).exists())
             sweep.main(["next", "--root", str(root), "--epochs", "9", "--batch-size", "32"])
-            self.assertTrue((root / sweep.CONFIG_NAME).is_file())
+            self.assertIn("budget: 5.0", (root / sweep.CONFIG_NAME).read_text())
             with self.assertRaises(SystemExit):
                 sweep.main(["next", "--root", str(root), "--epochs", "6", "--batch-size", "32"])
             with self.assertRaises(SystemExit):

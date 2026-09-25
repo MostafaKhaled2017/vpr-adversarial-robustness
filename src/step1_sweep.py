@@ -9,7 +9,8 @@ any point and always reaches the same result (runbook §1). Stages, in order:
 1d anchor  lambda_anchor, from the 1c winner
 1e recheck the losing mix under the final settings
 
-A screen's score is the robust score of its budget-3 checkpoint. Each stage keeps its
+A screen's score is the robust score of its budget-5 checkpoint (the most robust epoch
+within 5 clean R@1 points of the pretrained model). Each stage keeps its
 preferred option unless another option beats it by more than the noise.
 """
 
@@ -372,7 +373,7 @@ def table_rows(state: SweepState, results, epochs: int, root: Path) -> List[Dict
     return rows
 
 
-def write_tables(state: SweepState, rows, out: Path, epochs: int) -> None:
+def write_tables(state: SweepState, rows, out: Path, epochs: int, budget: float) -> None:
     out.mkdir(parents=True, exist_ok=True)
     with (out / "screens.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=TABLE_FIELDS)
@@ -386,7 +387,7 @@ def write_tables(state: SweepState, rows, out: Path, epochs: int) -> None:
     (out / "screens.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     decisions = ["# Step 1 decisions", ""]
-    decisions.append(f"- Screen length: {epochs} epochs; score: robust score of the budget-3 checkpoint.")
+    decisions.append(f"- Screen length: {epochs} epochs; score: robust score of the budget-{budget:g} checkpoint.")
     decisions.append(f"- Noise: {_fmt(state.noise)} (a difference counts only if larger).")
     for stage in state.stages:
         preferred = _value(stage, stage.preferred)
@@ -540,7 +541,7 @@ def summarize(root: Path, epochs: int, budget: float, accept_noise: bool) -> Swe
     results = _results_reader(root, epochs, budget)
     state = plan_sweep(results, accept_noise=accept_noise)
     out = root / SUMMARY_DIR
-    write_tables(state, table_rows(state, results, epochs, root), out, epochs)
+    write_tables(state, table_rows(state, results, epochs, root), out, epochs, budget)
     write_figures(state, results, out, budget)
     return state
 
@@ -561,7 +562,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument("command", choices=("next", "summarize", "prune"))
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--epochs", type=int, required=True)
-    parser.add_argument("--budget", type=float, default=3.0)
+    parser.add_argument("--budget", type=float, default=5.0, help="Clean-drop budget (R@1 points) screens are scored at.")
     parser.add_argument("--batch-size", type=int, required=True, help="SUPERVLAD_TRAIN_BATCH_SIZE, recorded in the sweep config.")
     parser.add_argument("--accept-noise", action="store_true")
     parser.add_argument("--no-freeze", action="store_true", help="Check but do not create sweep_config.yaml.")

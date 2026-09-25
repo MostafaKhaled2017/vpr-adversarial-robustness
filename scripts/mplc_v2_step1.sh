@@ -19,6 +19,8 @@
 #   STEP1_PRUNE=1        after the sweep, delete the .pth files of every screen but MPLC*
 #   PYTHON               python interpreter                       (default: python)
 #
+# A screen is scored by the robust score of its budget-5 checkpoint: the most robust epoch
+# within 5 clean R@1 points of the pretrained model (src/step1_sweep.py --budget).
 # The training batch size comes from SUPERVLAD_TRAIN_BATCH_SIZE (lib/supervlad_common.sh) and is
 # fixed in sweep_config.yaml with the other settings.
 #
