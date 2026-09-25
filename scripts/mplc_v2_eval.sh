@@ -119,9 +119,14 @@ case "${GOAL}" in
   *) echo "unknown goal: ${GOAL} (expected untargeted or targeted)" >&2; exit 2 ;;
 esac
 
+# Output dir: ${OUTPUT_ROOT}/supervlad_<dataset>[_<attack>][_<goal>][_<checkpoint>][_steps<N>][_r<N>][_shared],
+# each part only when it differs from the default, so non-default runs never overwrite each other.
 OUTPUT_SUFFIX=""
 [ "${ATTACK}" = "rank_pgd_linf" ] || OUTPUT_SUFFIX="${OUTPUT_SUFFIX}_${ATTACK}"
 [ "${GOAL}" = "untargeted" ] || OUTPUT_SUFFIX="${OUTPUT_SUFFIX}_${GOAL}"
+[ "${CHECKPOINT}" = "best_model.pth" ] || OUTPUT_SUFFIX="${OUTPUT_SUFFIX}_${CHECKPOINT%.pth}"
+[ "${STEPS}" = "20" ] || OUTPUT_SUFFIX="${OUTPUT_SUFFIX}_steps${STEPS}"
+[ "${RESTARTS}" = "1" ] || OUTPUT_SUFFIX="${OUTPUT_SUFFIX}_r${RESTARTS}"
 EXTRA_EVAL_FLAGS=()
 if [ "${SHARED_ATTACKS}" = "1" ]; then
   OUTPUT_SUFFIX="${OUTPUT_SUFFIX}_shared"

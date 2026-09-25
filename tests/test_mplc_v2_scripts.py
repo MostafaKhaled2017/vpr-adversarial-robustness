@@ -309,7 +309,7 @@ class MplcV2EvalScriptOptionTests(unittest.TestCase):
         (line,) = eval_lines(result.stdout)
         for expected in ("--rank_attack=rank_apgd_linf", "--rank_steps=100", "--rank_restarts=3",
                          "--rank_attack_goal=targeted", "--shared_attacks",
-                         "supervlad_sped_rank_apgd_linf_targeted_shared/rank_eval_results.csv"):
+                         "supervlad_sped_rank_apgd_linf_targeted_steps100_r3_shared/rank_eval_results.csv"):
             self.assertIn(expected, line)
 
     def test_checkpoint_option_selects_budget_file_and_tags_it(self):
@@ -320,6 +320,7 @@ class MplcV2EvalScriptOptionTests(unittest.TestCase):
         (line,) = eval_lines(result.stdout)
         self.assertIn("2024-01-01_run/best_model_budget3.pth", line)
         self.assertIn("--model_tags mplc_s94_best_model_budget3 ", line)
+        self.assertIn("output/mplc_v2/supervlad_sped_best_model_budget3/rank_eval_results.json", line)
 
     def test_invalid_goal_exits_2(self):
         self.assertEqual(run_script(EVAL_SCRIPT, args=["--goal", "sideways"]).returncode, 2)
