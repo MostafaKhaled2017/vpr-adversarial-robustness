@@ -5,7 +5,7 @@ import math
 from dataclasses import replace
 from datetime import datetime
 from os.path import exists, join
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 import torch
@@ -68,6 +68,7 @@ def compute_attack_losses(
     attack_targets: RetrievalAttackBatch,
     attacks: Sequence[nn.Module],
     args,
+    align_reference: Optional[Tensor] = None,
 ) -> Dict[str, object]:
     if len(attack_targets) == 0 or len(attacks) == 0:
         zero = query_inputs.new_zeros(())
@@ -77,6 +78,11 @@ def compute_attack_losses(
             "align_loss": zero,
             "combined_adv_loss": zero,
         }
+
+    # Spec D1: with --align_target initial the anchor is the frozen initial model's clean
+    # descriptor; otherwise the current model's (the pre-sprint-5 behaviour).
+    if align_reference is None:
+        align_reference = attack_targets.clean_query_descriptors
 
     attack_logs = []
     combined_losses = []
@@ -89,7 +95,7 @@ def compute_attack_losses(
         adv_query_descriptors = adv_query_descriptors.float()
         rank_loss = compute_defense_loss(adv_query_descriptors, attack_targets, args)
         align_loss = compute_align_loss(
-            attack_targets.clean_query_descriptors,
+            align_reference,
             adv_query_descriptors,
         )
         combined_loss = args.adv_loss_weight * rank_loss + args.adv_align_weight * align_loss
@@ -468,6 +474,7 @@ def run_training(
     train_attacks,
     validation_attacks,
     resume_runtime_state=None,
+    anchor_model=None,
 ):
     start_time = datetime.now()
     resume_runtime_state = dict(resume_runtime_state or {})
@@ -690,6 +697,13 @@ def run_training(
                         selected_targets = None
                         query_inputs = None
 
+            align_reference = None
+            if anchor_model is not None and query_inputs is not None and len(step_attacks) > 0:
+                with torch.no_grad():
+                    with amp_autocast(args.mixed_precision, args.device):
+                        align_reference = anchor_model(query_inputs, queryflag=1)
+                align_reference = align_reference.float()
+
             optimizer.zero_grad(set_to_none=True)
             model.train()
             with amp_autocast(args.mixed_precision, args.device):
@@ -704,6 +718,7 @@ def run_training(
                     selected_targets,
                     step_attacks,
                     args,
+                    align_reference=align_reference,
                 ) if query_inputs is not None and selected_targets is not None else {
                     "attack_logs": [],
                     "adv_rank_loss": clean_loss.new_zeros(()),

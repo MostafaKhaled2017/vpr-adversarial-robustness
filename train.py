@@ -15,7 +15,7 @@ from src.checkpoints import (
     write_run_status,
 )
 from src.cli import parse_arguments
-from src.components import build_training_components
+from src.components import build_anchor_model, build_training_components
 from src.config import create_summary_writer, validate_cuda_runtime
 from src.faiss_utils import validate_faiss_runtime
 from src.losses import configure_metric_learning
@@ -65,6 +65,8 @@ def main():
         if args.continue_training:
             append_resume_history(args.save_dir, args.resume, start_epoch)
         maybe_copy_resume_checkpoint(args, model)
+        # Spec D1: the anchor is built before gradient checkpointing patches block forwards.
+        anchor_model = build_anchor_model(args, model) if args.align_target == "initial" else None
 
         train_attacks = instantiate_attacks(model, args.attack, args)
         validation_attacks = [instantiate_attacks(model, [attack_string], args)[0] for attack_string in args.attack]
@@ -83,6 +85,7 @@ def main():
             train_attacks,
             validation_attacks,
             resume_runtime_state,
+            anchor_model=anchor_model,
         )
         write_run_status(args.save_dir, outcome["state"], final_epoch=outcome["final_epoch"])
     except BaseException as exc:

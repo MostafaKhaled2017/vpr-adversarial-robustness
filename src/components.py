@@ -1,4 +1,6 @@
+import copy
 import logging
+from os.path import join
 
 import torch
 from torch.cuda.amp import GradScaler
@@ -92,3 +94,16 @@ def build_training_components(args):
         not_improved,
         resume_runtime_state,
     )
+
+
+def build_anchor_model(args, model):
+    """Frozen copy of the run's initial weights for the --align_target initial anchor (spec D1).
+
+    Loads ``<save_dir>/initial_model.pth`` rather than copying ``model``'s current weights, so
+    a --continue resume still anchors to the weights the run started from.
+    """
+    anchor = copy.deepcopy(unwrap_model(model))
+    get_model_adapter(args.model).load_weights(anchor, join(args.save_dir, "initial_model.pth"), args)
+    anchor.eval()
+    anchor.requires_grad_(False)
+    return anchor

@@ -140,7 +140,14 @@ def build_parser():
         "--adv_align_weight",
         type=float,
         default=0.05,
-        help="Weight for the descriptor alignment loss.",
+        help="Weight of the alignment loss between the attacked query descriptor and the --align_target clean descriptor.",
+    )
+    parser.add_argument(
+        "--align_target",
+        choices=("current", "initial"),
+        default="current",
+        help="Clean descriptor the attacked query is aligned to: 'current' uses the model being "
+        "trained; 'initial' uses a frozen copy of the --resume weights (FARE-style anchor, spec D1).",
     )
     parser.add_argument(
         "--adv_negatives",
@@ -330,6 +337,8 @@ def parse_arguments(argv=None):
         raise ValueError("--attack_ramp_min_scale must be between 0 and 1 (inclusive)")
     if args.adv_warmup_epochs < 0:
         raise ValueError("--adv_warmup_epochs must be non-negative")
+    if args.align_target == "initial" and args.resume is None:
+        raise ValueError("--align_target initial requires --resume (the weights to anchor to)")
     if args.clip_grad <= 0:
         raise ValueError("--clip_grad must be positive")
     if not 0.0 <= args.selection_robust_weight <= 1.0:
