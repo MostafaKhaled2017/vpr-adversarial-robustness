@@ -22,7 +22,9 @@
 #                         --grad_checkpointing)
 #   MPLC_V2_CLEAN_BUDGETS clean-drop reporting budgets, points  (default: "1 3 5")
 #   MPLC_V2_LR            learning rate, both arms              (default: 1e-5)
-#   MPLC_V2_NUM_EPOCHS    maximum epochs, both arms             (default: 100; 9 for screens)
+#   MPLC_V2_NUM_EPOCHS    maximum epochs, both arms             (default: 100; 12 for screens)
+#   MPLC_V2_VAL_EVERY     validate every N epochs and after the last, both arms
+#                                                               (default: 1; 3 for screens)
 #   MPLC_V2_ATTACK_MIX    training attacks (mplc arm): "all" = two perceptual attacks +
 #                         rank L-inf, one sampled per step; "linf" = rank L-inf only
 #                                                               (default: all)
@@ -63,6 +65,7 @@ FREEZE_TE=${MPLC_V2_FREEZE_TE:-8}
 CLEAN_BUDGETS=${MPLC_V2_CLEAN_BUDGETS:-"1 3 5"}
 LR=${MPLC_V2_LR:-1e-5}
 NUM_EPOCHS=${MPLC_V2_NUM_EPOCHS:-100}
+VAL_EVERY=${MPLC_V2_VAL_EVERY:-1}
 ATTACK_MIX=${MPLC_V2_ATTACK_MIX:-all}
 RUN_ROOT=${MPLC_V2_RUN_ROOT:-}
 DRY_RUN=${MPLC_V2_DRY_RUN:-0}
@@ -111,17 +114,22 @@ finished_run_dir() {
   return 1
 }
 
-# A run trained at another batch size must never be skipped as finished or resumed: the
-# batch size is fixed once for all runs (SUPERVLAD_TRAIN_BATCH_SIZE in lib/supervlad_common.sh).
+# A run trained at another batch size or epoch length must never be skipped as finished or
+# resumed: both are fixed once for all runs (SUPERVLAD_TRAIN_BATCH_SIZE and
+# SUPERVLAD_BATCHES_PER_EPOCH in lib/supervlad_common.sh).
 check_batch_size() {
-  local config="$1/training_config.yaml" found
+  local config="$1/training_config.yaml" key wanted found
   [ -f "${config}" ] || return 0
-  found="$(sed -n 's/^train_batch_size: //p' "${config}")"
-  if [ -n "${found}" ] && [ "${found}" != "${SUPERVLAD_TRAIN_BATCH_SIZE}" ]; then
-    echo "$1 was trained at batch size ${found}, but SUPERVLAD_TRAIN_BATCH_SIZE is ${SUPERVLAD_TRAIN_BATCH_SIZE}." >&2
-    echo "Move that run aside or restore the batch size; runs at different sizes must not be mixed." >&2
-    exit 1
-  fi
+  for key in "train_batch_size ${SUPERVLAD_TRAIN_BATCH_SIZE}" "batches_per_epoch ${SUPERVLAD_BATCHES_PER_EPOCH}"; do
+    wanted="${key#* }"
+    key="${key%% *}"
+    found="$(sed -n "s/^${key}: //p" "${config}")"
+    if [ -n "${found}" ] && [ "${found}" != "${wanted}" ]; then
+      echo "$1 was trained with ${key} ${found}, but lib/supervlad_common.sh sets ${wanted}." >&2
+      echo "Move that run aside or restore the setting; runs at different sizes must not be mixed." >&2
+      exit 1
+    fi
+  done
 }
 
 # Non-default mplc-arm hyperparameters get named in the save_dir so a rerun with a
@@ -162,6 +170,7 @@ fi
 # These override the recipe's --lr / --num_epochs (argparse keeps the last value).
 [ "${LR}" = "1e-5" ] || COMMON_FLAGS+=(--lr="${LR}")
 [ "${NUM_EPOCHS}" = "100" ] || COMMON_FLAGS+=(--num_epochs="${NUM_EPOCHS}")
+[ "${VAL_EVERY}" = "1" ] || COMMON_FLAGS+=(--val_every="${VAL_EVERY}")
 
 for arm in ${ARMS}; do
   name="mplc_v2_supervlad_${arm}$(shared_suffix)_s${SEED}"

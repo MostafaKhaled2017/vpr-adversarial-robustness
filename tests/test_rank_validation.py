@@ -17,7 +17,7 @@ if str(SUPERVLAD_ROOT) not in sys.path:
 from src.cli import parse_arguments
 from src.rank_validation import evaluate_rank_validation, sample_validation_queries, select_checkpoint
 from src.retrieval_metrics import compute_recalls_from_features
-from src.train_loop import build_checkpoint_state, build_validation_metrics_record
+from src.train_loop import build_checkpoint_state, build_validation_metrics_record, is_validation_epoch
 
 
 def metrics(clean, *attacked):
@@ -119,6 +119,7 @@ class RankValidationCliTests(unittest.TestCase):
         for extra in (
             ["--val_queries", "0"],
             ["--val_rank_steps", "0"],
+            ["--val_every", "0"],
             ["--val_rank_epsilons", "0.01", "0"],
             ["--selection_clean_budgets", "1", "-0.5"],
         ):
@@ -232,6 +233,23 @@ class CheckpointRuntimeStateTests(unittest.TestCase):
         self.assertEqual(checkpoint["runtime_state"]["best_budget_scores"], {"1": 12.0})
         self.assertEqual(checkpoint["runtime_state"]["best_checkpoint_epochs"], {"best": -1, "1": 0})
 
+    def test_unvalidated_epoch_checkpoint_keeps_resume_state(self):
+        model = nn.Linear(2, 2)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+        checkpoint = build_checkpoint_state(
+            Namespace(tensorboard_dir="tensorboard"), model, optimizer, epoch_num=2, metrics=None,
+            validation_scores=None, next_best_score=7.0, next_not_improved=1, initial_clean_r1=90.0,
+            best_budget_scores={"5": 12.0},
+        )
+        self.assertEqual((checkpoint["next_epoch"], checkpoint["best_r5"], checkpoint["not_improved_num"]), (3, 7.0, 1))
+        self.assertIsNone(checkpoint["validation_metrics"])
+        self.assertEqual(checkpoint["runtime_state"]["best_budget_scores"], {"5": 12.0})
+
+    def test_val_every_validates_every_nth_and_the_last_epoch(self):
+        self.assertEqual([e for e in range(1, 11) if is_validation_epoch(e, 2, 10)], [2, 4, 6, 8, 10])
+        self.assertEqual([e for e in range(1, 10) if is_validation_epoch(e, 2, 9)], [2, 4, 6, 8, 9])
+        self.assertEqual([e for e in range(1, 4) if is_validation_epoch(e, 1, 3)], [1, 2, 3])
+
     def test_record_adds_budgets_only_when_present(self):
         clean = {"recalls": {"R@1": 1.0, "R@5": 2.0, "R@10": 3.0, "R@100": 4.0}}
         legacy = build_validation_metrics_record(0, {"NoAttack": clean}, {"clean_score": 1.0, "robust_score": 1.0, "selection_score": 1.0})
@@ -253,7 +271,9 @@ def scripted_metrics(clean, attacked):
 
 
 class RunTrainingRankProtocolTests(unittest.TestCase):
-    def run_scripted(self, scripted, is_clean_only=False, start_epoch=0, resume_runtime_state=None, keep_every=0):
+    def run_scripted(
+        self, scripted, is_clean_only=False, start_epoch=0, resume_runtime_state=None, keep_every=0, val_every=1, epochs_num=None
+    ):
         import tempfile
         from unittest import mock
 
@@ -274,9 +294,9 @@ class RunTrainingRankProtocolTests(unittest.TestCase):
             args = SimpleNamespace(
                 validation_protocol="rank_pgd", val_queries=10, val_query_seed=0, selection_clean_budgets=[1.0, 3.0, 5.0],
                 is_clean_only=is_clean_only, skip_initial_validation=False, lr_schedule="", lr_plateau_patience=None, lr=1e-4,
-                epochs_num=start_epoch + len(scripted) - (0 if resume_runtime_state else 1), adv_warmup_epochs=0, randomize_attack=False, early_stop_min_delta=0.0, patience=5,
+                epochs_num=epochs_num or start_epoch + len(scripted) - (0 if resume_runtime_state else 1), adv_warmup_epochs=0, randomize_attack=False, early_stop_min_delta=0.0, patience=5,
                 save_dir=save_dir, tensorboard_dir=save_dir, device="cpu", test_method="hard_resize",
-                recall_values=[1, 5, 10, 100], mixed_precision=False, keep_every=keep_every,
+                recall_values=[1, 5, 10, 100], mixed_precision=False, keep_every=keep_every, val_every=val_every,
             )
             outcome = train_loop.run_training(
                 args, model, torch.optim.Adam(model.parameters(), lr=1e-4), None, [], FakeValDataset(), None,
@@ -294,6 +314,19 @@ class RunTrainingRankProtocolTests(unittest.TestCase):
         )
         periodic = [filename for filename, _, _ in saved if filename.startswith("checkpoint_epoch_")]
         self.assertEqual(periodic, ["checkpoint_epoch_0001.pth", "checkpoint_epoch_0002.pth"])
+
+    def test_val_every_skips_validation_but_still_saves_last_model(self):
+        # Three epochs, validated after epochs 2 and 3 (the last); epoch 1 only saves last_model.pth.
+        outcome, saved, _ = self.run_scripted(
+            [scripted_metrics(90.0, 10.0), scripted_metrics(87.0, 50.0), scripted_metrics(89.5, 20.0)], val_every=2, epochs_num=3
+        )
+        self.assertEqual(outcome["state"], "completed")
+        last = [state for filename, _, state in saved if filename == "last_model.pth"]
+        self.assertEqual([state["next_epoch"] for state in last], [1, 2, 3])
+        self.assertIsNone(last[0]["validation_metrics"])
+        self.assertEqual(last[0]["not_improved_num"], 0)
+        self.assertEqual(last[1]["runtime_state"]["best_checkpoint_epochs"]["best"], 2)
+        self.assertEqual(last[2]["not_improved_num"], 1)
 
     def test_most_robust_epoch_is_best_and_budget_checkpoints_follow_clean_drop(self):
         # C0=90, initial robust 10. Epoch 1: clean 87 (drop 3), robust 50 -> best overall and

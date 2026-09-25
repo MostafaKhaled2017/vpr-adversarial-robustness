@@ -267,6 +267,14 @@ def build_parser():
     parser.add_argument("--val_query_seed", type=int, default=0, help="Seed of the rank_pgd validation query sample.")
     parser.add_argument("--val_rank_steps", type=int, default=10, help="Rank-PGD steps in rank_pgd validation.")
     parser.add_argument(
+        "--val_every",
+        type=int,
+        default=1,
+        help="Validate after every N-th epoch and after the last one. Early-stopping and lr-plateau "
+        "patience count validations, not epochs. Other epochs still save last_model.pth and run the "
+        "collapse check.",
+    )
+    parser.add_argument(
         "--val_rank_epsilons",
         type=float,
         nargs="+",
@@ -365,6 +373,8 @@ def parse_arguments(argv=None):
         raise ValueError("--val_queries must be at least 1")
     if args.val_rank_steps < 1:
         raise ValueError("--val_rank_steps must be at least 1")
+    if args.val_every < 1:
+        raise ValueError("--val_every must be at least 1")
     if any(epsilon <= 0 for epsilon in args.val_rank_epsilons):
         raise ValueError("--val_rank_epsilons must be positive")
     if any(budget < 0 for budget in args.selection_clean_budgets):

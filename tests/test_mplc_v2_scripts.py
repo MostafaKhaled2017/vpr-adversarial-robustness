@@ -155,6 +155,16 @@ class MplcV2TrainScriptTests(unittest.TestCase):
         for command in [line for line in result.stdout.splitlines() if line.startswith("+ ")]:
             self.assertEqual(command.count("--lr="), 1)
             self.assertEqual(command.count("--num_epochs="), 1)
+            self.assertNotIn("--val_every", command)
+
+    def test_val_every_applies_to_both_arms(self):
+        result = run_script(TRAIN_SCRIPT, {"MPLC_V2_VAL_EVERY": "2"})
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        commands = [line for line in result.stdout.splitlines() if line.startswith("+ ")]
+        self.assertEqual(len(commands), 2, result.stdout)
+        for command in commands:
+            self.assertIn("--val_every=2", command)
 
     def test_linf_attack_mix_keeps_only_rank_attack(self):
         result = run_script(TRAIN_SCRIPT, {"MPLC_V2_ATTACK_MIX": "linf"})

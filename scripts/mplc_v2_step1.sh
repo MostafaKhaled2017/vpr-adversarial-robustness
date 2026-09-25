@@ -14,15 +14,18 @@
 #
 # Environment overrides:
 #   STEP1_ROOT           sweep directory                          (default: logs/mplc_v2_step1)
-#   STEP1_EPOCHS         epochs per screen; fixed once the sweep starts (default: 9)
+#   STEP1_EPOCHS         epochs per screen; fixed once the sweep starts (default: 12)
+#   STEP1_VAL_EVERY      validate every N epochs and after the last; fixed once the sweep
+#                        starts                                   (default: 3)
 #   STEP1_ACCEPT_NOISE=1 continue past 1a even if the noise is above 3 points
 #   STEP1_PRUNE=1        after the sweep, delete the .pth files of every screen but MPLC*
 #   PYTHON               python interpreter                       (default: python)
 #
 # A screen is scored by the robust score of its budget-5 checkpoint: the most robust epoch
 # within 5 clean R@1 points of the pretrained model (src/step1_sweep.py --budget).
-# The training batch size comes from SUPERVLAD_TRAIN_BATCH_SIZE (lib/supervlad_common.sh) and is
-# fixed in sweep_config.yaml with the other settings.
+# The training batch size and batches per epoch come from SUPERVLAD_TRAIN_BATCH_SIZE and
+# SUPERVLAD_BATCHES_PER_EPOCH (lib/supervlad_common.sh) and are fixed in sweep_config.yaml with
+# the other settings.
 #
 # Outputs in ${STEP1_ROOT}/summary/, rebuilt before every screen and at the end:
 # screens.csv / screens.md, decisions.md, mplc_star.env (MPLC*'s settings for Step 2) and
@@ -39,7 +42,8 @@ source "${SCRIPT_DIR}/lib/supervlad_common.sh"
 
 PYTHON=${PYTHON:-python}
 ROOT=${STEP1_ROOT:-logs/mplc_v2_step1}
-EPOCHS=${STEP1_EPOCHS:-9}
+EPOCHS=${STEP1_EPOCHS:-12}
+VAL_EVERY=${STEP1_VAL_EVERY:-3}
 MODE=run
 
 case "${1:-}" in
@@ -47,7 +51,7 @@ case "${1:-}" in
   --dry-run) MODE=dry ;;
   --summary-only) MODE=summary ;;
   -h | --help)
-    sed -n '2,24p' "$0"
+    sed -n '2,27p' "$0"
     exit 0
     ;;
   *)
@@ -56,7 +60,13 @@ case "${1:-}" in
     ;;
 esac
 
-SWEEP_FLAGS=(--root "${ROOT}" --epochs "${EPOCHS}" --batch-size "${SUPERVLAD_TRAIN_BATCH_SIZE}")
+SWEEP_FLAGS=(
+  --root "${ROOT}"
+  --epochs "${EPOCHS}"
+  --val-every "${VAL_EVERY}"
+  --batch-size "${SUPERVLAD_TRAIN_BATCH_SIZE}"
+  --batches-per-epoch "${SUPERVLAD_BATCHES_PER_EPOCH}"
+)
 [ "${STEP1_ACCEPT_NOISE:-0}" = "1" ] && SWEEP_FLAGS+=(--accept-noise)
 # A dry run must not freeze the sweep settings for the real one.
 [ "${MODE}" = "dry" ] && SWEEP_FLAGS+=(--no-freeze)
@@ -103,7 +113,7 @@ while true; do
     echo "=== Next screens (current stage):"
     while read -r assignments; do
       # shellcheck disable=SC2086 # the assignments are separate VAR=value words
-      env ${assignments} MPLC_V2_ARMS=mplc MPLC_V2_RUN_ROOT="${ROOT}" MPLC_V2_DRY_RUN=1 \
+      env ${assignments} MPLC_V2_ARMS=mplc MPLC_V2_VAL_EVERY="${VAL_EVERY}" MPLC_V2_RUN_ROOT="${ROOT}" MPLC_V2_DRY_RUN=1 \
         PYTHON="${PYTHON}" scripts/mplc_v2_train.sh
     done <<<"${next}"
     exit 0
@@ -117,5 +127,5 @@ while true; do
   previous="${assignments}"
   echo "=== Step 1 screen: ${assignments}"
   # shellcheck disable=SC2086 # the assignments are separate VAR=value words
-  env ${assignments} MPLC_V2_ARMS=mplc MPLC_V2_RUN_ROOT="${ROOT}" PYTHON="${PYTHON}" scripts/mplc_v2_train.sh
+  env ${assignments} MPLC_V2_ARMS=mplc MPLC_V2_VAL_EVERY="${VAL_EVERY}" MPLC_V2_RUN_ROOT="${ROOT}" PYTHON="${PYTHON}" scripts/mplc_v2_train.sh
 done

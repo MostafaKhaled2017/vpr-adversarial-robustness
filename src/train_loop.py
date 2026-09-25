@@ -187,6 +187,26 @@ def log_collapse_report(writer, report, epoch_num: int) -> None:
     )
 
 
+def is_validation_epoch(epoch: int, val_every: int, num_epochs: int) -> bool:
+    """Whether 1-based ``epoch`` is validated under --val_every; the last epoch always is."""
+    return epoch % val_every == 0 or epoch == num_epochs
+
+
+def collapse_aborts(args, collapse, epoch_num: int) -> bool:
+    """Log and report whether k-NN overlap fell below --collapse_abort_knn."""
+    abort_threshold = getattr(args, "collapse_abort_knn", None)
+    if abort_threshold is None or collapse is None or collapse["knn_overlap"] >= abort_threshold:
+        return False
+    logging.error(
+        "Aborting: k-NN overlap %.4f fell below --collapse_abort_knn %.4f after epoch %02d. "
+        "The embedding's neighbourhood structure has been destroyed.",
+        collapse["knn_overlap"],
+        abort_threshold,
+        epoch_num + 1,
+    )
+    return True
+
+
 def apply_attack_curriculum(train_attacks, args, epoch_num: int) -> float:
     """Set this epoch's attack budget on the *training* attacks only (Task 2.5).
 
@@ -416,8 +436,8 @@ def build_checkpoint_state(
     model,
     optimizer,
     epoch_num: int,
-    metrics: Dict[str, object],
-    validation_scores: Dict[str, float],
+    metrics: Optional[Dict[str, object]],
+    validation_scores: Optional[Dict[str, float]],
     next_best_score: float,
     next_not_improved: int,
     *,
@@ -430,22 +450,26 @@ def build_checkpoint_state(
     best_budget_scores=None,
     best_checkpoint_epochs=None,
 ) -> Dict[str, object]:
+    # An epoch skipped by --val_every has no validation; resuming needs none of these fields.
+    validated = metrics is not None
     return {
         "epoch_num": epoch_num,
         "next_epoch": epoch_num + 1,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "scaler_state_dict": None if scaler is None else scaler.state_dict(),
-        "recalls": metrics["NoAttack"]["recalls_list"],
-        "clean_score": validation_scores["clean_score"],
-        "robust_score": validation_scores["robust_score"],
-        "selection_score": validation_scores["selection_score"],
+        "recalls": metrics["NoAttack"]["recalls_list"] if validated else None,
+        "clean_score": validation_scores["clean_score"] if validated else None,
+        "robust_score": validation_scores["robust_score"] if validated else None,
+        "selection_score": validation_scores["selection_score"] if validated else None,
         "best_r5": next_best_score,
         "not_improved_num": next_not_improved,
         "tensorboard_dir": args.tensorboard_dir,
         "validation_metrics": build_validation_metrics_record(
             epoch_num, metrics, validation_scores, initial_clean_r1=initial_clean_r1
-        ),
+        )
+        if validated
+        else None,
         "rng_state": capture_rng_state(),
         "runtime_state": {
             "iteration": int(iteration),
@@ -845,6 +869,36 @@ def run_training(
             skipped_nonfinite_batches,
         )
 
+        val_every = int(getattr(args, "val_every", 1))
+        if not is_validation_epoch(epoch_num + 1, val_every, args.epochs_num):
+            collapse = measure_collapse(args, model, val_ds, reference_descriptors, collapse_sample_indices)
+            log_collapse_report(writer, collapse, epoch_num)
+            checkpoint_state = build_checkpoint_state(
+                args,
+                model,
+                optimizer,
+                epoch_num,
+                None,
+                None,
+                best_score,
+                not_improved,
+                scaler=scaler,
+                iteration=iteration,
+                negative_pool=negative_pool,
+                collapse_sample_indices=collapse_sample_indices,
+                reference_descriptors=reference_descriptors,
+                initial_clean_r1=initial_clean_r1,
+                best_budget_scores=best_budget_scores,
+                best_checkpoint_epochs=best_checkpoint_epochs,
+            )
+            save_checkpoint(args, checkpoint_state, False, filename="last_model.pth")
+            final_epoch = epoch_num
+            logging.info("Saved latest checkpoint after epoch %02d (not validated, --val_every %d).", epoch_num + 1, val_every)
+            if collapse_aborts(args, collapse, epoch_num):
+                outcome = "collapse_aborted"
+                break
+            continue
+
         logging.info("Begin validation")
         metrics, validation_scores = validate(False)
         clean_score = validation_scores["clean_score"]
@@ -927,15 +981,7 @@ def run_training(
         writer.add_scalar("early_stop/best_score", best_score, epoch_num)
         writer.add_scalar("early_stop/not_improved_epochs", not_improved, epoch_num)
 
-        abort_threshold = getattr(args, "collapse_abort_knn", None)
-        if abort_threshold is not None and collapse is not None and collapse["knn_overlap"] < abort_threshold:
-            logging.error(
-                "Aborting: k-NN overlap %.4f fell below --collapse_abort_knn %.4f after epoch %02d. "
-                "The embedding's neighbourhood structure has been destroyed.",
-                collapse["knn_overlap"],
-                abort_threshold,
-                epoch_num + 1,
-            )
+        if collapse_aborts(args, collapse, epoch_num):
             outcome = "collapse_aborted"
             break
 

@@ -52,11 +52,15 @@ ANCHORS = ("0", "0.1", "1.0", "10")
 ANCHOR_EXTENSION = "30"
 
 
-def sweep_settings(epochs: int, budget: float, batch_size: int) -> Dict[str, object]:
+def sweep_settings(
+    epochs: int, budget: float, batch_size: int, batches_per_epoch: int, val_every: int
+) -> Dict[str, object]:
     """Everything that must stay fixed across a sweep's lifetime."""
     return {
         "epochs": int(epochs),
+        "val_every": int(val_every),
         "batch_size": int(batch_size),
+        "batches_per_epoch": int(batches_per_epoch),
         "budget": float(budget),
         "noise_seeds": list(NOISE_SEEDS),
         "mixes": list(MIXES),
@@ -161,7 +165,8 @@ def read_screen(run_dir: Path, budget: float) -> Optional[ScreenResult]:
     trained = [r for r in records if r["epoch"] >= 0]
     result = ScreenResult(
         state=state,
-        epochs_run=len(trained),
+        # --val_every leaves gaps between records, so count up to the last validated epoch.
+        epochs_run=max((int(r["epoch"]) for r in trained), default=0),
         initial_clean=None if initial is None else float(initial["clean"]["R@1"]),
         curve=[
             {"epoch": r["epoch"], "clean": float(r["clean"]["R@1"]), "robust": float(r["robust_score"])} for r in records
@@ -513,10 +518,18 @@ def _results_reader(root: Path, epochs: int, budget: float):
     return results
 
 
-def ensure_config(root: Path, epochs: int, budget: float, batch_size: int, freeze: bool = True) -> None:
+def ensure_config(
+    root: Path,
+    epochs: int,
+    budget: float,
+    batch_size: int,
+    batches_per_epoch: int,
+    val_every: int,
+    freeze: bool = True,
+) -> None:
     """Freeze the sweep settings on first use; refuse a later run with different ones."""
     path = root / CONFIG_NAME
-    wanted = sweep_settings(epochs, budget, batch_size)
+    wanted = sweep_settings(epochs, budget, batch_size, batches_per_epoch, val_every)
     if path.is_file():
         stored = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         stored = {key: stored.get(key) for key in wanted}
@@ -564,11 +577,18 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument("--epochs", type=int, required=True)
     parser.add_argument("--budget", type=float, default=5.0, help="Clean-drop budget (R@1 points) screens are scored at.")
     parser.add_argument("--batch-size", type=int, required=True, help="SUPERVLAD_TRAIN_BATCH_SIZE, recorded in the sweep config.")
+    parser.add_argument(
+        "--batches-per-epoch", type=int, required=True, help="SUPERVLAD_BATCHES_PER_EPOCH, recorded in the sweep config."
+    )
+    parser.add_argument("--val-every", type=int, required=True, help="Screens validate every N epochs; recorded.")
     parser.add_argument("--accept-noise", action="store_true")
     parser.add_argument("--no-freeze", action="store_true", help="Check but do not create sweep_config.yaml.")
     args = parser.parse_args(argv)
 
-    ensure_config(args.root, args.epochs, args.budget, args.batch_size, freeze=not args.no_freeze)
+    ensure_config(
+        args.root, args.epochs, args.budget, args.batch_size, args.batches_per_epoch, args.val_every,
+        freeze=not args.no_freeze,
+    )
     state = summarize(args.root, args.epochs, args.budget, args.accept_noise)
     if args.command == "summarize":
         print(f"Summary written to {args.root / SUMMARY_DIR}")

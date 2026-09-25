@@ -11,7 +11,8 @@ from src import step1_sweep as sweep
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TRAIN_SCRIPT = REPO_ROOT / "scripts" / "mplc_v2_train.sh"
 STEP1_SCRIPT = REPO_ROOT / "scripts" / "mplc_v2_step1.sh"
-EPOCHS = 9
+EPOCHS = 12
+SIZE = ["--batch-size", "24", "--batches-per-epoch", "200", "--val-every", "3"]
 
 
 def record(epoch, clean, robust, budgets=(1.0, 3.0, 5.0)):
@@ -69,15 +70,15 @@ class ReadScreenTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             write_run(tmp, records=[
                 record(-1, 90.0, 99.0),                      # initial: never selectable
-                record(0, 88.0, 40.0),
-                record(1, 86.0, 60.0, budgets=(5.0,)),       # over the 3-point budget
-                record(2, 88.5, 40.0),                       # same robust, better clean
-                record(0, 88.0, 30.0),                       # resumed epoch 0 replaces the first
+                record(2, 88.0, 40.0),                       # --val_every 2: epochs 2, 4, 5
+                record(4, 86.0, 60.0, budgets=(5.0,)),       # over the 3-point budget
+                record(5, 88.5, 40.0),                       # same robust, better clean
+                record(2, 88.0, 30.0),                       # resumed epoch 2 replaces the first
             ])
             result = sweep.read_screen(Path(tmp), 3.0)
-        self.assertEqual((result.epoch, result.clean, result.robust), (2, 88.5, 40.0))
+        self.assertEqual((result.epoch, result.clean, result.robust), (5, 88.5, 40.0))
         self.assertEqual(result.initial_clean, 90.0)
-        self.assertEqual(result.epochs_run, 3)
+        self.assertEqual(result.epochs_run, 5)
         self.assertFalse(result.is_loss)
 
     def test_no_eligible_epoch_and_collapse_are_losses(self):
@@ -171,7 +172,7 @@ class OutputTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             base = self.build_finished_sweep(root)
-            sweep.main(["summarize", "--root", str(root), "--epochs", str(EPOCHS), "--batch-size", "32"])
+            sweep.main(["summarize", "--root", str(root), "--epochs", str(EPOCHS), *SIZE])
             out = root / "summary"
             self.assertEqual((out / "mplc_star.env").read_text().strip(), "MPLC_V2_ATTACK_MIX=linf MPLC_V2_FREEZE_TE=4")
             rows = (out / "screens.csv").read_text().splitlines()
@@ -185,28 +186,32 @@ class OutputTests(unittest.TestCase):
             final_dir = root / sweep.run_name(sweep.config(**base), EPOCHS)
             (final_dir / "last_model.pth").write_bytes(b"x")
             (root / name(seed="1") / "last_model.pth").write_bytes(b"x")
-            sweep.main(["prune", "--root", str(root), "--epochs", str(EPOCHS), "--batch-size", "32"])
+            sweep.main(["prune", "--root", str(root), "--epochs", str(EPOCHS), *SIZE])
             self.assertTrue((final_dir / "last_model.pth").is_file())
             self.assertFalse((root / name(seed="1") / "last_model.pth").exists())
 
     def test_settings_are_frozen_after_first_use(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            sweep.main(["next", "--root", str(root), "--epochs", "6", "--batch-size", "32", "--no-freeze"])
+            sweep.main(["next", "--root", str(root), "--epochs", "6", *SIZE, "--no-freeze"])
             self.assertFalse((root / sweep.CONFIG_NAME).exists())
-            sweep.main(["next", "--root", str(root), "--epochs", "9", "--batch-size", "32"])
+            sweep.main(["next", "--root", str(root), "--epochs", "10", *SIZE])
             self.assertIn("budget: 5.0", (root / sweep.CONFIG_NAME).read_text())
+            self.assertIn("batches_per_epoch: 200", (root / sweep.CONFIG_NAME).read_text())
             with self.assertRaises(SystemExit):
-                sweep.main(["next", "--root", str(root), "--epochs", "6", "--batch-size", "32"])
-            with self.assertRaises(SystemExit):
-                sweep.main(["next", "--root", str(root), "--epochs", "9", "--batch-size", "16"])
+                sweep.main(["next", "--root", str(root), "--epochs", "6", *SIZE])
+            for index, value in ((1, "16"), (3, "400"), (5, "1")):
+                changed = list(SIZE)
+                changed[index] = value
+                with self.subTest(changed=changed), self.assertRaises(SystemExit):
+                    sweep.main(["next", "--root", str(root), "--epochs", "10", *changed])
 
 
 class LauncherResumableModeTests(unittest.TestCase):
     def dry_run(self, root, **env):
         return run_script(
             TRAIN_SCRIPT,
-            {"MPLC_V2_DRY_RUN": "1", "MPLC_V2_ARMS": "mplc", "MPLC_V2_NUM_EPOCHS": "9", "MPLC_V2_RUN_ROOT": str(root), **env},
+            {"MPLC_V2_DRY_RUN": "1", "MPLC_V2_ARMS": "mplc", "MPLC_V2_NUM_EPOCHS": str(EPOCHS), "MPLC_V2_RUN_ROOT": str(root), **env},
         )
 
     def test_python_run_names_match_the_launcher(self):
@@ -221,7 +226,7 @@ class LauncherResumableModeTests(unittest.TestCase):
     def test_pending_resumable_finished_and_invalid_runs(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            run_dir = root / "mplc_v2_supervlad_mplc_ep9_s0"
+            run_dir = root / "mplc_v2_supervlad_mplc_ep12_s0"
 
             result = self.dry_run(root)
             self.assertIn(f"--run_dir={run_dir}", result.stdout)
@@ -248,18 +253,23 @@ class LauncherResumableModeTests(unittest.TestCase):
     def test_run_at_another_batch_size_is_neither_skipped_nor_resumed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            run_dir = root / "mplc_v2_supervlad_mplc_ep9_s0"
+            run_dir = root / "mplc_v2_supervlad_mplc_ep12_s0"
             run_dir.mkdir()
             (run_dir / "last_model.pth").write_bytes(b"x")
             (run_dir / "training_config.yaml").write_text("train_batch_size: 16\n")
             result = self.dry_run(root)
             self.assertEqual(result.returncode, 1, result.stdout)
-            self.assertIn("trained at batch size 16", result.stdout)
+            self.assertIn("trained with train_batch_size 16", result.stdout)
 
             (run_dir / "run_status.json").write_text(json.dumps({"state": "completed"}))
             self.assertEqual(self.dry_run(root).returncode, 1)
 
-            (run_dir / "training_config.yaml").write_text("train_batch_size: 24\n")
+            (run_dir / "training_config.yaml").write_text("train_batch_size: 24\nbatches_per_epoch: 400\n")
+            result = self.dry_run(root)
+            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertIn("trained with batches_per_epoch 400", result.stdout)
+
+            (run_dir / "training_config.yaml").write_text("train_batch_size: 24\nbatches_per_epoch: 200\n")
             self.assertIn("=== SKIP", self.dry_run(root).stdout)
 
     def test_recipe_uses_the_single_batch_size(self):
@@ -267,6 +277,8 @@ class LauncherResumableModeTests(unittest.TestCase):
             result = self.dry_run(tmp)
         self.assertIn("--batch_size=24", result.stdout)
         self.assertNotIn("--batch_size=16", result.stdout)
+        self.assertIn("--batches_per_epoch=200", result.stdout)
+        self.assertNotIn("--batches_per_epoch=400", result.stdout)
 
 
 class DriverTests(unittest.TestCase):
@@ -277,15 +289,20 @@ class DriverTests(unittest.TestCase):
             result = run_script(STEP1_SCRIPT, env, ["--dry-run"])
             self.assertEqual(result.returncode, 0, result.stdout)
             for seed in "012":
-                self.assertIn(f"--save_dir=mplc_v2_supervlad_mplc_ep9_s{seed}", result.stdout)
+                self.assertIn(f"--save_dir=mplc_v2_supervlad_mplc_ep12_s{seed}", result.stdout)
+            commands = [line for line in result.stdout.splitlines() if line.startswith("+ ")]
+            self.assertEqual(len(commands), 3, result.stdout)
+            for command in commands:
+                self.assertIn("--num_epochs=12", command)
+                self.assertIn("--val_every=3", command)
             self.assertFalse((root / sweep.CONFIG_NAME).exists())
 
             for seed, robust in zip("012", (50.0, 51.0, 49.0)):
                 records, state = finished(robust)
-                write_run(root / f"mplc_v2_supervlad_mplc_ep9_s{seed}", state=state, records=records)
+                write_run(root / f"mplc_v2_supervlad_mplc_ep12_s{seed}", state=state, records=records)
             result = run_script(STEP1_SCRIPT, env, ["--dry-run"])
             self.assertEqual(result.returncode, 0, result.stdout)
-            self.assertIn("--save_dir=mplc_v2_supervlad_mplc_mixlinf_ep9_s0", result.stdout)
+            self.assertIn("--save_dir=mplc_v2_supervlad_mplc_mixlinf_ep12_s0", result.stdout)
             self.assertNotIn("PerceptualPGDAttack", result.stdout)
 
     def test_noise_stop_exits_3(self):
@@ -293,7 +310,7 @@ class DriverTests(unittest.TestCase):
             root = Path(tmp)
             for seed, robust in zip("012", (50.0, 56.0, 49.0)):
                 records, state = finished(robust)
-                write_run(root / f"mplc_v2_supervlad_mplc_ep9_s{seed}", state=state, records=records)
+                write_run(root / f"mplc_v2_supervlad_mplc_ep12_s{seed}", state=state, records=records)
             result = run_script(STEP1_SCRIPT, {"STEP1_ROOT": str(root)}, ["--dry-run"])
             self.assertEqual(result.returncode, 3, result.stdout)
             self.assertIn("noise", result.stdout)

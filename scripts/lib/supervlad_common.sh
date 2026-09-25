@@ -31,6 +31,11 @@
 # records it in sweep_config.yaml. Change it only before any sprint 5 run exists.
 SUPERVLAD_TRAIN_BATCH_SIZE=24
 
+# Training batches per epoch, fixed the same way as the batch size. An epoch is
+# 24 x 200 = 4,800 places. Step 1 tunes lr, depth and screen length in these epochs, so every
+# later run must use the same epoch.
+SUPERVLAD_BATCHES_PER_EPOCH=200
+
 # At freeze_te=8 no gradient checkpointing is used, yet the training attacks backpropagate
 # through all 12 blocks; batch 32 ran out of memory on a 24 GB GPU. Expandable segments
 # recover the reserved-but-fragmented memory. Allocator setting only; results are unchanged.
@@ -70,7 +75,7 @@ SUPERVLAD_RECIPE_FLAGS=(
   --patience=8
   --batch_size="${SUPERVLAD_TRAIN_BATCH_SIZE}"
   --infer_batch_size=16
-  --batches_per_epoch=400
+  --batches_per_epoch="${SUPERVLAD_BATCHES_PER_EPOCH}"
   --mixed_precision
   --train_resize 322 322
   --resize 322 322
