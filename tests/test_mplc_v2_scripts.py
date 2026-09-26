@@ -184,6 +184,32 @@ class MplcV2TrainScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stdout)
         self.assertIn("unknown MPLC_V2_ATTACK_MIX", result.stdout)
 
+    def test_defense_loss_and_single_positive_ablations_get_suffix(self):
+        result = run_script(
+            TRAIN_SCRIPT,
+            {"MPLC_V2_ARMS": "mplc", "MPLC_V2_DEFENSE_LOSS": "hinge", "MPLC_V2_MULTI_POSITIVE": "0"},
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        (command,) = [line for line in result.stdout.splitlines() if line.startswith("+ ")]
+        self.assertIn("--save_dir=mplc_v2_supervlad_mplc_hinge_sp_s0", command)
+        self.assertIn("--defense_loss=hinge", command)
+        self.assertNotIn("--multi_positive", command)
+
+    def test_default_mplc_is_listwise_multi_positive(self):
+        result = run_script(TRAIN_SCRIPT, {"MPLC_V2_ARMS": "mplc"})
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        (command,) = [line for line in result.stdout.splitlines() if line.startswith("+ ")]
+        self.assertIn("--save_dir=mplc_v2_supervlad_mplc_s0", command)
+        self.assertIn("--defense_loss=listwise", command)
+        self.assertIn("--multi_positive", command)
+
+    def test_unknown_defense_loss_or_multi_positive_exits_with_status_2(self):
+        for env in ({"MPLC_V2_DEFENSE_LOSS": "triplet"}, {"MPLC_V2_MULTI_POSITIVE": "yes"}):
+            result = run_script(TRAIN_SCRIPT, env)
+            self.assertEqual(result.returncode, 2, result.stdout)
+
 
 class MplcV2EvalScriptTests(unittest.TestCase):
     def test_explicit_models_and_single_dataset(self):

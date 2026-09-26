@@ -28,6 +28,9 @@
 #   MPLC_V2_ATTACK_MIX    training attacks (mplc arm): "all" = two perceptual attacks +
 #                         rank L-inf, one sampled per step; "linf" = rank L-inf only
 #                                                               (default: all)
+#   MPLC_V2_DEFENSE_LOSS  defense objective (mplc arm): listwise | hinge (default: listwise)
+#   MPLC_V2_MULTI_POSITIVE  1 = target every positive, 0 = hardest one only (mplc arm)
+#                                                               (default: 1)
 #   MPLC_V2_RUN_ROOT      resumable mode: each run lives in the fixed directory
 #                         <root>/<save_dir name>; a stopped run resumes from its last
 #                         checkpoint, a finished one is skipped   (default: unset)
@@ -37,7 +40,8 @@
 # The mplc arm anchors the attacked descriptor to the frozen initial model
 # (--align_target=initial, spec 2026-09-25 D1) and both arms select the most robust epoch,
 # keeping best_model_budget<b>.pth per clean budget (D2). Non-default mplc hyperparameters
-# (TAU/K/POOL/RAMP_EPOCHS/ABORT_KNN/ALIGN_WEIGHT/TRAIN_EPS/ATTACK_MIX) and a non-default
+# (TAU/K/POOL/RAMP_EPOCHS/ABORT_KNN/ALIGN_WEIGHT/TRAIN_EPS/ATTACK_MIX/
+# DEFENSE_LOSS/MULTI_POSITIVE) and a non-default
 # FREEZE_TE/LR/NUM_EPOCHS (both arms, so each setting has a matched clean twin) are named in
 # the save_dir, e.g. mplc_v2_supervlad_mplc_aw10_mixlinf_fte4_lr3e-6_ep9_s<seed>. Only all-default runs are auto-discovered by
 # scripts/mplc_v2_eval.sh; evaluate others via --model.
@@ -67,6 +71,8 @@ LR=${MPLC_V2_LR:-1e-5}
 NUM_EPOCHS=${MPLC_V2_NUM_EPOCHS:-100}
 VAL_EVERY=${MPLC_V2_VAL_EVERY:-1}
 ATTACK_MIX=${MPLC_V2_ATTACK_MIX:-all}
+DEFENSE_LOSS=${MPLC_V2_DEFENSE_LOSS:-listwise}
+MULTI_POSITIVE=${MPLC_V2_MULTI_POSITIVE:-1}
 RUN_ROOT=${MPLC_V2_RUN_ROOT:-}
 DRY_RUN=${MPLC_V2_DRY_RUN:-0}
 
@@ -95,6 +101,14 @@ case "${ATTACK_MIX}" in
     echo "unknown MPLC_V2_ATTACK_MIX: ${ATTACK_MIX} (expected all or linf)" >&2
     exit 2
     ;;
+esac
+case "${DEFENSE_LOSS}" in
+  listwise | hinge) ;;
+  *) echo "unknown MPLC_V2_DEFENSE_LOSS: ${DEFENSE_LOSS} (expected listwise or hinge)" >&2; exit 2 ;;
+esac
+case "${MULTI_POSITIVE}" in
+  0 | 1) ;;
+  *) echo "MPLC_V2_MULTI_POSITIVE must be 0 or 1, got: ${MULTI_POSITIVE}" >&2; exit 2 ;;
 esac
 
 # A run is finished, and should be skipped, when its run_status.json records a terminal
@@ -145,6 +159,8 @@ mplc_override_suffix() {
   [ "${ALIGN_WEIGHT}" = "1.0" ] || suffix="${suffix}_aw${ALIGN_WEIGHT}"
   [ "${TRAIN_EPS}" = "0.0685" ] || suffix="${suffix}_eps${TRAIN_EPS}"
   [ "${ATTACK_MIX}" = "all" ] || suffix="${suffix}_mix${ATTACK_MIX}"
+  [ "${DEFENSE_LOSS}" = "listwise" ] || suffix="${suffix}_${DEFENSE_LOSS}"
+  [ "${MULTI_POSITIVE}" = "1" ] || suffix="${suffix}_sp"
   echo "${suffix}"
 }
 
@@ -186,8 +202,7 @@ for arm in ${ARMS}; do
     mplc)
       arm_flags=(
         "${MPLC_ATTACK_FLAGS[@]}"
-        --multi_positive
-        --defense_loss=listwise
+        --defense_loss="${DEFENSE_LOSS}"
         --listwise_tau="${TAU}"
         --listwise_k="${K}"
         --negative_pool_size="${POOL}"
@@ -196,6 +211,7 @@ for arm in ${ARMS}; do
         --align_target=initial
         --adv_align_weight="${ALIGN_WEIGHT}"
       )
+      [ "${MULTI_POSITIVE}" = "0" ] || arm_flags+=(--multi_positive)
       ;;
     *)
       echo "unknown arm: ${arm}" >&2
