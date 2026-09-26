@@ -10,7 +10,7 @@
 #
 # Environment overrides:
 #   MPLC_V2_SEED          training seed                          (default: 0)
-#   MPLC_V2_ARMS          arms to train, space separated         (default: "clean_ft mplc")
+#   MPLC_V2_ARMS          arms to train: clean_ft mplc plain_at fare (default: "clean_ft mplc")
 #   MPLC_V2_TAU           listwise temperature (mplc arm)        (default: 0.05)
 #   MPLC_V2_K             listwise top-K target (mplc arm)       (default: 1)
 #   MPLC_V2_POOL          negative pool size (mplc arm)          (default: 0)
@@ -45,6 +45,11 @@
 # FREEZE_TE/LR/NUM_EPOCHS (both arms, so each setting has a matched clean twin) are named in
 # the save_dir, e.g. mplc_v2_supervlad_mplc_aw10_mixlinf_fte4_lr3e-6_ep9_s<seed>. Only all-default runs are auto-discovered by
 # scripts/mplc_v2_eval.sh; evaluate others via --model.
+#
+# Baselines (runbook §2.2): plain_at = hinge rank loss against rank L-inf only, single
+# positive, no anchor; fare = anchor loss only against an L-inf attack that pushes the
+# descriptor away from the frozen initial model's (FARE). Both share the MPLC arm's
+# training eps, ramp and collapse abort.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -174,6 +179,17 @@ shared_suffix() {
   echo "${suffix}"
 }
 
+# Baselines read only the attack budget, ramp and abort threshold (fare also λ_anchor), so
+# only those are named: an MPLC-only setting in $CFG never renames a baseline run.
+baseline_suffix() {
+  local suffix=""
+  [ "${RAMP_EPOCHS}" = "5" ] || suffix="${suffix}_ramp${RAMP_EPOCHS}"
+  [ "${ABORT_KNN}" = "0.15" ] || suffix="${suffix}_abort${ABORT_KNN}"
+  [ "$1" != "fare" ] || [ "${ALIGN_WEIGHT}" = "1.0" ] || suffix="${suffix}_aw${ALIGN_WEIGHT}"
+  [ "${TRAIN_EPS}" = "0.0685" ] || suffix="${suffix}_eps${TRAIN_EPS}"
+  echo "${suffix}"
+}
+
 # shellcheck disable=SC2206 # CLEAN_BUDGETS is a space-separated list by design.
 COMMON_FLAGS=(
   --freeze_te="${FREEZE_TE}"
@@ -189,10 +205,11 @@ fi
 [ "${VAL_EVERY}" = "1" ] || COMMON_FLAGS+=(--val_every="${VAL_EVERY}")
 
 for arm in ${ARMS}; do
-  name="mplc_v2_supervlad_${arm}$(shared_suffix)_s${SEED}"
-  if [ "${arm}" = "mplc" ]; then
-    name="mplc_v2_supervlad_mplc$(mplc_override_suffix)$(shared_suffix)_s${SEED}"
-  fi
+  case "${arm}" in
+    mplc) name="mplc_v2_supervlad_mplc$(mplc_override_suffix)$(shared_suffix)_s${SEED}" ;;
+    plain_at | fare) name="mplc_v2_supervlad_${arm}$(baseline_suffix "${arm}")$(shared_suffix)_s${SEED}" ;;
+    *) name="mplc_v2_supervlad_${arm}$(shared_suffix)_s${SEED}" ;;
+  esac
 
   arm_flags=()
   case "${arm}" in
@@ -212,6 +229,25 @@ for arm in ${ARMS}; do
         --adv_align_weight="${ALIGN_WEIGHT}"
       )
       [ "${MULTI_POSITIVE}" = "0" ] || arm_flags+=(--multi_positive)
+      ;;
+    plain_at)
+      arm_flags=(
+        --attack "RankLinfAttack(model, epsilon=${TRAIN_EPS}, steps=5)"
+        --defense_loss=hinge
+        --adv_align_weight=0
+        --attack_ramp_epochs="${RAMP_EPOCHS}"
+        --collapse_abort_knn="${ABORT_KNN}"
+      )
+      ;;
+    fare)
+      arm_flags=(
+        --attack "EmbeddingShiftLinfAttack(model, epsilon=${TRAIN_EPS}, steps=5)"
+        --adv_loss_weight=0
+        --align_target=initial
+        --adv_align_weight="${ALIGN_WEIGHT}"
+        --attack_ramp_epochs="${RAMP_EPOCHS}"
+        --collapse_abort_knn="${ABORT_KNN}"
+      )
       ;;
     *)
       echo "unknown arm: ${arm}" >&2

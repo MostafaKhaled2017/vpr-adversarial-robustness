@@ -210,6 +210,43 @@ class MplcV2TrainScriptTests(unittest.TestCase):
             result = run_script(TRAIN_SCRIPT, env)
             self.assertEqual(result.returncode, 2, result.stdout)
 
+    def test_plain_at_arm_is_hinge_rank_linf_without_anchor(self):
+        result = run_script(TRAIN_SCRIPT, {"MPLC_V2_ARMS": "plain_at"})
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        (command,) = [line for line in result.stdout.splitlines() if line.startswith("+ ")]
+        self.assertIn("--save_dir=mplc_v2_supervlad_plain_at_s0", command)
+        self.assertEqual(command.count("--attack "), 1)
+        self.assertIn("RankLinfAttack(model, epsilon=0.0685, steps=5)", command)
+        self.assertIn("--defense_loss=hinge", command)
+        self.assertIn("--adv_align_weight=0", command)
+        self.assertIn("--attack_ramp_epochs=5", command)
+        self.assertNotIn("--multi_positive", command)
+        self.assertNotIn("--align_target", command)
+
+    def test_fare_arm_trains_anchor_only_against_embedding_shift(self):
+        result = run_script(TRAIN_SCRIPT, {"MPLC_V2_ARMS": "fare"})
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        (command,) = [line for line in result.stdout.splitlines() if line.startswith("+ ")]
+        self.assertIn("--save_dir=mplc_v2_supervlad_fare_s0", command)
+        self.assertEqual(command.count("--attack "), 1)
+        self.assertIn("EmbeddingShiftLinfAttack(model, epsilon=0.0685, steps=5)", command)
+        self.assertIn("--adv_loss_weight=0", command)
+        self.assertIn("--align_target=initial", command)
+        self.assertIn("--adv_align_weight=1.0", command)
+
+    def test_baseline_names_carry_only_the_settings_they_read(self):
+        result = run_script(
+            TRAIN_SCRIPT,
+            {"MPLC_V2_ARMS": "plain_at fare", "MPLC_V2_LR": "3e-6", "MPLC_V2_NUM_EPOCHS": "9",
+             "MPLC_V2_ALIGN_WEIGHT": "10", "MPLC_V2_ATTACK_MIX": "linf", "MPLC_V2_TAU": "0.01"},
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("--save_dir=mplc_v2_supervlad_plain_at_lr3e-6_ep9_s0", result.stdout)
+        self.assertIn("--save_dir=mplc_v2_supervlad_fare_aw10_lr3e-6_ep9_s0", result.stdout)
+
 
 class MplcV2EvalScriptTests(unittest.TestCase):
     def test_explicit_models_and_single_dataset(self):
