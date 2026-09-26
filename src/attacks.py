@@ -474,8 +474,13 @@ def build_attack_namespace(model: nn.Module, args) -> Dict[str, object]:
         def set_strength_scale(self, scale: float) -> None:
             self.strength_scale = float(scale)
 
+        def _pgd(self, config):
+            from .rank_attacks import RankPGDAttack
+
+            return RankPGDAttack(self.model, config)
+
         def forward(self, inputs: Tensor, targets: RetrievalAttackBatch) -> Tensor:
-            from .rank_attacks import RankAttackConfig, RankPGDAttack
+            from .rank_attacks import RankAttackConfig
 
             config = RankAttackConfig(
                 epsilon=self.base_epsilon * self.strength_scale,
@@ -484,8 +489,18 @@ def build_attack_namespace(model: nn.Module, args) -> Dict[str, object]:
                 device=args.device,
             )
             with amp_autocast(False, args.device), attack_generation_context(self.model):
-                result = RankPGDAttack(self.model, config)(inputs.float(), targets)
+                result = self._pgd(config)(inputs.float(), targets)
             return result.adversarial.detach()
+
+    class EmbeddingShiftLinfAttack(RankLinfAttack):
+        """FARE's training attack (Schlarmann et al., ICML 2024): L∞ PGD maximising
+        ‖f_θ(x′) − f₀(x)‖². f₀(x) arrives as ``targets.clean_query_descriptors``, which
+        ``compute_attack_losses`` sets to the frozen initial model's descriptor."""
+
+        def _pgd(self, config):
+            from .rank_attacks import EmbeddingShiftPGDAttack
+
+            return EmbeddingShiftPGDAttack(self.model, config)
 
     return {
         "model": unwrap_model(model),
@@ -501,6 +516,7 @@ def build_attack_namespace(model: nn.Module, args) -> Dict[str, object]:
         "PerceptualPGDAttack": PerceptualPGDAttack,
         "LagrangePerceptualAttack": LagrangePerceptualAttack,
         "RankLinfAttack": RankLinfAttack,
+        "EmbeddingShiftLinfAttack": EmbeddingShiftLinfAttack,
         "AutoAttack": lambda *a, **k: UnsupportedAttack(*a, attack_name="AutoAttack", **k),
         "AutoLinfAttack": lambda *a, **k: UnsupportedAttack(*a, attack_name="AutoLinfAttack", **k),
         "AutoL2Attack": lambda *a, **k: UnsupportedAttack(*a, attack_name="AutoL2Attack", **k),

@@ -54,3 +54,18 @@ class RankLinfTrainingAttackTests(unittest.TestCase):
         from src.cli import parse_attack_names
 
         self.assertEqual(parse_attack_names(["RankLinfAttack(model, epsilon=0.1, steps=5)"]), ["RankLinfAttack"])
+
+    def test_embedding_shift_attack_respects_epsilon_and_ramp(self):
+        model = Tiny()
+        attack = instantiate_attacks(model, ["EmbeddingShiftLinfAttack(model, epsilon=0.1, steps=3)"], args())[0]
+        clean = torch.zeros(2, 3, 4, 4)
+        attack.set_strength_scale(0.1)
+        adversarial = attack(clean, targets(2))
+        self.assertLessEqual(float((adversarial - clean).abs().max()), 0.01 + 1e-6)
+        self.assertGreater(float((adversarial - clean).abs().max()), 0.0)
+
+    def test_embedding_shift_attack_is_a_supported_training_attack(self):
+        from src.cli import parse_attack_names
+
+        self.assertEqual(parse_attack_names(["EmbeddingShiftLinfAttack(model, epsilon=0.1, steps=3)"]),
+                         ["EmbeddingShiftLinfAttack"])

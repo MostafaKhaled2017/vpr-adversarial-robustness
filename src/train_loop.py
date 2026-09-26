@@ -89,7 +89,8 @@ def compute_attack_losses(
     rank_losses = []
     align_losses = []
     for attack in attacks:
-        adv_queries = attack(query_inputs, attack_targets)
+        # Attacks that need a clean reference (FARE's embedding-shift attack) get the anchor.
+        adv_queries = attack(query_inputs, replace(attack_targets, clean_query_descriptors=align_reference))
         with amp_autocast(False, args.device):
             adv_query_descriptors = model(adv_queries, queryflag=1)
         adv_query_descriptors = adv_query_descriptors.float()

@@ -38,6 +38,12 @@ class IdentityAttack(nn.Module):
         return inputs
 
 
+class RecordingAttack(nn.Module):
+    def forward(self, inputs, targets):
+        self.seen = targets.clean_query_descriptors
+        return inputs
+
+
 def batch():
     torch.manual_seed(0)
     return RetrievalAttackBatch(
@@ -66,6 +72,12 @@ class AlignReferenceTests(unittest.TestCase):
         reference = model(inputs).detach()
         outputs = compute_attack_losses(model, inputs, batch(), [IdentityAttack()], ARGS, align_reference=reference)
         self.assertEqual(float(outputs["align_loss"]), 0.0)
+
+    def test_attacks_see_the_anchor_as_clean_reference(self):
+        model, inputs, attack = Descriptor(), torch.randn(2, 4), RecordingAttack()
+        reference = torch.ones(2, 4)
+        compute_attack_losses(model, inputs, batch(), [attack], ARGS, align_reference=reference)
+        torch.testing.assert_close(attack.seen, reference)
 
 
 class AlignTargetCliTests(unittest.TestCase):
