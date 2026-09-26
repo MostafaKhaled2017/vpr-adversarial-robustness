@@ -93,6 +93,14 @@ class WorstCaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "different queries"):
             worst_case(rows)
 
+    def test_one_tag_with_two_checkpoints_is_rejected(self):
+        rows = [
+            {**query_row("mplc", "rank_apgd_linf_eps_0.0685", 0, True), "checkpoint_tag": "a/best_model_budget5.pth"},
+            {**query_row("mplc", "embshift_linf_eps_0.0685", 0, True), "checkpoint_tag": "a/best_model.pth"},
+        ]
+        with self.assertRaisesRegex(ValueError, "different checkpoints"):
+            worst_case(rows)
+
     def test_cli_reads_per_query_csvs(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths = []

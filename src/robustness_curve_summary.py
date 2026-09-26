@@ -99,16 +99,21 @@ def worst_case(rows: Sequence[Mapping[str, str]]) -> List[Dict[str, object]]:
     """
     queries: Dict[tuple, Dict[str, set]] = defaultdict(dict)
     failed: Dict[tuple, set] = defaultdict(set)
+    checkpoints: Dict[tuple, set] = defaultdict(set)
     for row in rows:
         if row["attacked_rank"] == "-1":  # no positive in the gallery: excluded, as in every summary
             continue
         key = (row["dataset"], row["model_tag"], float(row["epsilon"]))
         queries[key].setdefault(EPSILON_PATTERN.sub("", row["condition"]), set()).add(row["query_id"])
+        checkpoints[key].add(row.get("checkpoint_tag", ""))
         if row["attacked_correct_at_1"] != "True":
             failed[key].add(row["query_id"])
 
     summary = []
     for key, by_attack in sorted(queries.items()):
+        if len(checkpoints[key]) > 1:
+            raise ValueError(f"model tag at (dataset, model, epsilon)={key} names different checkpoints "
+                             f"{sorted(checkpoints[key])}; give each checkpoint its own tag.")
         query_sets = list(by_attack.values())
         if any(ids != query_sets[0] for ids in query_sets):
             raise ValueError(f"attacks at (dataset, model, epsilon)={key} cover different queries; "
