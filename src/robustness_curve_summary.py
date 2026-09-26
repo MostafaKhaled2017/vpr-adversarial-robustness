@@ -91,10 +91,43 @@ def summarize(rows: Sequence[Mapping[str, str]], reference_model: Optional[str] 
     return summary
 
 
+def worst_case(rows: Sequence[Mapping[str, str]]) -> List[Dict[str, object]]:
+    """Worst-case R@1 per (dataset, model, epsilon) from per_query_ranks.csv rows.
+
+    A query counts as correct only if it stays correct at rank 1 under every attack run at
+    that epsilon. Every attack must cover the same queries, or the union is meaningless.
+    """
+    queries: Dict[tuple, Dict[str, set]] = defaultdict(dict)
+    failed: Dict[tuple, set] = defaultdict(set)
+    for row in rows:
+        if row["attacked_rank"] == "-1":  # no positive in the gallery: excluded, as in every summary
+            continue
+        key = (row["dataset"], row["model_tag"], float(row["epsilon"]))
+        queries[key].setdefault(EPSILON_PATTERN.sub("", row["condition"]), set()).add(row["query_id"])
+        if row["attacked_correct_at_1"] != "True":
+            failed[key].add(row["query_id"])
+
+    summary = []
+    for key, by_attack in sorted(queries.items()):
+        query_sets = list(by_attack.values())
+        if any(ids != query_sets[0] for ids in query_sets):
+            raise ValueError(f"attacks at (dataset, model, epsilon)={key} cover different queries; "
+                             "were they run with the same --max-queries?")
+        total = len(query_sets[0])
+        summary.append({
+            "dataset": key[0], "model": key[1], "epsilon": key[2],
+            "attacks": " ".join(sorted(by_attack)), "queries": total,
+            "worst_case_r1": 100.0 * (total - len(failed[key])) / total,
+        })
+    return summary
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("csv_paths", nargs="+", help="rank_eval_results.csv paths")
+    parser.add_argument("csv_paths", nargs="+", help="rank_eval_results.csv paths (per_query_ranks.csv with --worst_case)")
     parser.add_argument("--reference_model", default=None, help="Model for R@1 reference (clean accuracy drop)")
+    parser.add_argument("--worst_case", action="store_true",
+                        help="Read per_query_ranks.csv files and report worst-case R@1 over all attacks per epsilon")
     parser.add_argument("--output", default=None, help="Output CSV path (default: stdout)")
     args = parser.parse_args(argv)
 
@@ -103,23 +136,28 @@ def main(argv=None):
         with open(csv_path, encoding="utf-8") as handle:
             rows.extend(csv.DictReader(handle))
 
-    summary = summarize(rows, args.reference_model)
+    if args.worst_case:
+        fieldnames = ["dataset", "model", "epsilon", "attacks", "queries", "worst_case_r1"]
+        records = worst_case(rows)
+    else:
+        summary = summarize(rows, args.reference_model)
+        epsilons = sorted(set(epsilon for item in summary for epsilon in item["r1_by_epsilon"]))
+        labels = {epsilon: f"R@1@<={normalized_epsilon_to_raw_pixels(epsilon)['max_raw_255']:.1f}/255" for epsilon in epsilons}
+        fieldnames = ["dataset", "model", "family", "clean_r1", *labels.values(), "auc", "clean_drop_vs_reference", "mean_targeted_success"]
+        records = []
+        for item in summary:
+            record = {name: item[name] for name in ("dataset", "model", "family", "clean_r1", "auc", "clean_drop_vs_reference", "mean_targeted_success")}
+            record.update({labels[epsilon]: value for epsilon, value in item["r1_by_epsilon"].items()})
+            records.append(record)
 
-    epsilons = sorted(set(epsilon for item in summary for epsilon in item["r1_by_epsilon"]))
-    labels = {epsilon: f"R@1@<={normalized_epsilon_to_raw_pixels(epsilon)['max_raw_255']:.1f}/255" for epsilon in epsilons}
-    fieldnames = ["dataset", "model", "family", "clean_r1", *labels.values(), "auc", "clean_drop_vs_reference", "mean_targeted_success"]
     handle = open(args.output, "w", encoding="utf-8", newline="") if args.output else sys.stdout
     try:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
-        for item in summary:
-            record = {name: item[name] for name in ("dataset", "model", "family", "clean_r1", "auc", "clean_drop_vs_reference", "mean_targeted_success")}
-            record.update({labels[epsilon]: value for epsilon, value in item["r1_by_epsilon"].items()})
-            writer.writerow(record)
+        writer.writerows(records)
     finally:
         if args.output:
             handle.close()
-
 
 if __name__ == "__main__":
     main()
