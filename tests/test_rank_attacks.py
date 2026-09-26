@@ -9,7 +9,7 @@ from src.config import (
     normalized_epsilon_to_raw_pixels,
 )
 from src.losses import compute_attack_score, query_is_correct
-from src.rank_attacks import RankAPGDLinfAttack, RankAttackConfig, RankPGDAttack
+from src.rank_attacks import EmbeddingShiftPGDAttack, RankAPGDLinfAttack, RankAttackConfig, RankPGDAttack
 from src.targets import RetrievalAttackBatch, select_rank_targets
 
 
@@ -288,3 +288,33 @@ class MultiPositiveAttackScoreTests(unittest.TestCase):
         # With the near positive masked out the query no longer retrieves the place.
         masked = query_is_correct(query, positives, negatives, positive_mask=torch.tensor([[False, True]]))
         self.assertFalse(bool(masked[0]))
+
+
+class EmbeddingShiftAttackTests(unittest.TestCase):
+    def setUp(self):
+        torch.manual_seed(7)
+        self.model = TinyDescriptorModel()
+
+    def test_score_is_squared_shift_from_the_reference(self):
+        inputs = torch.rand(2, 3, 4, 4)
+        targets = make_targets(2)
+        attack = EmbeddingShiftPGDAttack(self.model, RankAttackConfig(epsilon=0.05, steps=1, device="cpu"))
+
+        score = attack._rank_components(inputs, targets)[0]
+
+        torch.testing.assert_close(score, (self.model(inputs) - targets.clean_query_descriptors).pow(2).sum(dim=1))
+
+    def test_embedding_shift_moves_from_zero_gradient_start(self):
+        # The reference is the model's own clean descriptor, so the objective and its
+        # gradient are exactly zero at the clean input: only a random start can move.
+        clean = torch.zeros(2, 3, 4, 4)
+        targets = make_targets(2)
+        targets.clean_query_descriptors = self.model(clean).detach()
+        attack = EmbeddingShiftPGDAttack(self.model, RankAttackConfig(epsilon=0.05, steps=3, device="cpu"))
+
+        result = attack(clean, targets)
+
+        max_delta = (result.adversarial - clean).flatten(1).abs().max(dim=1).values
+        self.assertTrue(torch.all(max_delta <= 0.050001))
+        shift = (self.model(result.adversarial) - targets.clean_query_descriptors).norm(dim=1)
+        self.assertTrue(torch.all(shift > 0))
