@@ -18,7 +18,7 @@
 #   --with-discovered                add discovered runs (and pretrained) to --model ones
 #   --epsilons "0.01712 0.03425 0.0685 0.137"  normalized L-inf budgets, <=1/2/4/8 per 255 (MPLC_V2_EPSILONS)
 #   --output-root DIR                evaluation output root         (MPLC_V2_OUTPUT_ROOT)
-#   --attack NAME                    rank_pgd_linf | rank_apgd_linf | rank_pgd_l2 (MPLC_V2_ATTACK)
+#   --attack NAME                    rank_pgd_linf | rank_apgd_linf | rank_pgd_l2 | embshift_linf (MPLC_V2_ATTACK)
 #   --steps N / --restarts N         attack steps / restarts (20 / 1)  (MPLC_V2_STEPS/_RESTARTS)
 #   --goal untargeted|targeted       query attack goal              (MPLC_V2_GOAL)
 #   --checkpoint FILE                run checkpoint to evaluate, e.g. best_model_budget3.pth

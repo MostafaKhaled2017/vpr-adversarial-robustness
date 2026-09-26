@@ -35,6 +35,15 @@ def _dummy_dino_model():
 
 
 class RankEvalInterfaceTests(unittest.TestCase):
+    def test_embshift_linf_builds_the_embedding_shift_attack(self):
+        from src.rank_attacks import EmbeddingShiftPGDAttack
+
+        args = Namespace(rank_attack="embshift_linf", rank_steps=20, rank_restarts=1, rank_step_size=None,
+                         adv_margin=0.1, device="cpu", audit_attack_implementation=False, trace_query_indices=None)
+        attack = rank_eval.build_rank_attack(nn.Identity(), args, 0.0685)
+        self.assertIsInstance(attack, EmbeddingShiftPGDAttack)
+        self.assertEqual(attack.config.norm, "linf")
+
     def test_default_model_tag_for_one_model(self):
         tags = rank_eval.resolve_model_tags(["base.pth"], None)
 

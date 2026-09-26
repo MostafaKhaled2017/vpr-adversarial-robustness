@@ -123,6 +123,13 @@ class TargetedValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "--rank_attack_goal targeted"):
             rank_eval.validate_arguments(args)
 
+    def test_embshift_rejects_targeted_goal(self):
+        args = self._base_args()
+        args.rank_attack = "embshift_linf"
+
+        with self.assertRaisesRegex(ValueError, "embshift_linf is untargeted"):
+            rank_eval.validate_arguments(args)
+
 
 if __name__ == "__main__":
     unittest.main()

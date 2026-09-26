@@ -30,7 +30,7 @@ from src.config import denormalize_imagenet, normalized_epsilon_to_raw_pixels, v
 from src.faiss_utils import validate_faiss_runtime
 from src.grad_checkpoint import enable_backbone_grad_checkpointing
 from src.models import add_model_arguments, get_model_adapter, model_names
-from src.rank_attacks import RankAPGDLinfAttack, RankAttackConfig, RankPGDAttack
+from src.rank_attacks import EmbeddingShiftPGDAttack, RankAPGDLinfAttack, RankAttackConfig, RankPGDAttack
 from src.retrieval_metrics import (
     compute_recalls_from_features,
     nearest_positive_ranks,
@@ -44,7 +44,7 @@ from src.targets import RetrievalAttackBatch, build_attack_targets, pad_positive
 
 
 SUPPORTED_TEST_METHODS = {"hard_resize", "central_crop", "single_query"}
-SUPPORTED_RANK_ATTACKS = {"rank_pgd_linf", "rank_pgd_l2", "rank_apgd_linf"}
+SUPPORTED_RANK_ATTACKS = {"rank_pgd_linf", "rank_pgd_l2", "rank_apgd_linf", "embshift_linf"}
 REQUIRED_RECALL_VALUES = (1, 5, 10, 100)
 DEFAULT_MODEL_TAGS = ("base", "checkpoint")
 PER_QUERY_RANK_FIELDNAMES = (
@@ -329,6 +329,8 @@ def validate_arguments(args) -> None:
         raise ValueError("--attack_image_amplification must be positive.")
     if args.target_rank < 1:
         raise ValueError("--target_rank must be at least 1.")
+    if args.rank_attack == "embshift_linf" and args.rank_attack_goal == "targeted":
+        raise ValueError("--rank_attack embshift_linf is untargeted; it cannot take --rank_attack_goal targeted.")
     if args.rank_attack_goal == "targeted" and (
         args.audit_sample_database_size is not None or args.max_dataset_samples is not None
     ):
@@ -938,6 +940,8 @@ def build_rank_attack(model: nn.Module, args, epsilon: float) -> nn.Module:
     )
     if args.rank_attack == "rank_apgd_linf":
         return RankAPGDLinfAttack(model, config)
+    if args.rank_attack == "embshift_linf":
+        return EmbeddingShiftPGDAttack(model, config)
     return RankPGDAttack(model, config)
 
 
