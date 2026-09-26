@@ -181,6 +181,17 @@ def pad_positive_sets(
     return padded.detach(), mask
 
 
+def cap_query_indices(valid_query_indices: np.ndarray, limit_queries: Optional[int]) -> np.ndarray:
+    """Keep ``limit_queries`` of the valid queries, spread evenly over them.
+
+    MSLS and Nordland store queries in route order, so the first N would be one contiguous
+    stretch of route; evenly spaced ones cover all of it.
+    """
+    if limit_queries is None or limit_queries >= len(valid_query_indices):
+        return valid_query_indices
+    return valid_query_indices[np.arange(limit_queries) * len(valid_query_indices) // limit_queries]
+
+
 def build_attack_targets(
     args,
     eval_ds,
@@ -195,8 +206,7 @@ def build_attack_targets(
     if len(valid_query_indices) == 0:
         raise RuntimeError("No queries with positives were found, cannot run attack evaluation.")
 
-    if limit_queries is not None:
-        valid_query_indices = valid_query_indices[:limit_queries]
+    valid_query_indices = cap_query_indices(valid_query_indices, limit_queries)
 
     database_features = np.ascontiguousarray(database_features.astype(np.float32, copy=False))
     query_features = np.ascontiguousarray(clean_query_features[valid_query_indices].astype(np.float32, copy=False))

@@ -20,6 +20,8 @@
 #   --output-root DIR                evaluation output root         (MPLC_V2_OUTPUT_ROOT)
 #   --attack NAME                    rank_pgd_linf | rank_apgd_linf | rank_pgd_l2 | embshift_linf (MPLC_V2_ATTACK)
 #   --steps N / --restarts N         attack steps / restarts (20 / 1)  (MPLC_V2_STEPS/_RESTARTS)
+#   --max-queries N                  attack N valid queries spread evenly over the route; clean
+#                                    R@1 still uses all             (MPLC_V2_MAX_QUERIES)
 #   --goal untargeted|targeted       query attack goal              (MPLC_V2_GOAL)
 #   --checkpoint FILE                run checkpoint to evaluate, e.g. best_model_budget3.pth
 #                                    (default best_model.pth)       (MPLC_V2_CHECKPOINT)
@@ -64,6 +66,7 @@ OUTPUT_ROOT=${MPLC_V2_OUTPUT_ROOT:-output/mplc_v2}
 ATTACK=${MPLC_V2_ATTACK:-rank_pgd_linf}
 STEPS=${MPLC_V2_STEPS:-20}
 RESTARTS=${MPLC_V2_RESTARTS:-1}
+MAX_QUERIES=${MPLC_V2_MAX_QUERIES:-}
 GOAL=${MPLC_V2_GOAL:-untargeted}
 CHECKPOINT=${MPLC_V2_CHECKPOINT:-best_model.pth}
 SHARED_ATTACKS=${MPLC_V2_SHARED_ATTACKS:-0}
@@ -78,7 +81,7 @@ usage() {
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --datasets | --seeds | --arms | --model | --epsilons | --output-root | --attack | --steps | --restarts | --goal | --checkpoint)
+    --datasets | --seeds | --arms | --model | --epsilons | --output-root | --attack | --steps | --restarts | --max-queries | --goal | --checkpoint)
       [ $# -ge 2 ] || { echo "$1 requires a value" >&2; exit 2; }
       case "$1" in
         --datasets) DATASETS=$2 ;;
@@ -90,6 +93,7 @@ while [ $# -gt 0 ]; do
         --attack) ATTACK=$2 ;;
         --steps) STEPS=$2 ;;
         --restarts) RESTARTS=$2 ;;
+        --max-queries) MAX_QUERIES=$2 ;;
         --goal) GOAL=$2 ;;
         --checkpoint) CHECKPOINT=$2 ;;
       esac
@@ -119,7 +123,7 @@ case "${GOAL}" in
   *) echo "unknown goal: ${GOAL} (expected untargeted or targeted)" >&2; exit 2 ;;
 esac
 
-# Output dir: ${OUTPUT_ROOT}/supervlad_<dataset>[_<attack>][_<goal>][_<checkpoint>][_steps<N>][_r<N>][_shared],
+# Output dir: ${OUTPUT_ROOT}/supervlad_<dataset>[_<attack>][_<goal>][_<checkpoint>][_steps<N>][_r<N>][_q<N>][_shared],
 # each part only when it differs from the default, so non-default runs never overwrite each other.
 OUTPUT_SUFFIX=""
 [ "${ATTACK}" = "rank_pgd_linf" ] || OUTPUT_SUFFIX="${OUTPUT_SUFFIX}_${ATTACK}"
@@ -127,7 +131,9 @@ OUTPUT_SUFFIX=""
 [ "${CHECKPOINT}" = "best_model.pth" ] || OUTPUT_SUFFIX="${OUTPUT_SUFFIX}_${CHECKPOINT%.pth}"
 [ "${STEPS}" = "20" ] || OUTPUT_SUFFIX="${OUTPUT_SUFFIX}_steps${STEPS}"
 [ "${RESTARTS}" = "1" ] || OUTPUT_SUFFIX="${OUTPUT_SUFFIX}_r${RESTARTS}"
+[ -z "${MAX_QUERIES}" ] || OUTPUT_SUFFIX="${OUTPUT_SUFFIX}_q${MAX_QUERIES}"
 EXTRA_EVAL_FLAGS=()
+[ -z "${MAX_QUERIES}" ] || EXTRA_EVAL_FLAGS+=(--max_queries="${MAX_QUERIES}")
 if [ "${SHARED_ATTACKS}" = "1" ]; then
   OUTPUT_SUFFIX="${OUTPUT_SUFFIX}_shared"
   EXTRA_EVAL_FLAGS+=(--shared_attacks)

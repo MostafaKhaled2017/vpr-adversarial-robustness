@@ -40,7 +40,13 @@ from src.retrieval_metrics import (
     squared_l2_distance_chunk,
     targeted_success_rate,
 )
-from src.targets import RetrievalAttackBatch, build_attack_targets, pad_positive_sets, retarget_attack_targets
+from src.targets import (
+    RetrievalAttackBatch,
+    build_attack_targets,
+    cap_query_indices,
+    pad_positive_sets,
+    retarget_attack_targets,
+)
 
 
 SUPPORTED_TEST_METHODS = {"hard_resize", "central_crop", "single_query"}
@@ -159,7 +165,7 @@ def build_parser():
     )
     parser.add_argument("--adv_negatives", type=int, default=5, help="Hard negatives per rank attack target.")
     parser.add_argument("--adv_margin", type=float, default=0.1, help="Margin for the retrieval rank objective.")
-    parser.add_argument("--max_queries", type=int, default=None, help="Optional cap on attacked valid queries.")
+    parser.add_argument("--max_queries", type=int, default=None, help="Optional cap on attacked valid queries, spread evenly over them.")
     parser.add_argument(
         "--max_dataset_samples",
         type=int,
@@ -653,8 +659,7 @@ def select_valid_query_indices(positives_per_query: Sequence[Sequence[int]], lim
     )
     if len(valid_query_indices) == 0:
         raise RuntimeError("No queries with positives were found, cannot run attack evaluation.")
-    if limit_queries is not None:
-        valid_query_indices = valid_query_indices[:limit_queries]
+    valid_query_indices = cap_query_indices(valid_query_indices, limit_queries)
     return valid_query_indices.astype(np.int64, copy=False)
 
 

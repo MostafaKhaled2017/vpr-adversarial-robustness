@@ -44,6 +44,12 @@ class RankEvalInterfaceTests(unittest.TestCase):
         self.assertIsInstance(attack, EmbeddingShiftPGDAttack)
         self.assertEqual(attack.config.norm, "linf")
 
+    def test_query_cap_spreads_evenly_over_valid_queries(self):
+        positives = [[1], [], *[[1]] * 9]  # valid: 0, 2, 3, ..., 10
+        np.testing.assert_array_equal(rank_eval.select_valid_query_indices(positives, 5), [0, 3, 5, 7, 9])
+        self.assertEqual(len(rank_eval.select_valid_query_indices(positives, 50)), 10)
+        self.assertEqual(len(rank_eval.select_valid_query_indices(positives, None)), 10)
+
     def test_default_model_tag_for_one_model(self):
         tags = rank_eval.resolve_model_tags(["base.pth"], None)
 

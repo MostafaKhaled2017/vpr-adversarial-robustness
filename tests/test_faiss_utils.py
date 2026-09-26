@@ -230,6 +230,17 @@ class FaissUtilsTests(unittest.TestCase):
 
         np.testing.assert_array_equal(targets[0]["positive_indexes"], positives[0])
 
+    def test_build_attack_targets_caps_queries_like_rank_eval(self):
+        database = np.array([[0.0], [1.0], [10.0]], dtype=np.float32)
+        queries = np.zeros((10, 1), dtype=np.float32)
+        positives = [np.array([0], dtype=np.int64)] * 10
+        eval_ds = SimpleNamespace(database_num=3, get_positives=lambda: positives)
+
+        _, valid = build_attack_targets(Namespace(device="cpu", adv_negatives=1), eval_ds, database, queries, limit_queries=5)
+
+        np.testing.assert_array_equal(valid, [0, 2, 4, 6, 8])
+        np.testing.assert_array_equal(valid, rank_eval.select_valid_query_indices(positives, 5))
+
 
 if __name__ == "__main__":
     unittest.main()

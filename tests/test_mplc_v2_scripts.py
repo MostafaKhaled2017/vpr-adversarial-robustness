@@ -434,6 +434,21 @@ class MplcV2EvalScriptOptionTests(unittest.TestCase):
         self.assertIn("--model_tags mplc_s94_best_model_budget3 ", line)
         self.assertIn("output/mplc_v2/supervlad_sped_best_model_budget3/rank_eval_results.json", line)
 
+    def test_max_queries_reaches_eval_and_output_dir(self):
+        result = run_script(
+            EVAL_SCRIPT,
+            args=["--datasets", "sped", "--seeds", "94", "--arms", "mplc", "--max-queries", "1000", "--shared-attacks"],
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        (line,) = eval_lines(result.stdout)
+        self.assertIn("--max_queries=1000", line)
+        self.assertIn("supervlad_sped_q1000_shared/rank_eval_results.csv", line)
+
+    def test_default_has_no_query_cap(self):
+        result = run_script(EVAL_SCRIPT, args=["--datasets", "sped", "--seeds", "94", "--arms", "mplc"])
+        (line,) = eval_lines(result.stdout)
+        self.assertNotIn("--max_queries", line)
+
     def test_invalid_goal_exits_2(self):
         self.assertEqual(run_script(EVAL_SCRIPT, args=["--goal", "sideways"]).returncode, 2)
 
