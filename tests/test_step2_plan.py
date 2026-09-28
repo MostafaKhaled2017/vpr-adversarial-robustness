@@ -251,5 +251,53 @@ class CliTests(unittest.TestCase):
             self.assertTrue((Path(tmp) / "runs.csv").is_file())
 
 
+class DriverTests(unittest.TestCase):
+    def dry_run(self, s1, s2, **env):
+        return run_script(STEP2_SCRIPT, {"STEP1_ROOT": s1, "STEP2_ROOT": s2, **env}, ["--dry-run"])
+
+    def test_dry_run_lists_pending_runs_in_order(self):
+        with tempfile.TemporaryDirectory() as s1, tempfile.TemporaryDirectory() as s2:
+            finish_step1(s1)
+            result = self.dry_run(s1, s2)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            commands = [line for line in result.stdout.splitlines() if line.startswith("+ ")]
+            self.assertEqual(len(commands), 15, result.stdout)
+            self.assertIn("--save_dir=mplc_v2_supervlad_mplc_mixlinf_ep12_s1 ", commands[0] + " ")
+            self.assertIn("--num_epochs=12", commands[0])
+            self.assertIn("--save_dir=mplc_v2_supervlad_clean_ft_s0 ", commands[2] + " ")
+            self.assertIn("--save_dir=mplc_v2_supervlad_mplc_mixlinf_s0 ", commands[3] + " ")
+            self.assertNotIn("--num_epochs=12", commands[3])  # full length: the recipe's 100
+            self.assertIn("--save_dir=mplc_v2_supervlad_plain_at_ep12_s0", commands[6])
+            self.assertIn("--val_every=3", commands[6])
+            self.assertFalse((Path(s2) / step2.CONFIG_NAME).exists())
+
+    def test_stray_launcher_variable_is_ignored(self):
+        with tempfile.TemporaryDirectory() as s1, tempfile.TemporaryDirectory() as s2:
+            finish_step1(s1)
+            result = self.dry_run(s1, s2, MPLC_V2_TAU="0.1", MPLC_V2_ARMS="fare")
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertNotIn("--listwise_tau=0.1", result.stdout)
+            self.assertIn("--listwise_tau=0.05", result.stdout)
+            self.assertIn("--save_dir=mplc_v2_supervlad_clean_ft_s0", result.stdout)
+
+    def test_unfinished_step1_exits_3(self):
+        with tempfile.TemporaryDirectory() as s1, tempfile.TemporaryDirectory() as s2:
+            result = self.dry_run(s1, s2)
+            self.assertEqual(result.returncode, 3, result.stdout)
+            self.assertIn("mplc_v2_step1.sh", result.stdout)
+
+    def test_summary_only_writes_tables(self):
+        with tempfile.TemporaryDirectory() as s1, tempfile.TemporaryDirectory() as s2:
+            finish_step1(s1)
+            records, state = finished(45.0)
+            write_run(Path(s2) / "mplc_v2_supervlad_plain_at_ep12_s0", state=state, records=records)
+            result = run_script(STEP2_SCRIPT, {"STEP1_ROOT": s1, "STEP2_ROOT": s2}, ["--summary-only"])
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertIn("| 2.2 screen | plain_at lr 1e-5 | completed", (Path(s2) / "summary" / "runs.md").read_text())
+
+    def test_unknown_option_exits_2(self):
+        self.assertEqual(run_script(STEP2_SCRIPT, args=["--bogus"]).returncode, 2)
+
+
 if __name__ == "__main__":
     unittest.main()
