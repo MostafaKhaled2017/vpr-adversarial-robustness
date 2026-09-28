@@ -25,7 +25,7 @@ SUPERVLAD_ROOT = REPO_ROOT / "third_party" / "SuperVLAD"
 if str(SUPERVLAD_ROOT) not in sys.path:
     sys.path.insert(0, str(SUPERVLAD_ROOT))
 
-import parser as parser_module
+from src import supervlad_compat
 from src.config import denormalize_imagenet, normalized_epsilon_to_raw_pixels, validate_cuda_runtime
 from src.faiss_utils import validate_faiss_runtime
 from src.grad_checkpoint import enable_backbone_grad_checkpointing
@@ -80,7 +80,7 @@ def remove_parser_argument(parser, *option_strings: str) -> None:
 
 
 def build_parser():
-    parser = parser_module.build_parser()
+    parser = supervlad_compat.build_parser()
     parser.allow_abbrev = False
     parser.description = "Native rank attack evaluation for one or more VPR checkpoints"
     remove_parser_argument(parser, "--resume")
@@ -272,7 +272,7 @@ def parse_arguments():
 
 
 def finalize_arguments(args):
-    args = parser_module.validate_arguments(args)
+    args = supervlad_compat.validate_arguments(args)
     args.model_tags = resolve_model_tags(args.model_paths, args.model_tags)
     args.recall_values = list(dict.fromkeys([*args.recall_values, *REQUIRED_RECALL_VALUES]))
     adapter = get_model_adapter(args.model_type)

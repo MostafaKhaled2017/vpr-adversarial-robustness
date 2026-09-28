@@ -85,10 +85,8 @@ def build_evaluation_dataset(args, dataset_name: str):
 
 
 def load_evaluation_weights(model: nn.Module, checkpoint_path: str, args) -> None:
-    import util
-
     args.resume = checkpoint_path
-    util.resume_model(args, model)
+    load_model_weights(model, checkpoint_path, map_location=args.device, strict=True)
 
 
 ADAPTER = ModelAdapter(

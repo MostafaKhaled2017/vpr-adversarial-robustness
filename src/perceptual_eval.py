@@ -25,7 +25,8 @@ if str(SUPERVLAD_ROOT) not in sys.path:
     sys.path.insert(0, str(SUPERVLAD_ROOT))
 
 import commons
-import parser as parser_module
+from src import supervlad_compat
+from src.checkpoints import load_model_weights
 from src.cli import parse_attack_names
 from src.config import validate_cuda_runtime
 from src.faiss_utils import validate_faiss_runtime
@@ -40,7 +41,7 @@ DEFAULT_ATTACKS = (
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = parser_module.build_parser()
+    parser = supervlad_compat.build_parser()
     parser.description = (
         "Evaluate base and perceptually trained SuperVLAD checkpoints on shared clean and perceptual attack data."
     )
@@ -104,7 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def parse_arguments():
     args = build_parser().parse_args()
-    args = parser_module.validate_arguments(args)
+    args = supervlad_compat.validate_arguments(args)
     args.attack = list(DEFAULT_ATTACKS) if args.attack is None else args.attack
     args.recall_values = list(dict.fromkeys([*args.recall_values, *REQUIRED_RECALL_VALUES]))
     validate_arguments(args)
@@ -185,7 +186,6 @@ def clone_model_args(args, checkpoint_path: str):
 
 
 def load_model(args, checkpoint_path: str) -> Tuple[nn.Module, object]:
-    import util
     from model import network
 
     model_args = clone_model_args(args, checkpoint_path)
@@ -196,7 +196,7 @@ def load_model(args, checkpoint_path: str) -> Tuple[nn.Module, object]:
     )
     model = model.to(model_args.device)
     model_args.features_dim *= model_args.supervlad_clusters
-    util.resume_model(model_args, model)
+    load_model_weights(model, model_args.resume, map_location=model_args.device)
     model = torch.nn.DataParallel(model)
     model.eval()
     return model, model_args

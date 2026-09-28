@@ -1,4 +1,4 @@
-import parser as parser_module
+from . import supervlad_compat
 
 from .config import SUPPORTED_ATTACK_NAMES, UNSUPPORTED_ATTACK_NAMES
 from .models import add_model_arguments, model_names
@@ -25,7 +25,7 @@ def parse_attack_names(attack_strings):
 
 
 def build_parser():
-    parser = parser_module.build_parser()
+    parser = supervlad_compat.build_parser()
     parser.description = "Perceptual adversarial training for visual place recognition models"
     parser.add_argument(
         "--model",
@@ -320,7 +320,7 @@ def build_parser():
 
 def parse_arguments(argv=None):
     args = build_parser().parse_args(argv)
-    args = parser_module.validate_arguments(args)
+    args = supervlad_compat.validate_arguments(args)
 
     if args.train_batch_size is None:
         args.train_batch_size = 60

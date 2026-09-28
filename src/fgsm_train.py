@@ -15,9 +15,10 @@ from tqdm import tqdm
 
 import commons
 import datasets_ws
-import parser as parser_module
 import test
 import util
+from src import supervlad_compat
+from src.checkpoints import load_model_weights, load_trusted_checkpoint
 from src.fgsm_eval import get_normalized_bounds
 from torchvision import transforms as T
 
@@ -108,7 +109,7 @@ def validate_cuda_runtime(args):
 
 
 def build_parser():
-    parser = parser_module.build_parser()
+    parser = supervlad_compat.build_parser()
     parser.description = "Rank-aware adversarial training for SuperVLAD"
     parser.add_argument(
         "--resume_model_only",
@@ -202,7 +203,7 @@ def build_parser():
 
 def parse_arguments():
     args = build_parser().parse_args()
-    args = parser_module.validate_arguments(args)
+    args = supervlad_compat.validate_arguments(args)
 
     if args.adv_steps < 1:
         raise ValueError("--adv_steps must be at least 1")
@@ -425,7 +426,7 @@ def setup_datasets(args):
 
 
 def build_training_dataloader(args):
-    from dataloaders.train.GSVCitiesDataset import GSVCitiesDataset
+    GSVCitiesDataset = supervlad_compat.import_gsv_cities_dataset()
 
     batch_size = args.train_batch_size
     img_per_place = 4
@@ -454,7 +455,7 @@ def build_training_dataloader(args):
         min_img_per_place=min_img_per_place,
         random_sample_from_each_place=True,
         transform=train_transform,
-        base_path=gsv_cities_base_path,
+        base_path=f"{gsv_cities_base_path}/",
     )
 
     train_loader_config = {
@@ -533,7 +534,7 @@ def main():
 
         if args.resume:
             if args.resume_model_only:
-                util.resume_model(args, unwrap_model(model))
+                load_model_weights(unwrap_model(model), args.resume, map_location=args.device)
                 best_r5 = -1.0
                 start_epoch_num = 0
                 not_improved_num = 0
@@ -542,7 +543,14 @@ def main():
                     args.resume,
                 )
             else:
-                model, optimizer, best_r5, start_epoch_num, not_improved_num = util.resume_train(args, model, optimizer)
+                checkpoint = load_trusted_checkpoint(args.resume, map_location=args.device)
+                model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                best_r5 = checkpoint["best_r5"]
+                start_epoch_num = checkpoint["epoch_num"]
+                not_improved_num = checkpoint["not_improved_num"]
+                if args.resume.endswith("last_model.pth"):
+                    shutil.copy(args.resume.replace("last_model.pth", "best_model.pth"), args.save_dir)
                 logging.info("Resuming from epoch %d with best validation score %.1f", start_epoch_num, best_r5)
                 logging.info(
                     "Reused optimizer and early-stopping state from %s. "
@@ -792,7 +800,7 @@ def main():
         logging.info("Best validation score (R@1 + R@5): %.1f", best_r5)
         logging.info("Trained for %02d epochs, in total in %s", epoch_num + 1, str(datetime.now() - start_time)[:-7])
 
-        best_model_state_dict = util.load_trusted_checkpoint(
+        best_model_state_dict = load_trusted_checkpoint(
             join(args.save_dir, "best_model.pth"),
             map_location=args.device,
         )["model_state_dict"]

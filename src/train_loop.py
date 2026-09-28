@@ -13,11 +13,11 @@ from torch import Tensor, nn
 from tqdm import tqdm
 
 import test
-import util
 from .checkpoints import (
     apply_lr_schedule,
     capture_rng_state,
     copy_budget_checkpoints,
+    load_trusted_checkpoint,
     maybe_remove_old_checkpoint,
     save_checkpoint,
     restore_rng_state,
@@ -1018,7 +1018,7 @@ def run_training(
     logging.info("Best validation selection score: %.2f", best_score)
     if best_checkpoint_epochs.get("best") == -1:
         logging.warning("best_model.pth is the initial (un-fine-tuned) model: no epoch beat the initial validation.")
-    best_model_state_dict = util.load_trusted_checkpoint(
+    best_model_state_dict = load_trusted_checkpoint(
         join(args.save_dir, "best_model.pth"),
         map_location=args.device,
     )["model_state_dict"]

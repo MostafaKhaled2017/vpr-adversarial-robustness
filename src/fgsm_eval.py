@@ -22,7 +22,8 @@ SUPERVLAD_ROOT = REPO_ROOT / "third_party" / "SuperVLAD"
 if str(SUPERVLAD_ROOT) not in sys.path:
     sys.path.insert(0, str(SUPERVLAD_ROOT))
 
-import parser as parser_module
+from src import supervlad_compat
+from src.checkpoints import load_model_weights
 from src.faiss_utils import create_flat_l2_index, validate_faiss_runtime
 
 
@@ -32,7 +33,7 @@ IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32).view(1, 
 
 
 def build_parser():
-    parser = parser_module.build_parser()
+    parser = supervlad_compat.build_parser()
     parser.description = "FGSM robustness evaluation for visual geolocalization checkpoints"
     parser.add_argument(
         "--epsilons",
@@ -77,7 +78,7 @@ def build_parser():
 
 def parse_arguments():
     args = build_parser().parse_args()
-    args = parser_module.validate_arguments(args)
+    args = supervlad_compat.validate_arguments(args)
 
     if args.resume is None:
         raise ValueError("--resume is required for fgsm_eval.py")
@@ -388,11 +389,10 @@ def build_output_path(args):
 def main():
     args = parse_arguments()
 
-    global commons, datasets_ws, util, network
+    global commons, datasets_ws, network
 
     import commons
     import datasets_ws
-    import util
     from model import network
     start_time = datetime.now()
     recovered_results = {}
@@ -400,7 +400,7 @@ def main():
     if args.resume_eval_dir is not None:
         recovered_results, recovered_query_counts = load_logged_results(args.resume_eval_dir, args.recall_values)
         args.save_dir = str(Path(args.resume_eval_dir))
-        commons.setup_logging(args.save_dir, allow_existing=True)
+        supervlad_compat.setup_logging(args.save_dir, allow_existing=True)
     else:
         args.save_dir = join("test", args.save_dir, start_time.strftime("%Y-%m-%d_%H-%M-%S"))
         commons.setup_logging(args.save_dir)
@@ -416,7 +416,7 @@ def main():
     args.features_dim *= args.supervlad_clusters
 
     logging.info(f"Resuming model from {args.resume}")
-    model = util.resume_model(args, model)
+    load_model_weights(model, args.resume, map_location=args.device)
     model = torch.nn.DataParallel(model)
     model.eval()
 

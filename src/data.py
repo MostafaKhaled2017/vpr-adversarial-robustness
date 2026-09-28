@@ -10,6 +10,7 @@ from torch.utils.data.dataset import Subset
 from tqdm import tqdm
 
 import datasets_ws
+from . import supervlad_compat
 from .config import IMAGENET_MEAN_STD, TRAIN_CITIES
 
 
@@ -92,7 +93,7 @@ def make_train_sampler(dataset, batches_per_epoch, batch_size, shuffle_seed=None
 
 
 def build_training_dataloader(args) -> DataLoader:
-    from dataloaders.train.GSVCitiesDataset import GSVCitiesDataset
+    GSVCitiesDataset = supervlad_compat.import_gsv_cities_dataset()
     from torchvision import transforms as T
 
     image_size = tuple(args.train_resize)
@@ -114,7 +115,7 @@ def build_training_dataloader(args) -> DataLoader:
         min_img_per_place=4,
         random_sample_from_each_place=True,
         transform=train_transform,
-        base_path=gsv_cities_base_path,
+        base_path=f"{gsv_cities_base_path}/",
     )
 
     sampler = make_train_sampler(

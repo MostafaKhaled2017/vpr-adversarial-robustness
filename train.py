@@ -20,6 +20,7 @@ from src.config import create_summary_writer, validate_cuda_runtime
 from src.faiss_utils import validate_faiss_runtime
 from src.grad_checkpoint import checkpoint_backbone_blocks_in_place
 from src.losses import configure_metric_learning
+from src import supervlad_compat
 from src.train_loop import run_training
 
 
@@ -33,7 +34,7 @@ def main():
     args.save_dir = str(resolve_run_directory(args.log_dir, args.save_dir, args.run_dir, timestamp))
     args.tensorboard_dir = args.tensorboard_dir or str(Path(args.save_dir) / "tensorboard")
 
-    commons.setup_logging(args.save_dir, allow_existing=args.run_dir is not None)
+    supervlad_compat.setup_logging(args.save_dir, allow_existing=args.run_dir is not None)
     commons.make_deterministic(args.seed)
     configure_metric_learning()
 
