@@ -92,6 +92,7 @@ def load_step1(root: Path, batch_size: int, batches_per_epoch: int) -> Step1:
                  results(state.final))
 
 
+FULL = {"MPLC_V2_VAL_EVERY": "2"}  # full-length runs (2.1, 2.2 full, 2.3) validate every 2 epochs
 NOISE_SEEDS = ("1", "2")  # seed 0 is MPLC*'s Step 1 screen
 MPLC_SEEDS = ("0", "1")
 BASELINE_LRS = ("1e-5", "3e-6")  # preferred first
@@ -161,8 +162,8 @@ def plan_step2(
 
     # 2.1 MPLC* and its clean twin (the twin reads only freeze_te, lr and seed).
     for seed in MPLC_SEEDS:
-        plan.runs.append(Run("2.1", f"clean twin s{seed}", {**step1.star, "MPLC_V2_ARMS": "clean_ft", "MPLC_V2_SEED": seed}))
-        plan.runs.append(Run("2.1", f"MPLC* s{seed}", {**step1.star, "MPLC_V2_ARMS": "mplc", "MPLC_V2_SEED": seed}))
+        plan.runs.append(Run("2.1", f"clean twin s{seed}", {**step1.star, **FULL, "MPLC_V2_ARMS": "clean_ft", "MPLC_V2_SEED": seed}))
+        plan.runs.append(Run("2.1", f"MPLC* s{seed}", {**step1.star, **FULL, "MPLC_V2_ARMS": "mplc", "MPLC_V2_SEED": seed}))
 
     # 2.2 baselines: screens at Step 1's length, then each winner at full length. Only N* is
     # taken from MPLC*; lr and λ are the baseline's own.
@@ -194,7 +195,7 @@ def plan_step2(
             continue
         note = f" (grid edge: added λ {edge})" if edge else ""
         plan.decisions.append(f"{arm}: winner {_label(winner)}{note}")
-        full = {k: v for k, v in winner.items() if k not in screen}
+        full = {**{k: v for k, v in winner.items() if k not in screen}, **FULL}
         full_runs += [Run("2.2 full", f"{_label(full)} s{seed}", {**full, "MPLC_V2_SEED": seed}) for seed in baseline_seeds]
     plan.runs += full_runs
 
@@ -204,7 +205,7 @@ def plan_step2(
             plan.decisions.append(f"ablation {label}: covered by MPLC* itself ({key}={value})")
             continue
         plan.runs.append(Run("2.3", f"ablation: {label}",
-                             {**step1.star, "MPLC_V2_ARMS": "mplc", "MPLC_V2_SEED": "0", key: value}))
+                             {**step1.star, **FULL, "MPLC_V2_ARMS": "mplc", "MPLC_V2_SEED": "0", key: value}))
     return plan
 
 

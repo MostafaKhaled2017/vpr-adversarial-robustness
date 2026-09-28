@@ -267,6 +267,9 @@ class DriverTests(unittest.TestCase):
             self.assertIn("--save_dir=mplc_v2_supervlad_clean_ft_s0 ", commands[2] + " ")
             self.assertIn("--save_dir=mplc_v2_supervlad_mplc_mixlinf_s0 ", commands[3] + " ")
             self.assertNotIn("--num_epochs=12", commands[3])  # full length: the recipe's 100
+            self.assertIn("--val_every=2", commands[2])
+            self.assertIn("--val_every=2", commands[3])
+            self.assertIn("--val_every=2", commands[-1])
             self.assertIn("--save_dir=mplc_v2_supervlad_plain_at_ep12_s0", commands[6])
             self.assertIn("--val_every=3", commands[6])
             self.assertFalse((Path(s2) / step2.CONFIG_NAME).exists())
