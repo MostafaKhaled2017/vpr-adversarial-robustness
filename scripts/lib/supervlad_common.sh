@@ -29,10 +29,11 @@
 # baselines, ablations and Step 4. It is deliberately not an environment override. The
 # launchers refuse to reuse or resume a run trained at another size, and the Step 1 sweep
 # records it in sweep_config.yaml. Change it only before any sprint 5 run exists.
-SUPERVLAD_TRAIN_BATCH_SIZE=24
+# 20 is what the Step 1 sweep (logs/mplc_v2_step1, 2026-09-25/27) ran at.
+SUPERVLAD_TRAIN_BATCH_SIZE=20
 
 # Training batches per epoch, fixed the same way as the batch size. An epoch is
-# 24 x 200 = 4,800 places. Step 1 tunes lr, depth and screen length in these epochs, so every
+# 20 x 200 = 4,000 places. Step 1 tunes lr, depth and screen length in these epochs, so every
 # later run must use the same epoch.
 SUPERVLAD_BATCHES_PER_EPOCH=200
 

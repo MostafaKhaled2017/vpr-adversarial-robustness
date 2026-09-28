@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 TRAIN_SCRIPT = REPO_ROOT / "scripts" / "mplc_v2_train.sh"
 STEP1_SCRIPT = REPO_ROOT / "scripts" / "mplc_v2_step1.sh"
 EPOCHS = 12
-SIZE = ["--batch-size", "24", "--batches-per-epoch", "200", "--val-every", "3"]
+SIZE = ["--batch-size", "20", "--batches-per-epoch", "200", "--val-every", "3"]
 
 
 def record(epoch, clean, robust, budgets=(1.0, 3.0, 5.0)):
@@ -264,18 +264,18 @@ class LauncherResumableModeTests(unittest.TestCase):
             (run_dir / "run_status.json").write_text(json.dumps({"state": "completed"}))
             self.assertEqual(self.dry_run(root).returncode, 1)
 
-            (run_dir / "training_config.yaml").write_text("train_batch_size: 24\nbatches_per_epoch: 400\n")
+            (run_dir / "training_config.yaml").write_text("train_batch_size: 20\nbatches_per_epoch: 400\n")
             result = self.dry_run(root)
             self.assertEqual(result.returncode, 1, result.stdout)
             self.assertIn("trained with batches_per_epoch 400", result.stdout)
 
-            (run_dir / "training_config.yaml").write_text("train_batch_size: 24\nbatches_per_epoch: 200\n")
+            (run_dir / "training_config.yaml").write_text("train_batch_size: 20\nbatches_per_epoch: 200\n")
             self.assertIn("=== SKIP", self.dry_run(root).stdout)
 
     def test_recipe_uses_the_single_batch_size(self):
         with tempfile.TemporaryDirectory() as tmp:
             result = self.dry_run(tmp)
-        self.assertIn("--batch_size=24", result.stdout)
+        self.assertIn("--batch_size=20", result.stdout)
         self.assertNotIn("--batch_size=16", result.stdout)
         self.assertIn("--batches_per_epoch=200", result.stdout)
         self.assertNotIn("--batches_per_epoch=400", result.stdout)
