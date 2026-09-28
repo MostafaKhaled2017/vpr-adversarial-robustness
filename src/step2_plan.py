@@ -206,3 +206,134 @@ def plan_step2(
         plan.runs.append(Run("2.3", f"ablation: {label}",
                              {**step1.star, "MPLC_V2_ARMS": "mplc", "MPLC_V2_SEED": "0", key: value}))
     return plan
+
+
+def ensure_config(root: Path, step1: Step1, step1_root: Path, freeze: bool = True) -> None:
+    """Record the Step 1 result Step 2 is planned from; refuse a later call from another one."""
+    path = root / CONFIG_NAME
+    wanted = {"mplc_star": step1.star, "mplc_star_screen_robust": step1.star_screen.robust,
+              "step1_noise": step1.noise, "screen_epochs": step1.epochs,
+              "screen_val_every": step1.val_every, "budget": step1.budget}
+    if path.is_file():
+        stored = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        stored = {key: stored.get(key) for key in wanted}
+        if stored != wanted:
+            raise SystemExit(
+                f"{path} was planned from another Step 1 result (stored {stored}, now {wanted}); "
+                "restore Step 1 or use a new STEP2_ROOT"
+            )
+        return
+    if not freeze:
+        return
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL).strip()
+    except (OSError, subprocess.CalledProcessError):
+        revision = "unknown"
+    content = dict(wanted, step1_root=str(step1_root), git_revision=revision,
+                   created=datetime.now().isoformat(timespec="seconds"))
+    path.write_text(yaml.safe_dump(content, sort_keys=False), encoding="utf-8")
+
+
+def results_reader(root: Path, budget: float):
+    return lambda env: sweep.read_screen(root / run_name(env), budget)
+
+
+TABLE_FIELDS = [
+    "stage", "run", "state", "epochs_run", "initial_clean_r1", "epoch", "clean_r1", "clean_drop",
+    "robust_score", "delta_vs_preferred", "noise_label", "hours", "run_dir",
+]
+
+
+def table_rows(plan: Plan, results, root: Path) -> List[Dict[str, object]]:
+    rows = []
+    for run in plan.runs:
+        r = results(run.env)
+        reference = results(run.preferred) if run.preferred else None
+        delta = None
+        if r is not None and not r.is_loss and reference is not None and not reference.is_loss:
+            delta = r.robust - reference.robust
+        rows.append({
+            "stage": run.stage,
+            "run": run.label,
+            "state": "pending" if r is None else r.state,
+            "epochs_run": "" if r is None else r.epochs_run,
+            "initial_clean_r1": sweep._fmt(r and r.initial_clean),
+            "epoch": "" if r is None or r.epoch is None else r.epoch,
+            "clean_r1": sweep._fmt(r and r.clean),
+            "clean_drop": sweep._fmt(
+                None if r is None or r.clean is None or r.initial_clean is None else r.initial_clean - r.clean
+            ),
+            "robust_score": sweep._fmt(r and r.robust),
+            "delta_vs_preferred": sweep._fmt(delta, "+.2f"),
+            "noise_label": (
+                "" if run.preferred is None
+                else "reference" if run.env == run.preferred
+                else "loss" if r is not None and r.is_loss
+                else "" if plan.noise is None
+                else sweep.label(delta, plan.noise)
+            ),
+            "hours": sweep._fmt(r and r.hours, ".1f"),
+            "run_dir": str(root / run_name(run.env)),
+        })
+    return rows
+
+
+def write_summary(plan: Plan, rows, out: Path, step1: Step1) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    with (out / "runs.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=TABLE_FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
+    star = " ".join(f"{k}={v}" for k, v in step1.star.items())
+    shown = TABLE_FIELDS[:-1]
+    lines = [
+        "# Step 2 runs", "",
+        f"- MPLC\\*: `{star}`",
+        f"- Score: robust score of the budget-{step1.budget:g} checkpoint.",
+        *[f"- {decision}" for decision in plan.decisions],
+        *([f"- **Stopped:** {plan.stop_reason}."] if plan.stop_reason else []),
+        "", "| " + " | ".join(shown) + " |", "|" + "---|" * len(shown),
+        *["| " + " | ".join(str(row[f]) for f in shown) + " |" for row in rows],
+    ]
+    (out / "runs.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def env_assignments(env: Mapping[str, str]) -> str:
+    return " ".join(f"{key}={value}" for key, value in env.items())
+
+
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("command", choices=("next", "summarize"))
+    parser.add_argument("--root", type=Path, required=True, help="Step 2 run directory (STEP2_ROOT).")
+    parser.add_argument("--step1-root", type=Path, required=True, help="Finished Step 1 sweep (STEP1_ROOT).")
+    parser.add_argument("--batch-size", type=int, required=True, help="SUPERVLAD_TRAIN_BATCH_SIZE.")
+    parser.add_argument("--batches-per-epoch", type=int, required=True, help="SUPERVLAD_BATCHES_PER_EPOCH.")
+    parser.add_argument("--baseline-seeds", nargs="+", default=["0"], help="Seeds of the baselines' full runs.")
+    parser.add_argument("--no-freeze", action="store_true", help="Do not write step2_config.yaml.")
+    args = parser.parse_args(argv)
+
+    try:
+        step1 = load_step1(args.step1_root, args.batch_size, args.batches_per_epoch)
+        ensure_config(args.root, step1, args.step1_root, freeze=not args.no_freeze)
+    except SystemExit as stop:
+        if args.command != "next":
+            raise
+        print(f"STOP {stop}")
+        return
+    results = results_reader(args.root, step1.budget)
+    plan = plan_step2(step1, results, args.baseline_seeds)
+    write_summary(plan, table_rows(plan, results, args.root), args.root / SUMMARY_DIR, step1)
+    if args.command == "summarize":
+        print(f"Tables written to {args.root / SUMMARY_DIR}")
+        return
+    pending = [run for run in plan.runs if results(run.env) is None]
+    for run in pending:
+        print(env_assignments(run.env))
+    if not pending:
+        print(f"STOP {plan.stop_reason}" if plan.stop_reason else "DONE")
+
+
+if __name__ == "__main__":
+    main()

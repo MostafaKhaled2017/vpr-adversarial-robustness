@@ -195,5 +195,61 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(sum("covered by MPLC*" in d for d in plan.decisions), 2)
 
 
+SIZE = ["--batch-size", str(BATCH), "--batches-per-epoch", "200"]
+
+
+class CliTests(unittest.TestCase):
+    def test_config_frozen_on_first_real_call(self):
+        with tempfile.TemporaryDirectory() as s1, tempfile.TemporaryDirectory() as s2:
+            finish_step1(s1)
+            args = ["next", "--root", s2, "--step1-root", s1, *SIZE]
+            step2.main(args + ["--no-freeze"])
+            self.assertFalse((Path(s2) / step2.CONFIG_NAME).exists())
+            step2.main(args)
+            self.assertIn("MPLC_V2_ATTACK_MIX: linf", (Path(s2) / step2.CONFIG_NAME).read_text())
+            step1 = step2.load_step1(Path(s1), BATCH, 200)
+            for changed in (dataclasses.replace(step1, star=dict(step1.star, MPLC_V2_LR="3e-6")),
+                            dataclasses.replace(step1, star_screen=sweep.ScreenResult("completed", 12, 90.0, 3, 89.0, 49.0))):
+                with self.subTest(changed=changed), self.assertRaisesRegex(SystemExit, "another Step 1 result"):
+                    step2.ensure_config(Path(s2), changed, Path(s1))
+
+    def test_next_prints_pending_runs_then_stop_when_step1_is_missing(self):
+        import contextlib
+        import io
+
+        with tempfile.TemporaryDirectory() as s1, tempfile.TemporaryDirectory() as s2:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                step2.main(["next", "--root", s2, "--step1-root", s1, *SIZE, "--no-freeze"])
+            self.assertTrue(out.getvalue().startswith("STOP "), out.getvalue())
+
+            finish_step1(s1)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                step2.main(["next", "--root", s2, "--step1-root", s1, *SIZE, "--no-freeze"])
+            lines = out.getvalue().splitlines()
+            self.assertEqual(lines[0], "MPLC_V2_ATTACK_MIX=linf MPLC_V2_FREEZE_TE=8 MPLC_V2_LR=1e-5 "
+                                       "MPLC_V2_ALIGN_WEIGHT=1.0 MPLC_V2_NUM_EPOCHS=12 MPLC_V2_VAL_EVERY=3 "
+                                       "MPLC_V2_ARMS=mplc MPLC_V2_SEED=1")
+            self.assertEqual(len(lines), 2 + 4 + 6 + 3)  # mix linf already covers one ablation
+
+    def test_table_labels_screens_against_the_preferred_one(self):
+        scores = screens(**{"plain_at 3e-6": 43.0})
+        plan = step2.plan_step2(STEP1, fake(scores))
+        rows = {row["run"]: row for row in step2.table_rows(plan, fake(scores), Path("r"))}
+        self.assertEqual(rows["plain_at lr 1e-5"]["noise_label"], "reference")
+        self.assertEqual((rows["plain_at lr 3e-6"]["delta_vs_preferred"], rows["plain_at lr 3e-6"]["noise_label"]),
+                         ("+3.00", "real gain"))
+        self.assertEqual(rows["MPLC* screen s1"]["robust_score"], "41.00")
+        self.assertEqual(rows["MPLC* s0"]["state"], "pending")
+        self.assertEqual(rows["MPLC* s0"]["noise_label"], "")
+        with tempfile.TemporaryDirectory() as tmp:
+            step2.write_summary(plan, list(rows.values()), Path(tmp), STEP1)
+            text = (Path(tmp) / "runs.md").read_text()
+            self.assertIn("2.0 noise = 2.00", text)
+            self.assertIn("plain_at: winner plain_at lr 3e-6", text)
+            self.assertTrue((Path(tmp) / "runs.csv").is_file())
+
+
 if __name__ == "__main__":
     unittest.main()
