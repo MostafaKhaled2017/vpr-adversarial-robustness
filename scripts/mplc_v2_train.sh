@@ -31,6 +31,9 @@
 #   MPLC_V2_DEFENSE_LOSS  defense objective (mplc arm): listwise | hinge (default: listwise)
 #   MPLC_V2_MULTI_POSITIVE  1 = target every positive, 0 = hardest one only (mplc arm)
 #                                                               (default: 1)
+#   MPLC_V2_NUM_WORKERS   data-loader processes; 0 loads in the main process (needed
+#                         where /dev/shm is small). Not named in the save_dir: it does
+#                         not change what is trained      (default: unset = train.py's)
 #   MPLC_V2_RUN_ROOT      resumable mode: each run lives in the fixed directory
 #                         <root>/<save_dir name>; a stopped run resumes from its last
 #                         checkpoint, a finished one is skipped   (default: unset)
@@ -78,6 +81,7 @@ VAL_EVERY=${MPLC_V2_VAL_EVERY:-1}
 ATTACK_MIX=${MPLC_V2_ATTACK_MIX:-all}
 DEFENSE_LOSS=${MPLC_V2_DEFENSE_LOSS:-listwise}
 MULTI_POSITIVE=${MPLC_V2_MULTI_POSITIVE:-1}
+NUM_WORKERS=${MPLC_V2_NUM_WORKERS:-}
 RUN_ROOT=${MPLC_V2_RUN_ROOT:-}
 DRY_RUN=${MPLC_V2_DRY_RUN:-0}
 
@@ -203,6 +207,7 @@ fi
 [ "${LR}" = "1e-5" ] || COMMON_FLAGS+=(--lr="${LR}")
 [ "${NUM_EPOCHS}" = "100" ] || COMMON_FLAGS+=(--num_epochs="${NUM_EPOCHS}")
 [ "${VAL_EVERY}" = "1" ] || COMMON_FLAGS+=(--val_every="${VAL_EVERY}")
+[ -z "${NUM_WORKERS}" ] || COMMON_FLAGS+=(--num_workers="${NUM_WORKERS}")
 
 for arm in ${ARMS}; do
   case "${arm}" in

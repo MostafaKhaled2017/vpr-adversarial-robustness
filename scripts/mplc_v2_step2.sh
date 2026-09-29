@@ -36,6 +36,8 @@
 #   STEP2_ROOT            Step 2 run directory               (default: logs/mplc_v2_step2)
 #   STEP2_BASELINE_SEEDS  seeds of the baselines' full runs  (default: 0; "0 1" adds seed 1)
 #   STEP2_MAX_GB          disk limit of one stage, GB        (default: 25, i.e. 3 runs)
+#   STEP2_NUM_WORKERS     data-loader processes per run; 0 where /dev/shm is small
+#                                                            (default: unset = 4 train, 8 val)
 #   PYTHON               python interpreter                 (default: python)
 # Other MPLC_V2_* variables are ignored: Step 2 sets every launcher setting itself.
 #
@@ -61,6 +63,9 @@ unset "${!MPLC_V2_@}"
 PYTHON=${PYTHON:-python}
 STEP1=${STEP1_ROOT:-logs/mplc_v2_step1}
 ROOT=${STEP2_ROOT:-logs/mplc_v2_step2}
+# Passed on as MPLC_V2_NUM_WORKERS: the unset above clears every MPLC_V2_* variable.
+WORKERS_ENV=()
+[ -z "${STEP2_NUM_WORKERS:-}" ] || WORKERS_ENV=(MPLC_V2_NUM_WORKERS="${STEP2_NUM_WORKERS}")
 MODE=run
 
 case "${1:-}" in
@@ -68,7 +73,7 @@ case "${1:-}" in
   --dry-run) MODE=dry ;;
   --summary-only) MODE=summary ;;
   -h | --help)
-    sed -n '2,47p' "$0"
+    sed -n '2,49p' "$0"
     exit 0
     ;;
   *)
@@ -136,7 +141,7 @@ while true; do
     echo "=== Pending runs, in order:"
     while read -r assignments; do
       # shellcheck disable=SC2086 # the assignments are separate VAR=value words
-      env ${assignments} MPLC_V2_RUN_ROOT="${ROOT}" MPLC_V2_DRY_RUN=1 PYTHON="${PYTHON}" scripts/mplc_v2_train.sh
+      env ${assignments} "${WORKERS_ENV[@]}" MPLC_V2_RUN_ROOT="${ROOT}" MPLC_V2_DRY_RUN=1 PYTHON="${PYTHON}" scripts/mplc_v2_train.sh
     done <<<"${next}"
     exit 0
   fi
@@ -158,5 +163,5 @@ while true; do
   fi
   echo "=== Step 2 run: ${assignments}"
   # shellcheck disable=SC2086 # the assignments are separate VAR=value words
-  env ${assignments} MPLC_V2_RUN_ROOT="${ROOT}" PYTHON="${PYTHON}" scripts/mplc_v2_train.sh
+  env ${assignments} "${WORKERS_ENV[@]}" MPLC_V2_RUN_ROOT="${ROOT}" PYTHON="${PYTHON}" scripts/mplc_v2_train.sh
 done

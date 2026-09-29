@@ -127,7 +127,8 @@ def build_training_dataloader(args) -> DataLoader:
     return DataLoader(
         dataset=train_dataset,
         batch_size=args.train_batch_size,
-        num_workers=4,
+        # --num_workers 0 loads in the main process, for machines with a small /dev/shm.
+        num_workers=min(4, args.num_workers),
         drop_last=False,
         pin_memory=True,
         sampler=sampler,
