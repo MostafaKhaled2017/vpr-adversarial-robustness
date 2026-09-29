@@ -15,6 +15,17 @@
 # any point and rerun to resume: finished runs are skipped, a stopped run continues from
 # its last epoch, and baseline winners are recomputed from the finished screens.
 #
+# Stages: a finished run holds ~7 GB of checkpoints at freeze_te=0, so Step 2 does not fit
+# on disk at once. A new run starts only while STEP2_ROOT plus RUN_GB stays within
+# STEP2_MAX_GB (a run already on disk always continues, so a stopped run resumes); otherwise
+# the driver exits 4. Then zip the finished runs' *.pth files into STEP2_ROOT/_download/,
+# download the zips from JupyterLab, delete them from the server and rerun to start the next
+# stage (docs/reports/sprint5/step2_stage_commands.md). Zips left in _download/ count toward
+# STEP2_MAX_GB. Keep each run directory and its other files: the planner reads
+# run_status.json and validation_recalls.jsonl, and a missing directory is trained again.
+# Never zip a checkpoint of an unfinished run: it resumes from last_model.pth. The driver
+# itself never removes a file.
+#
 # Usage:
 #   scripts/mplc_v2_step2.sh                 # run or resume Step 2
 #   scripts/mplc_v2_step2.sh --dry-run       # print the pending runs' commands only
@@ -24,12 +35,13 @@
 #   STEP1_ROOT            finished Step 1 sweep              (default: logs/mplc_v2_step1)
 #   STEP2_ROOT            Step 2 run directory               (default: logs/mplc_v2_step2)
 #   STEP2_BASELINE_SEEDS  seeds of the baselines' full runs  (default: 0; "0 1" adds seed 1)
-#   PYTHON                python interpreter                 (default: python)
+#   STEP2_MAX_GB          disk limit of one stage, GB        (default: 25, i.e. 3 runs)
+#   PYTHON               python interpreter                 (default: python)
 # Other MPLC_V2_* variables are ignored: Step 2 sets every launcher setting itself.
 #
 # Exit codes: 0 done; 1 a run failed (see its info.log, rerun to resume); 2 bad option;
 # 3 stopped: Step 1 is not finished or changed since Step 2 started, or a 2.0 noise screen
-# is a loss (reported after every other run has trained).
+# is a loss (reported after every other run has trained); 4 stage full (see Stages).
 #
 # Outputs in ${STEP2_ROOT}/summary/, rebuilt before every run and at the end: runs.md
 # (decisions and one row per run) and runs.csv.
@@ -56,7 +68,7 @@ case "${1:-}" in
   --dry-run) MODE=dry ;;
   --summary-only) MODE=summary ;;
   -h | --help)
-    sed -n '2,35p' "$0"
+    sed -n '2,47p' "$0"
     exit 0
     ;;
   *)
@@ -79,6 +91,16 @@ PLAN_FLAGS=(
 plan() {
   "${PYTHON}" -m src.step2_plan "$1" "${PLAN_FLAGS[@]}"
 }
+
+# The run directory's name for one line of `plan next` (VAR=value words).
+run_name() {
+  "${PYTHON}" -c 'import sys; from src.step2_plan import run_name; print(run_name(dict(a.split("=", 1) for a in sys.argv[1:])))' "$@"
+}
+
+# Room one new run needs, GB: five 1.17 GB checkpoints, the two initial models and the
+# temporary file of a checkpoint being saved.
+RUN_GB=8
+MAX_GB=${STEP2_MAX_GB:-25}
 
 if [ "${MODE}" = "summary" ]; then
   plan summarize
@@ -125,6 +147,15 @@ while true; do
     exit 1
   fi
   previous="${assignments}"
+  # shellcheck disable=SC2086 # the assignments are separate VAR=value words
+  if [ ! -d "${ROOT}/$(run_name ${assignments})" ]; then
+    used_gb=$(($(du -sB1 "${ROOT}" | cut -f1) / 1000000000))
+    if [ $((used_gb + RUN_GB)) -gt "${MAX_GB}" ]; then
+      echo "=== Stage full: ${ROOT} holds ${used_gb} GB; a new run needs ${RUN_GB} GB of the ${MAX_GB} GB limit." >&2
+      echo "    Zip the finished runs' *.pth files, download and delete the zips (keep the run directories), then rerun." >&2
+      exit 4
+    fi
+  fi
   echo "=== Step 2 run: ${assignments}"
   # shellcheck disable=SC2086 # the assignments are separate VAR=value words
   env ${assignments} MPLC_V2_RUN_ROOT="${ROOT}" PYTHON="${PYTHON}" scripts/mplc_v2_train.sh
