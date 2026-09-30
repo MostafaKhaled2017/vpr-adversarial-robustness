@@ -98,8 +98,8 @@ def numpy_collate(batch):
 
 
 class PipeDataLoader(DataLoader):
-    """A DataLoader whose workers send batches through a pipe instead of /dev/shm, which is
-    too small on some servers. Yields the same tensors, bit for bit, as a plain DataLoader."""
+    """A DataLoader whose workers send batches through a pipe instead of /dev/shm (--pipe_loader),
+    for servers where /dev/shm is too small. Yields the same tensors, bit for bit, as a plain DataLoader."""
 
     def __init__(self, *args, **kwargs):
         kwargs.pop("pin_memory", None)  # pinning only applies to tensors, not numpy batches
@@ -108,6 +108,11 @@ class PipeDataLoader(DataLoader):
     def __iter__(self):
         for batch in super().__iter__():
             yield tuple(torch.from_numpy(array) for array in batch)
+
+
+def loader_class(args):
+    """PipeDataLoader with --pipe_loader (a small /dev/shm), else the plain DataLoader."""
+    return PipeDataLoader if getattr(args, "pipe_loader", False) else DataLoader
 
 
 def build_training_dataloader(args) -> DataLoader:
@@ -142,12 +147,13 @@ def build_training_dataloader(args) -> DataLoader:
         args.train_batch_size,
         shuffle_seed=args.seed if args.shuffle else None,
     )
-    return PipeDataLoader(
+    return loader_class(args)(
         dataset=train_dataset,
         batch_size=args.train_batch_size,
         # The worker count changes the augmentation draws: 4 is the reference.
         num_workers=min(4, args.num_workers),
         drop_last=False,
+        pin_memory=True,
         sampler=sampler,
         shuffle=False,
     )

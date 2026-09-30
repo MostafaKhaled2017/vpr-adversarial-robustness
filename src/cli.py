@@ -42,6 +42,12 @@ def build_parser():
         help="Training image size. Defaults to --resize.",
     )
     parser.add_argument(
+        "--pipe_loader",
+        action="store_true",
+        help="Send data-loader batches through a pipe instead of /dev/shm (servers with a small "
+        "/dev/shm). Same batches, slower.",
+    )
+    parser.add_argument(
         "--weight_decay",
         type=float,
         default=None,

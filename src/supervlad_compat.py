@@ -45,14 +45,16 @@ def setup_logging(save_dir, allow_existing=False):
     return commons.setup_logging(save_dir)
 
 
-def test(*args, **kwargs):
-    """Upstream test.test, with loaders that do not use /dev/shm (src.data.PipeDataLoader)."""
+def test(args, *rest, **kwargs):
+    """Upstream test.test; with --pipe_loader its loaders avoid /dev/shm (src.data.PipeDataLoader)."""
     import test as test_module
 
     from .data import PipeDataLoader
 
+    if not getattr(args, "pipe_loader", False):
+        return test_module.test(args, *rest, **kwargs)
     with mock.patch.object(test_module, "DataLoader", PipeDataLoader):
-        return test_module.test(*args, **kwargs)
+        return test_module.test(args, *rest, **kwargs)
 
 
 def import_gsv_cities_dataset():
