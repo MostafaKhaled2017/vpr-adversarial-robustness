@@ -34,6 +34,8 @@
 #   MPLC_V2_NUM_WORKERS   data-loader processes (training uses at most 4). A training
 #                         count other than 4 changes the augmentation draws, yet is not
 #                         named in the save_dir: leave unset (default: unset = train.py's)
+#   MPLC_V2_STOP_BY       Unix time passed on as --stop_by: a run pauses (exit code 5)
+#                         rather than start an epoch that could end after it (default: unset)
 #   MPLC_V2_RUN_ROOT      resumable mode: each run lives in the fixed directory
 #                         <root>/<save_dir name>; a stopped run resumes from its last
 #                         checkpoint, a finished one is skipped   (default: unset)
@@ -82,6 +84,7 @@ ATTACK_MIX=${MPLC_V2_ATTACK_MIX:-all}
 DEFENSE_LOSS=${MPLC_V2_DEFENSE_LOSS:-listwise}
 MULTI_POSITIVE=${MPLC_V2_MULTI_POSITIVE:-1}
 NUM_WORKERS=${MPLC_V2_NUM_WORKERS:-}
+STOP_BY=${MPLC_V2_STOP_BY:-}
 RUN_ROOT=${MPLC_V2_RUN_ROOT:-}
 DRY_RUN=${MPLC_V2_DRY_RUN:-0}
 
@@ -208,6 +211,7 @@ fi
 [ "${NUM_EPOCHS}" = "100" ] || COMMON_FLAGS+=(--num_epochs="${NUM_EPOCHS}")
 [ "${VAL_EVERY}" = "1" ] || COMMON_FLAGS+=(--val_every="${VAL_EVERY}")
 [ -z "${NUM_WORKERS}" ] || COMMON_FLAGS+=(--num_workers="${NUM_WORKERS}")
+[ -z "${STOP_BY}" ] || COMMON_FLAGS+=(--stop_by="${STOP_BY}")
 
 for arm in ${ARMS}; do
   case "${arm}" in

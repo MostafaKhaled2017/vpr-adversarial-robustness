@@ -23,6 +23,8 @@ from src.losses import configure_metric_learning
 from src import supervlad_compat
 from src.train_loop import run_training
 
+PAUSED_EXIT_CODE = 5
+
 
 def main():
     args = parse_arguments()
@@ -102,6 +104,9 @@ def main():
         raise
     finally:
         writer.close()
+    if outcome["state"] == "paused":
+        # Tells the Step 2 driver the session's time is up; the run resumes from last_model.pth.
+        raise SystemExit(PAUSED_EXIT_CODE)
 
 
 if __name__ == "__main__":

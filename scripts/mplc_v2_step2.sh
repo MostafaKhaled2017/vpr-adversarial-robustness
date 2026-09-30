@@ -26,14 +26,24 @@
 # Never zip a checkpoint of an unfinished run: it resumes from last_model.pth. The driver
 # itself never removes a file.
 #
+# Sessions: a real run needs STEP2_STOP_AT, the time by which every process must be gone
+# (the server's clock). The driver reruns itself under `timeout`, which sends Ctrl-C to it,
+# train.py and the data-loader workers 10 min before STEP2_STOP_AT and SIGKILL 5 min before.
+# That is the guarantee; before it, train.py pauses cleanly rather than start an epoch that,
+# with the final test, could end after STEP2_STOP_AT - 15 min, and the driver starts no run
+# with less than 45 min left before then. Rerun with the next session's STEP2_STOP_AT to
+# resume; a run killed or paused mid-way continues from its last epoch.
+#
 # Usage:
-#   scripts/mplc_v2_step2.sh                 # run or resume Step 2
+#   STEP2_STOP_AT="2026-10-01 07:30" scripts/mplc_v2_step2.sh   # run or resume Step 2
 #   scripts/mplc_v2_step2.sh --dry-run       # print the pending runs' commands only
 #   scripts/mplc_v2_step2.sh --summary-only  # rebuild the tables, train nothing
 #
 # Environment overrides:
 #   STEP1_ROOT            finished Step 1 sweep              (default: logs/mplc_v2_step1)
 #   STEP2_ROOT            Step 2 run directory               (default: logs/mplc_v2_step2)
+#   STEP2_STOP_AT         end of this session, any `date -d` time, e.g. "2026-10-01 07:30"
+#                         (required for a real run; see Sessions)
 #   STEP2_BASELINE_SEEDS  seeds of the baselines' full runs  (default: 0; "0 1" adds seed 1)
 #   STEP2_MAX_GB          disk limit of one stage, GB        (default: 25, i.e. 3 runs)
 #   STEP2_NUM_WORKERS     data-loader processes per run; leave unset: another training count
@@ -41,9 +51,10 @@
 #   PYTHON               python interpreter                 (default: python)
 # Other MPLC_V2_* variables are ignored: Step 2 sets every launcher setting itself.
 #
-# Exit codes: 0 done; 1 a run failed (see its info.log, rerun to resume); 2 bad option;
-# 3 stopped: Step 1 is not finished or changed since Step 2 started, or a 2.0 noise screen
-# is a loss (reported after every other run has trained); 4 stage full (see Stages).
+# Exit codes: 0 done; 1 a run failed (see its info.log, rerun to resume); 2 bad option or
+# STEP2_STOP_AT; 3 stopped: Step 1 is not finished or changed since Step 2 started, or a 2.0
+# noise screen is a loss (reported after every other run has trained); 4 stage full (see
+# Stages); 5 session over (see Sessions); 124 or 137 killed by the session's timeout.
 #
 # Outputs in ${STEP2_ROOT}/summary/, rebuilt before every run and at the end: runs.md
 # (decisions and one row per run) and runs.csv.
@@ -73,7 +84,7 @@ case "${1:-}" in
   --dry-run) MODE=dry ;;
   --summary-only) MODE=summary ;;
   -h | --help)
-    sed -n '2,49p' "$0"
+    sed -n '2,60p' "$0"
     exit 0
     ;;
   *)
@@ -106,6 +117,36 @@ run_name() {
 # temporary file of a checkpoint being saved.
 RUN_GB=8
 MAX_GB=${STEP2_MAX_GB:-25}
+
+# Session deadline (see Sessions), all in Unix seconds.
+RUN_START_SECONDS=$((45 * 60))
+if [ "${MODE}" = "run" ]; then
+  if [ -z "${STEP2_STOP_AT:-}" ]; then
+    echo "Set STEP2_STOP_AT to the time this session must end, e.g. STEP2_STOP_AT=\"2026-10-01 07:30\"." >&2
+    exit 2
+  fi
+  if ! stop_at=$(date -d "${STEP2_STOP_AT}" +%s 2>/dev/null); then
+    echo "STEP2_STOP_AT is not a time: ${STEP2_STOP_AT}" >&2
+    exit 2
+  fi
+  interrupt_at=$((stop_at - 10 * 60))
+  stop_by=$((stop_at - 15 * 60))
+  if [ -z "${_STEP2_UNDER_TIMEOUT:-}" ]; then
+    now=$(date +%s)
+    if [ $((stop_at - now)) -lt 3600 ]; then
+      echo "STEP2_STOP_AT $(date -d "@${stop_at}" '+%F %T') is less than 1 h away: nothing would train." >&2
+      exit 2
+    fi
+    echo "=== Session ends at $(date -d "@${stop_at}" '+%F %T %Z') (STEP2_STOP_AT=\"${STEP2_STOP_AT}\")"
+    echo "    no run starts after       $(date -d "@$((stop_by - RUN_START_SECONDS))" '+%F %T')"
+    echo "    no epoch ends after       $(date -d "@${stop_by}" '+%F %T') (then the final test)"
+    echo "    Ctrl-C to every process   $(date -d "@${interrupt_at}" '+%F %T')"
+    echo "    SIGKILL to every process  $(date -d "@$((stop_at - 5 * 60))" '+%F %T')"
+    # timeout signals its whole process group: this driver, train.py and its workers. The
+    # resolved time is passed on, so a relative STEP2_STOP_AT ("+11 hours") is not re-read.
+    STEP2_STOP_AT="@${stop_at}" _STEP2_UNDER_TIMEOUT=1 exec timeout -s INT -k 5m "$((interrupt_at - now))s" "${SCRIPT_DIR}/mplc_v2_step2.sh" "$@"
+  fi
+fi
 
 if [ "${MODE}" = "summary" ]; then
   plan summarize
@@ -161,7 +202,18 @@ while true; do
       exit 4
     fi
   fi
+  if [ $(($(date +%s) + RUN_START_SECONDS)) -gt "${stop_by}" ]; then
+    echo "=== Session over: under 45 min left before $(date -d "@${stop_by}" '+%F %T'). Rerun in the next session." >&2
+    exit 5
+  fi
   echo "=== Step 2 run: ${assignments}"
+  status=0
   # shellcheck disable=SC2086 # the assignments are separate VAR=value words
-  env ${assignments} "${WORKERS_ENV[@]}" MPLC_V2_RUN_ROOT="${ROOT}" PYTHON="${PYTHON}" scripts/mplc_v2_train.sh
+  env ${assignments} "${WORKERS_ENV[@]}" MPLC_V2_RUN_ROOT="${ROOT}" MPLC_V2_STOP_BY="${stop_by}" PYTHON="${PYTHON}" \
+    scripts/mplc_v2_train.sh || status=$?
+  if [ "${status}" -eq 5 ]; then
+    echo "=== Session over: the run paused before $(date -d "@${stop_by}" '+%F %T'). Rerun in the next session." >&2
+    exit 5
+  fi
+  [ "${status}" -eq 0 ] || exit "${status}"
 done

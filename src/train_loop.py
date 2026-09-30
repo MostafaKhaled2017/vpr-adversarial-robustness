@@ -2,6 +2,7 @@ import csv
 import json
 import logging
 import math
+import time
 from dataclasses import replace
 from datetime import datetime
 from os.path import exists, join
@@ -218,6 +219,30 @@ def collapse_aborts(args, collapse, epoch_num: int) -> bool:
         collapse["knn_overlap"],
         abort_threshold,
         epoch_num + 1,
+    )
+    return True
+
+
+# Room kept after the last epoch of a session for the final test (~6 min on MSLS).
+FINAL_TEST_RESERVE_SECONDS = 15 * 60
+
+
+def pauses_for_deadline(args, slowest_epoch_seconds: float, now: Optional[float] = None) -> bool:
+    """Whether --stop_by leaves no room for one more epoch like the slowest so far plus the final test.
+
+    The session's first epoch (slowest_epoch_seconds 0) always starts: the Step 2 driver
+    starts a run only with enough time left for it.
+    """
+    stop_by = getattr(args, "stop_by", None)
+    if stop_by is None or slowest_epoch_seconds <= 0:
+        return False
+    now = time.time() if now is None else now
+    if now + slowest_epoch_seconds + FINAL_TEST_RESERVE_SECONDS <= stop_by:
+        return False
+    logging.info(
+        "Pausing: an epoch (up to %.0f min) and the final test would end after --stop_by %s.",
+        slowest_epoch_seconds / 60,
+        datetime.fromtimestamp(stop_by).strftime("%Y-%m-%d %H:%M"),
     )
     return True
 
@@ -464,6 +489,7 @@ def build_checkpoint_state(
     initial_clean_r1=None,
     best_budget_scores=None,
     best_checkpoint_epochs=None,
+    stop_state: Optional[str] = None,
 ) -> Dict[str, object]:
     # An epoch skipped by --val_every has no validation; resuming needs none of these fields.
     validated = metrics is not None
@@ -496,6 +522,9 @@ def build_checkpoint_state(
             "initial_clean_r1": initial_clean_r1,
             "best_budget_scores": dict(best_budget_scores or {}),
             "best_checkpoint_epochs": dict(best_checkpoint_epochs or {}),
+            # early_stopped / collapse_aborted when this epoch ends the run, so a run killed
+            # before its final test resumes straight into the final test.
+            "stop_state": stop_state,
         },
     }
 
@@ -647,7 +676,22 @@ def run_training(
 
     outcome = "completed"
     final_epoch = start_epoch - 1
-    for epoch_num in range(start_epoch, args.epochs_num):
+    end_epoch = args.epochs_num
+    resumed_stop_state = resume_runtime_state.get("stop_state")
+    if resumed_stop_state:
+        logging.info("The resumed checkpoint ended the run (%s): going straight to the final test.", resumed_stop_state)
+        outcome = resumed_stop_state
+        end_epoch = start_epoch
+    # ponytail: the slowest epoch so far estimates the next one; with --val_every > 1 a session
+    # that has not validated yet underestimates it, and the driver's timeout is the backstop.
+    slowest_epoch_seconds = 0.0
+    epoch_start = None
+    for epoch_num in range(start_epoch, end_epoch):
+        if epoch_start is not None:
+            slowest_epoch_seconds = max(slowest_epoch_seconds, (datetime.now() - epoch_start).total_seconds())
+        if pauses_for_deadline(args, slowest_epoch_seconds):
+            outcome = "paused"
+            break
         epoch_start = datetime.now()
         model = model.train()
 
@@ -888,6 +932,7 @@ def run_training(
         if not is_validation_epoch(epoch_num + 1, val_every, args.epochs_num):
             collapse = measure_collapse(args, model, val_ds, reference_descriptors, collapse_sample_indices)
             log_collapse_report(writer, collapse, epoch_num)
+            aborted = collapse_aborts(args, collapse, epoch_num)
             checkpoint_state = build_checkpoint_state(
                 args,
                 model,
@@ -905,11 +950,12 @@ def run_training(
                 initial_clean_r1=initial_clean_r1,
                 best_budget_scores=best_budget_scores,
                 best_checkpoint_epochs=best_checkpoint_epochs,
+                stop_state="collapse_aborted" if aborted else None,
             )
             save_checkpoint(args, checkpoint_state, False, filename="last_model.pth")
             final_epoch = epoch_num
             logging.info("Saved latest checkpoint after epoch %02d (not validated, --val_every %d).", epoch_num + 1, val_every)
-            if collapse_aborts(args, collapse, epoch_num):
+            if aborted:
                 outcome = "collapse_aborted"
                 break
             continue
@@ -958,6 +1004,12 @@ def run_training(
         if is_best:
             best_checkpoint_epochs["best"] = epoch_num + 1
         logging.info("Best checkpoints by epoch: %s", best_checkpoint_epochs)
+        if collapse_aborts(args, collapse, epoch_num):
+            stop_state = "collapse_aborted"
+        elif next_not_improved >= args.patience:
+            stop_state = "early_stopped"
+        else:
+            stop_state = None
         checkpoint_state = build_checkpoint_state(
             args,
             model,
@@ -975,6 +1027,7 @@ def run_training(
             initial_clean_r1=initial_clean_r1,
             best_budget_scores=best_budget_scores,
             best_checkpoint_epochs=best_checkpoint_epochs,
+            stop_state=stop_state,
         )
         save_checkpoint(args, checkpoint_state, is_best, filename="last_model.pth")
         if epoch_budgets:
@@ -1002,11 +1055,11 @@ def run_training(
         writer.add_scalar("early_stop/best_score", best_score, epoch_num)
         writer.add_scalar("early_stop/not_improved_epochs", not_improved, epoch_num)
 
-        if collapse_aborts(args, collapse, epoch_num):
+        if stop_state == "collapse_aborted":
             outcome = "collapse_aborted"
             break
 
-        if not_improved >= args.patience:
+        if stop_state == "early_stopped":
             logging.info(
                 "Early stopping triggered after %d non-improving epochs. Best score = %.1f.",
                 not_improved,
@@ -1014,6 +1067,10 @@ def run_training(
             )
             outcome = "early_stopped"
             break
+
+    if outcome == "paused":
+        logging.info("Paused after epoch %02d; rerun to resume.", final_epoch + 1)
+        return {"state": outcome, "final_epoch": final_epoch}
 
     logging.info("Best validation selection score: %.2f", best_score)
     if best_checkpoint_epochs.get("best") == -1:

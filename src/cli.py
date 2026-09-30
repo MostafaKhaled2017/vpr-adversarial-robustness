@@ -275,6 +275,13 @@ def build_parser():
         "collapse check.",
     )
     parser.add_argument(
+        "--stop_by",
+        type=float,
+        default=None,
+        help="Unix time: do not start an epoch that, with the final test, could end after it; "
+        "pause instead (run_status 'paused', exit code 5) and resume later with --continue.",
+    )
+    parser.add_argument(
         "--val_rank_epsilons",
         type=float,
         nargs="+",

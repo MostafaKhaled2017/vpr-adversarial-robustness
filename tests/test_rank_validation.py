@@ -270,10 +270,22 @@ def scripted_metrics(clean, attacked):
     return {"NoAttack": recalls(clean), "rank_pgd_linf_eps_0.01": recalls(attacked)}
 
 
+def mock_slowest_epoch(seconds):
+    """Every epoch reports at least ``seconds``: the scripted epochs take no measurable time."""
+    from unittest import mock
+
+    from src import train_loop
+
+    real = train_loop.pauses_for_deadline
+    return mock.patch.object(
+        train_loop, "pauses_for_deadline", side_effect=lambda args, slowest: real(args, max(slowest, seconds) if slowest else 0.0)
+    )
+
+
 class RunTrainingRankProtocolTests(unittest.TestCase):
     def run_scripted(
         self, scripted, is_clean_only=False, start_epoch=0, resume_runtime_state=None, keep_every=0, val_every=1, epochs_num=None,
-        attack_ramp_epochs=0,
+        attack_ramp_epochs=0, patience=5, stop_by=None, clock=None,
     ):
         import tempfile
         from unittest import mock
@@ -291,19 +303,22 @@ class RunTrainingRankProtocolTests(unittest.TestCase):
             train_loop, "copy_budget_checkpoints", side_effect=lambda args, source, keys: copied.append((source, list(keys)))
         ), mock.patch.object(train_loop, "maybe_remove_old_checkpoint"), mock.patch.object(
             train_loop, "load_trusted_checkpoint", return_value={"model_state_dict": model.state_dict()}
-        ), mock.patch.object(train_loop.supervlad_compat, "test", return_value=([0.0] * 4, "")):
+        ), mock.patch.object(train_loop.supervlad_compat, "test", return_value=([0.0] * 4, "")) as final_test, mock.patch.object(
+            train_loop.time, "time", side_effect=clock or __import__("time").time
+        ):
             args = SimpleNamespace(
                 validation_protocol="rank_pgd", val_queries=10, val_query_seed=0, selection_clean_budgets=[1.0, 3.0, 5.0],
                 is_clean_only=is_clean_only, skip_initial_validation=False, lr_schedule="", lr_plateau_patience=None, lr=1e-4,
-                epochs_num=epochs_num or start_epoch + len(scripted) - (0 if resume_runtime_state else 1), adv_warmup_epochs=0, randomize_attack=False, early_stop_min_delta=0.0, patience=5,
+                epochs_num=epochs_num or start_epoch + len(scripted) - (0 if resume_runtime_state else 1), adv_warmup_epochs=0, randomize_attack=False, early_stop_min_delta=0.0, patience=patience,
                 save_dir=save_dir, tensorboard_dir=save_dir, device="cpu", test_method="hard_resize",
                 recall_values=[1, 5, 10, 100], mixed_precision=False, keep_every=keep_every, val_every=val_every,
-                attack_ramp_epochs=attack_ramp_epochs,
+                attack_ramp_epochs=attack_ramp_epochs, stop_by=stop_by,
             )
             outcome = train_loop.run_training(
                 args, model, torch.optim.Adam(model.parameters(), lr=1e-4), None, [], FakeValDataset(), None,
                 -math.inf, start_epoch, 0, mock.MagicMock(), [], [], resume_runtime_state=resume_runtime_state,
             )
+        self.final_test_calls = final_test.call_count
         return outcome, saved, copied
 
     def test_no_periodic_checkpoints_by_default(self):
@@ -384,6 +399,51 @@ class RunTrainingRankProtocolTests(unittest.TestCase):
         _, saved, _ = self.run_scripted([scripted_metrics(87.0, 60.0)], start_epoch=2, resume_runtime_state=resume)
         last_state = [state for filename, _, state in saved if filename == "last_model.pth"][-1]
         self.assertEqual(last_state["runtime_state"]["best_checkpoint_epochs"], {"best": 3, "1": 2, "3": 3, "5": 3})
+
+    def test_pauses_before_an_epoch_that_could_end_after_stop_by(self):
+        # Epochs take ~0 s here, so each counts as 60 s. After epoch 1, 60 s of epoch plus the
+        # final-test reserve would end 1 s after stop_by: epoch 2 must not start.
+        from src import train_loop
+
+        with mock_slowest_epoch(60.0):
+            outcome, saved, _ = self.run_scripted(
+                [scripted_metrics(90.0, 10.0), scripted_metrics(87.0, 50.0), scripted_metrics(89.5, 20.0)],
+                stop_by=1000.0 + 60.0 + train_loop.FINAL_TEST_RESERVE_SECONDS - 1.0, clock=lambda: 1000.0,
+            )
+        self.assertEqual(outcome, {"state": "paused", "final_epoch": 0})
+        self.assertEqual([state["next_epoch"] for filename, _, state in saved if filename == "last_model.pth"], [1])
+        self.assertEqual(self.final_test_calls, 0)
+
+    def test_an_epoch_that_just_fits_still_starts(self):
+        from src import train_loop
+
+        with mock_slowest_epoch(60.0):
+            outcome, _, _ = self.run_scripted(
+                [scripted_metrics(90.0, 10.0), scripted_metrics(87.0, 50.0), scripted_metrics(89.5, 20.0)],
+                stop_by=1000.0 + 60.0 + train_loop.FINAL_TEST_RESERVE_SECONDS, clock=lambda: 1000.0,
+            )
+        self.assertEqual(outcome["state"], "completed")
+
+    def test_no_stop_by_never_pauses(self):
+        outcome, _, _ = self.run_scripted([scripted_metrics(90.0, 10.0), scripted_metrics(87.0, 50.0), scripted_metrics(89.5, 20.0)])
+        self.assertEqual(outcome["state"], "completed")
+
+    def test_last_checkpoint_records_early_stop(self):
+        # Patience 1: epoch 2 does not improve on epoch 1, so its checkpoint ends the run.
+        outcome, saved, _ = self.run_scripted(
+            [scripted_metrics(90.0, 10.0), scripted_metrics(87.0, 50.0), scripted_metrics(87.0, 40.0)], patience=1, epochs_num=5
+        )
+        self.assertEqual(outcome["state"], "early_stopped")
+        last = [state for filename, _, state in saved if filename == "last_model.pth"]
+        self.assertEqual([state["runtime_state"]["stop_state"] for state in last], [None, "early_stopped"])
+
+    def test_resume_after_the_run_ended_goes_straight_to_the_final_test(self):
+        # Killed after epoch 2 early-stopped but before its final test: no epoch 3.
+        resume = {"initial_clean_r1": 90.0, "best_checkpoint_epochs": {"best": 1}, "stop_state": "early_stopped"}
+        outcome, saved, _ = self.run_scripted([], start_epoch=2, resume_runtime_state=resume, epochs_num=5)
+        self.assertEqual(outcome, {"state": "early_stopped", "final_epoch": 1})
+        self.assertEqual(saved, [])
+        self.assertEqual(self.final_test_calls, 1)
 
     def test_warns_when_best_model_is_the_initial_model(self):
         clean = lambda value: {"NoAttack": {"recalls": {f"R@{k}": value for k in (1, 5, 10, 100)}, "recalls_list": [value] * 4}}

@@ -64,6 +64,17 @@ class PilotRunGroupTests(unittest.TestCase):
             self.assertEqual(state.state, "resumable")
             self.assertEqual(state.checkpoint, checkpoint)
 
+    def test_paused_run_is_resumable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_dir = Path(directory)
+            (config_dir / "run_status.json").write_text('{"state": "paused"}\n', encoding="utf-8")
+            (config_dir / "last_model.pth").touch()
+
+            state = classify_config_run(config_dir)
+
+            self.assertEqual(state.state, "resumable")
+            self.assertEqual(state.checkpoint, config_dir / "last_model.pth")
+
     def test_terminal_status_is_skipped(self):
         with tempfile.TemporaryDirectory() as directory:
             config_dir = Path(directory)
