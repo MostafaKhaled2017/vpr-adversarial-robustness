@@ -291,7 +291,7 @@ class RunTrainingRankProtocolTests(unittest.TestCase):
             train_loop, "copy_budget_checkpoints", side_effect=lambda args, source, keys: copied.append((source, list(keys)))
         ), mock.patch.object(train_loop, "maybe_remove_old_checkpoint"), mock.patch.object(
             train_loop, "load_trusted_checkpoint", return_value={"model_state_dict": model.state_dict()}
-        ), mock.patch.object(train_loop.test, "test", return_value=([0.0] * 4, "")):
+        ), mock.patch.object(train_loop.supervlad_compat, "test", return_value=([0.0] * 4, "")):
             args = SimpleNamespace(
                 validation_protocol="rank_pgd", val_queries=10, val_query_seed=0, selection_clean_budgets=[1.0, 3.0, 5.0],
                 is_clean_only=is_clean_only, skip_initial_validation=False, lr_schedule="", lr_plateau_patience=None, lr=1e-4,

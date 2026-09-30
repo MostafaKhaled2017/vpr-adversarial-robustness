@@ -9,9 +9,10 @@ from typing import Dict, Optional, Sequence
 import numpy as np
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import Subset
 
 from .config import unwrap_model
+from .data import PipeDataLoader
 from .rank_attacks import RankAttackConfig, RankPGDAttack
 from .retrieval_metrics import compute_recalls_from_features
 from .targets import build_attack_targets
@@ -30,11 +31,10 @@ def attack_condition_name(epsilon: float) -> str:
 
 
 def _extract(args, dataset, model: nn.Module, indices: Sequence[int], queryflag: int) -> np.ndarray:
-    loader = DataLoader(
+    loader = PipeDataLoader(
         Subset(dataset, [int(index) for index in indices]),
         batch_size=args.infer_batch_size,
         num_workers=args.num_workers,
-        pin_memory=(args.device == "cuda"),
     )
     features = []
     with torch.inference_mode():

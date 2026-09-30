@@ -31,9 +31,9 @@
 #   MPLC_V2_DEFENSE_LOSS  defense objective (mplc arm): listwise | hinge (default: listwise)
 #   MPLC_V2_MULTI_POSITIVE  1 = target every positive, 0 = hardest one only (mplc arm)
 #                                                               (default: 1)
-#   MPLC_V2_NUM_WORKERS   data-loader processes; 0 loads in the main process (needed
-#                         where /dev/shm is small). Not named in the save_dir: it does
-#                         not change what is trained      (default: unset = train.py's)
+#   MPLC_V2_NUM_WORKERS   data-loader processes (training uses at most 4). A training
+#                         count other than 4 changes the augmentation draws, yet is not
+#                         named in the save_dir: leave unset (default: unset = train.py's)
 #   MPLC_V2_RUN_ROOT      resumable mode: each run lives in the fixed directory
 #                         <root>/<save_dir name>; a stopped run resumes from its last
 #                         checkpoint, a finished one is skipped   (default: unset)

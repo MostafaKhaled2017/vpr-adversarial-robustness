@@ -12,7 +12,7 @@ import torch
 from torch import Tensor, nn
 from tqdm import tqdm
 
-import test
+from . import supervlad_compat
 from .checkpoints import (
     apply_lr_schedule,
     capture_rng_state,
@@ -1024,7 +1024,7 @@ def run_training(
     )["model_state_dict"]
     model.load_state_dict(best_model_state_dict)
 
-    recalls, recalls_str = test.test(args, test_ds, unwrap_model(model), test_method=args.test_method)
+    recalls, recalls_str = supervlad_compat.test(args, test_ds, unwrap_model(model), test_method=args.test_method)
     logging.info("Final test recalls on %s: %s", test_ds, recalls_str)
     for recall_value, recall_metric in zip(args.recall_values, recalls):
         writer.add_scalar(f"test/R@{recall_value}", float(recall_metric), 0)

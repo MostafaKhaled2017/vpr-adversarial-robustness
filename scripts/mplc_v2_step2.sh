@@ -36,8 +36,8 @@
 #   STEP2_ROOT            Step 2 run directory               (default: logs/mplc_v2_step2)
 #   STEP2_BASELINE_SEEDS  seeds of the baselines' full runs  (default: 0; "0 1" adds seed 1)
 #   STEP2_MAX_GB          disk limit of one stage, GB        (default: 25, i.e. 3 runs)
-#   STEP2_NUM_WORKERS     data-loader processes per run; 0 where /dev/shm is small
-#                                                            (default: unset = 4 train, 8 val)
+#   STEP2_NUM_WORKERS     data-loader processes per run; leave unset: another training count
+#                         changes the augmentation draws     (default: unset = 4 train, 8 val)
 #   PYTHON               python interpreter                 (default: python)
 # Other MPLC_V2_* variables are ignored: Step 2 sets every launcher setting itself.
 #

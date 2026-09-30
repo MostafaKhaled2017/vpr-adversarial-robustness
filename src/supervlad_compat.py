@@ -45,6 +45,16 @@ def setup_logging(save_dir, allow_existing=False):
     return commons.setup_logging(save_dir)
 
 
+def test(*args, **kwargs):
+    """Upstream test.test, with loaders that do not use /dev/shm (src.data.PipeDataLoader)."""
+    import test as test_module
+
+    from .data import PipeDataLoader
+
+    with mock.patch.object(test_module, "DataLoader", PipeDataLoader):
+        return test_module.test(*args, **kwargs)
+
+
 def import_gsv_cities_dataset():
     """Return upstream GSVCitiesDataset. Pass ``base_path`` as a str ending in "/"."""
     import pandas  # noqa: F401 -- import dependencies before Path.exists is patched

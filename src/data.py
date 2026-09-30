@@ -92,6 +92,24 @@ def make_train_sampler(dataset, batches_per_epoch, batch_size, shuffle_seed=None
     return SequentialChunkSampler(dataset, batches_per_epoch * batch_size, shuffle_seed=shuffle_seed)
 
 
+def numpy_collate(batch):
+    """default_collate's values and dtypes, as numpy arrays in ordinary memory."""
+    return tuple(np.stack([np.asarray(sample[i]) for sample in batch]) for i in range(len(batch[0])))
+
+
+class PipeDataLoader(DataLoader):
+    """A DataLoader whose workers send batches through a pipe instead of /dev/shm, which is
+    too small on some servers. Yields the same tensors, bit for bit, as a plain DataLoader."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs.pop("pin_memory", None)  # pinning only applies to tensors, not numpy batches
+        super().__init__(*args, collate_fn=numpy_collate, **kwargs)
+
+    def __iter__(self):
+        for batch in super().__iter__():
+            yield tuple(torch.from_numpy(array) for array in batch)
+
+
 def build_training_dataloader(args) -> DataLoader:
     GSVCitiesDataset = supervlad_compat.import_gsv_cities_dataset()
     from torchvision import transforms as T
@@ -124,13 +142,12 @@ def build_training_dataloader(args) -> DataLoader:
         args.train_batch_size,
         shuffle_seed=args.seed if args.shuffle else None,
     )
-    return DataLoader(
+    return PipeDataLoader(
         dataset=train_dataset,
         batch_size=args.train_batch_size,
-        # --num_workers 0 loads in the main process, for machines with a small /dev/shm.
+        # The worker count changes the augmentation draws: 4 is the reference.
         num_workers=min(4, args.num_workers),
         drop_last=False,
-        pin_memory=True,
         sampler=sampler,
         shuffle=False,
     )
