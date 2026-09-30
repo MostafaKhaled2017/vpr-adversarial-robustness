@@ -283,6 +283,17 @@ class DriverTests(unittest.TestCase):
             self.assertIn("--listwise_tau=0.05", result.stdout)
             self.assertIn("--save_dir=mplc_v2_supervlad_clean_ft_s0", result.stdout)
 
+    def test_pipe_loader_reaches_every_run(self):
+        with tempfile.TemporaryDirectory() as s1, tempfile.TemporaryDirectory() as s2:
+            finish_step1(s1)
+            result = self.dry_run(s1, s2, STEP2_PIPE_LOADER="1")
+            self.assertEqual(result.returncode, 0, result.stdout)
+            commands = [line for line in result.stdout.splitlines() if line.startswith("+ ")]
+            self.assertEqual(len(commands), 15, result.stdout)
+            for command in commands:
+                self.assertIn("--pipe_loader", command.split())
+            self.assertNotIn("--pipe_loader", self.dry_run(s1, s2).stdout)
+
     def test_unfinished_step1_exits_3(self):
         with tempfile.TemporaryDirectory() as s1, tempfile.TemporaryDirectory() as s2:
             result = self.dry_run(s1, s2)

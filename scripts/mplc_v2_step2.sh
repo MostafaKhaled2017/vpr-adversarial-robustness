@@ -48,6 +48,8 @@
 #   STEP2_MAX_GB          disk limit of one stage, GB        (default: 25, i.e. 3 runs)
 #   STEP2_NUM_WORKERS     data-loader processes per run; leave unset: another training count
 #                         changes the augmentation draws     (default: unset = 4 train, 8 val)
+#   STEP2_PIPE_LOADER     1 = data-loader batches through a pipe, not /dev/shm (small /dev/shm)
+#                                                            (default: 0)
 #   PYTHON               python interpreter                 (default: python)
 # Other MPLC_V2_* variables are ignored: Step 2 sets every launcher setting itself.
 #
@@ -74,9 +76,9 @@ unset "${!MPLC_V2_@}"
 PYTHON=${PYTHON:-python}
 STEP1=${STEP1_ROOT:-logs/mplc_v2_step1}
 ROOT=${STEP2_ROOT:-logs/mplc_v2_step2}
-# Passed on as MPLC_V2_NUM_WORKERS: the unset above clears every MPLC_V2_* variable.
-WORKERS_ENV=()
-[ -z "${STEP2_NUM_WORKERS:-}" ] || WORKERS_ENV=(MPLC_V2_NUM_WORKERS="${STEP2_NUM_WORKERS}")
+# Passed on as MPLC_V2_*: the unset above clears every MPLC_V2_* variable.
+WORKERS_ENV=(MPLC_V2_PIPE_LOADER="${STEP2_PIPE_LOADER:-0}")
+[ -z "${STEP2_NUM_WORKERS:-}" ] || WORKERS_ENV+=(MPLC_V2_NUM_WORKERS="${STEP2_NUM_WORKERS}")
 MODE=run
 
 case "${1:-}" in

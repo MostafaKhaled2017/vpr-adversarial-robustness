@@ -34,6 +34,9 @@
 #   MPLC_V2_NUM_WORKERS   data-loader processes (training uses at most 4). A training
 #                         count other than 4 changes the augmentation draws, yet is not
 #                         named in the save_dir: leave unset (default: unset = train.py's)
+#   MPLC_V2_PIPE_LOADER   1 = data-loader batches through a pipe, not /dev/shm (servers with
+#                         a small /dev/shm; same batches, slower). Not named in the save_dir
+#                                                               (default: 0)
 #   MPLC_V2_STOP_BY       Unix time passed on as --stop_by: a run pauses (exit code 5)
 #                         rather than start an epoch that could end after it (default: unset)
 #   MPLC_V2_RUN_ROOT      resumable mode: each run lives in the fixed directory
@@ -84,6 +87,7 @@ ATTACK_MIX=${MPLC_V2_ATTACK_MIX:-all}
 DEFENSE_LOSS=${MPLC_V2_DEFENSE_LOSS:-listwise}
 MULTI_POSITIVE=${MPLC_V2_MULTI_POSITIVE:-1}
 NUM_WORKERS=${MPLC_V2_NUM_WORKERS:-}
+PIPE_LOADER=${MPLC_V2_PIPE_LOADER:-0}
 STOP_BY=${MPLC_V2_STOP_BY:-}
 RUN_ROOT=${MPLC_V2_RUN_ROOT:-}
 DRY_RUN=${MPLC_V2_DRY_RUN:-0}
@@ -121,6 +125,10 @@ esac
 case "${MULTI_POSITIVE}" in
   0 | 1) ;;
   *) echo "MPLC_V2_MULTI_POSITIVE must be 0 or 1, got: ${MULTI_POSITIVE}" >&2; exit 2 ;;
+esac
+case "${PIPE_LOADER}" in
+  0 | 1) ;;
+  *) echo "MPLC_V2_PIPE_LOADER must be 0 or 1, got: ${PIPE_LOADER}" >&2; exit 2 ;;
 esac
 
 # A run is finished, and should be skipped, when its run_status.json records a terminal
@@ -211,6 +219,7 @@ fi
 [ "${NUM_EPOCHS}" = "100" ] || COMMON_FLAGS+=(--num_epochs="${NUM_EPOCHS}")
 [ "${VAL_EVERY}" = "1" ] || COMMON_FLAGS+=(--val_every="${VAL_EVERY}")
 [ -z "${NUM_WORKERS}" ] || COMMON_FLAGS+=(--num_workers="${NUM_WORKERS}")
+[ "${PIPE_LOADER}" = "0" ] || COMMON_FLAGS+=(--pipe_loader)
 [ -z "${STOP_BY}" ] || COMMON_FLAGS+=(--stop_by="${STOP_BY}")
 
 for arm in ${ARMS}; do

@@ -166,6 +166,28 @@ class MplcV2TrainScriptTests(unittest.TestCase):
         for command in commands:
             self.assertIn("--val_every=2", command)
 
+    def test_pipe_loader_is_off_by_default(self):
+        result = run_script(TRAIN_SCRIPT)
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertNotIn("--pipe_loader", result.stdout)
+
+    def test_pipe_loader_applies_to_both_arms_without_renaming(self):
+        default = run_script(TRAIN_SCRIPT)
+        result = run_script(TRAIN_SCRIPT, {"MPLC_V2_PIPE_LOADER": "1"})
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        commands = [line for line in result.stdout.splitlines() if line.startswith("+ ")]
+        default_commands = [line for line in default.stdout.splitlines() if line.startswith("+ ")]
+        self.assertEqual(len(commands), 2, result.stdout)
+        for command, default_command in zip(commands, default_commands):
+            self.assertIn("--pipe_loader", command.split())
+            self.assertEqual(command.replace(" --pipe_loader", ""), default_command)
+
+    def test_pipe_loader_invalid_value_exits_2(self):
+        result = run_script(TRAIN_SCRIPT, {"MPLC_V2_PIPE_LOADER": "yes"})
+        self.assertEqual(result.returncode, 2, result.stdout)
+
     def test_linf_attack_mix_keeps_only_rank_attack(self):
         result = run_script(TRAIN_SCRIPT, {"MPLC_V2_ATTACK_MIX": "linf"})
 
