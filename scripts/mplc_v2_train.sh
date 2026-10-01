@@ -25,6 +25,10 @@
 #   MPLC_V2_NUM_EPOCHS    maximum epochs, both arms             (default: 100; 12 for screens)
 #   MPLC_V2_VAL_EVERY     validate every N epochs and after the last, both arms
 #                                                               (default: 1; 3 for screens)
+#   MPLC_V2_PATIENCE      early-stopping patience, in validations, both arms
+#                                                               (default: unset = recipe's 8)
+#   MPLC_V2_LR_PLATEAU_PATIENCE  lr-plateau patience, in validations, both arms
+#                                                               (default: unset = recipe's 5)
 #   MPLC_V2_ATTACK_MIX    training attacks (mplc arm): "all" = two perceptual attacks +
 #                         rank L-inf, one sampled per step; "linf" = rank L-inf only
 #                                                               (default: all)
@@ -83,6 +87,8 @@ CLEAN_BUDGETS=${MPLC_V2_CLEAN_BUDGETS:-"1 3 5"}
 LR=${MPLC_V2_LR:-1e-5}
 NUM_EPOCHS=${MPLC_V2_NUM_EPOCHS:-100}
 VAL_EVERY=${MPLC_V2_VAL_EVERY:-1}
+PATIENCE=${MPLC_V2_PATIENCE:-}
+LR_PLATEAU_PATIENCE=${MPLC_V2_LR_PLATEAU_PATIENCE:-}
 ATTACK_MIX=${MPLC_V2_ATTACK_MIX:-all}
 DEFENSE_LOSS=${MPLC_V2_DEFENSE_LOSS:-listwise}
 MULTI_POSITIVE=${MPLC_V2_MULTI_POSITIVE:-1}
@@ -214,10 +220,12 @@ COMMON_FLAGS=(
 if [ "${FREEZE_TE}" -lt 8 ]; then
   COMMON_FLAGS+=(--grad_checkpointing)
 fi
-# These override the recipe's --lr / --num_epochs (argparse keeps the last value).
+# These override the recipe's --lr / --num_epochs / patience (argparse keeps the last value).
 [ "${LR}" = "1e-5" ] || COMMON_FLAGS+=(--lr="${LR}")
 [ "${NUM_EPOCHS}" = "100" ] || COMMON_FLAGS+=(--num_epochs="${NUM_EPOCHS}")
 [ "${VAL_EVERY}" = "1" ] || COMMON_FLAGS+=(--val_every="${VAL_EVERY}")
+[ -z "${PATIENCE}" ] || COMMON_FLAGS+=(--patience="${PATIENCE}")
+[ -z "${LR_PLATEAU_PATIENCE}" ] || COMMON_FLAGS+=(--lr_plateau_patience="${LR_PLATEAU_PATIENCE}")
 [ -z "${NUM_WORKERS}" ] || COMMON_FLAGS+=(--num_workers="${NUM_WORKERS}")
 [ "${PIPE_LOADER}" = "0" ] || COMMON_FLAGS+=(--pipe_loader)
 [ -z "${STOP_BY}" ] || COMMON_FLAGS+=(--stop_by="${STOP_BY}")

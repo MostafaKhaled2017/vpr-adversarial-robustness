@@ -166,6 +166,17 @@ class MplcV2TrainScriptTests(unittest.TestCase):
         for command in commands:
             self.assertIn("--val_every=2", command)
 
+    def test_patience_overrides_the_recipe_in_both_arms(self):
+        result = run_script(TRAIN_SCRIPT, {"MPLC_V2_PATIENCE": "6", "MPLC_V2_LR_PLATEAU_PATIENCE": "3"})
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        commands = [line for line in result.stdout.splitlines() if line.startswith("+ ")]
+        self.assertEqual(len(commands), 2, result.stdout)
+        for command in commands:
+            # The recipe's values come first; the last occurrence wins.
+            self.assertGreater(command.rindex("--patience=6"), command.index("--patience=8"))
+            self.assertGreater(command.rindex("--lr_plateau_patience=3"), command.index("--lr_plateau_patience=5"))
+
     def test_pipe_loader_is_off_by_default(self):
         result = run_script(TRAIN_SCRIPT)
 

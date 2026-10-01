@@ -92,7 +92,8 @@ def load_step1(root: Path, batch_size: int, batches_per_epoch: int) -> Step1:
                  results(state.final))
 
 
-FULL = {"MPLC_V2_VAL_EVERY": "2"}  # full-length runs (2.1, 2.2 full, 2.3) validate every 2 epochs
+# Full-length runs (2.1, 2.2 full, 2.3) validate every 3 epochs; patience counts validations.
+FULL = {"MPLC_V2_VAL_EVERY": "3", "MPLC_V2_PATIENCE": "6", "MPLC_V2_LR_PLATEAU_PATIENCE": "3"}
 NOISE_SEEDS = ("1", "2")  # seed 0 is MPLC*'s Step 1 screen
 MPLC_SEEDS = ("0", "1")
 BASELINE_LRS = ("1e-5", "3e-6")  # preferred first
