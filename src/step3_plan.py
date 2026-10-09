@@ -1,36 +1,43 @@
-"""Step 3 evaluation: plan every eval.py call from the finished Step 2 runs and the results on disk.
+"""Step 3 evaluation: plan every eval.py call from the checkpoints given and the results on disk.
 
 Models (seed 0; FARE, the clean twin and seed 1 are not evaluated): the pretrained model,
-plain_at's full run (scripts/mplc_v2_plain_at_full.sh), MPLC* and the MPLC* ablations that
-MPLC* does not already cover. Each trained run is evaluated for two tables: Table A at its
-budget-5 checkpoint (the most robust within 5 clean R@1 points, the rule Steps 1 and 2 used)
-and Table B at best_model.pth (the most robust overall). A run whose checkpoint for a table is
-the initial model is reported as the pretrained model in that table and not evaluated again.
+always, and the checkpoints given with --model KEY:TABLES:PATH. KEY is the table row (plain_at,
+mplc, or the ablations no_anchor, hinge and single_pos; MPLC* already covers "no perceptual
+attacks"). TABLES is the table the checkpoint fills: A, the budget-5 checkpoint (the most robust
+within 5 clean R@1 points, the rule Steps 1 and 2 used), B, best_model.pth (the most robust
+overall), or AB for one checkpoint that fills both. PATH is the checkpoint file, or "pretrained"
+for a run whose checkpoint for that table is the initial model: the row then shows the
+pretrained model. Nothing is read from the Step 2 runs; the caller picks every checkpoint.
+
+Every --model is recorded in models.json under the Step 3 root, and the work is planned from
+everything recorded there, so a later call adds models to an earlier one's (Step 3a, then
+Step 3b) and finished pieces are kept. A table of a row takes one checkpoint: the same KEY and
+table with another path is refused.
 
 Work is split into pieces, one eval.py call per (run, dataset, model); the transfer run is
 one call, since its attacks are crafted on its first model. Without --shared_attacks each
 model's attack RNG depends only on (seed, dataset, model tag) and the attacked queries are
 fixed, so a per-model call gives the same numbers as a call with every model. A piece is done
 once its directory holds DONE, written after eval.py exits 0; a piece killed mid-way is run
-again. Run order follows the runbook (§3.2), without runs 1b, 10 and 11.
+again. Run order follows the runbook (§3.2), without runs 1b, 10 and 11. The transfer run
+waits until both mplc and plain_at are given.
 
 The targeted pilot runs first: it fails when every main model's targeted success rate is at
 most 5 % or every one is at least 95 % (the column could not tell the models apart). Then the
 targeted run (3) waits for a pilot that passes at another --target-rank, and every other run
-continues.
+continues. Once run 3 has finished a piece, its target rank is fixed.
 """
 
 from __future__ import annotations
 
 import argparse
-import ast
 import csv
 import json
 import math
-import re
+import os
 import shlex
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -39,7 +46,6 @@ import yaml
 
 from . import step2_plan as step2
 from .paired_analysis import compute_paired_ccasr
-from .phase2_run_group import TERMINAL_STATES
 from .robustness_curve_summary import summarize as curve_summary
 from .robustness_curve_summary import worst_case
 
@@ -62,7 +68,6 @@ EPS_GRID = ("0.01712", "0.03425", "0.0685", "0.137")
 L2_EPS = ("4.37", "8.73")
 LARGE_EPS = "0.548"
 
-BUDGET = 5.0
 TABLES = ("budget5", "best")
 TABLE_TITLES = {
     "budget5": "Table A: budget-5 checkpoints (most robust within 5 clean R@1 points)",
@@ -72,13 +77,22 @@ INITIAL_NOTES = {
     "budget5": "no checkpoint within the 5-point budget (= pretrained)",
     "best": "no epoch beat the initial model (= pretrained)",
 }
-CHECKPOINT_FILES = {"budget5": "best_model_budget5.pth", "best": "best_model.pth"}
-ABLATION_TAGS = {
-    "no perceptual attacks": "abl_no_perceptual",
-    "no anchor": "abl_no_anchor",
-    "hinge loss": "abl_hinge",
-    "single positive": "abl_single_pos",
+# --model KEY -> (row label, group, model tag), in table order.
+MODEL_KEYS = {
+    "plain_at": ("plain_at", "main", "plain_at_s0"),
+    "mplc": ("MPLC*", "main", "mplc_s0"),
+    "no_anchor": ("no anchor", "ablation", "abl_no_anchor"),
+    "hinge": ("hinge loss", "ablation", "abl_hinge"),
+    "single_pos": ("single positive", "ablation", "abl_single_pos"),
 }
+# --model TABLES -> the tables the checkpoint fills, and the suffix of its model tag.
+TABLE_LETTERS = {"A": ("budget5",), "B": ("best",), "AB": ("budget5", "best")}
+TAG_SUFFIXES = {"A": "_b5", "B": "_best", "AB": ""}
+PRETRAINED_PATH = "pretrained"  # --model PATH for a table whose checkpoint is the initial model
+# MPLC* trains on L-inf attacks only (Step 1), so it is its own "no perceptual attacks" ablation.
+COVERED_ABLATIONS = ("no perceptual attacks",)
+# The transfer run applies one set of attacks to every main model in a single call.
+TRANSFER_KEYS = ("mplc", "plain_at")
 
 PILOT_LOW, PILOT_HIGH = 5.0, 95.0
 
@@ -94,11 +108,16 @@ APGD_VS_PGD_MAX_GAP = 2.0
 MORE_STEPS_MAX_GAP = 1.0
 LARGE_EPS_MAX_R1 = 1.0
 
-BEST_LINE = re.compile(r"Best checkpoints by epoch: (\{.*\})")
-
-
 class Blocked(Exception):
     """A Step 2 run that Step 3 needs is missing or not finished."""
+
+
+class Refused(Exception):
+    """A --model the planner cannot accept; code is the driver's exit code."""
+
+    def __init__(self, message: str, code: int):
+        super().__init__(message)
+        self.code = code
 
 
 # --------------------------------------------------------------------------- models
@@ -126,64 +145,74 @@ def plain_at_env(star: Mapping[str, str]) -> Dict[str, str]:
 
 
 @dataclass(frozen=True)
-class Entry:
-    label: str  # row label in the tables
-    group: str  # main | ablation
-    tag: str  # model tag; _b5 / _best are added when both checkpoints are evaluated
-    run: str  # run directory name under the Step 2 root
+class Checkpoint:
+    """One --model: the row (KEY), the tables it fills (A, B or AB) and its file or "pretrained"."""
+
+    key: str
+    tables: str
+    path: str
+
+    @property
+    def spec(self) -> str:
+        return f"{self.key}:{self.tables}:{self.path}"
 
 
-def entries(star: Mapping[str, str]) -> Tuple[List[Entry], List[str]]:
-    """Trained runs Step 3 evaluates, in table order, and the ablations MPLC* already covers."""
-    mplc = {**star, **step2.FULL, "MPLC_V2_ARMS": "mplc", "MPLC_V2_SEED": "0"}
-    out = [
-        Entry("plain_at", "main", "plain_at_s0", step2.run_name(plain_at_env(star))),
-        Entry("MPLC*", "main", "mplc_s0", step2.run_name(mplc)),
-    ]
-    covered = []
-    for label, key, value in step2.ABLATIONS:
-        if star.get(key, step2.LAUNCHER_DEFAULTS[key]) == value:
-            covered.append(label)
+def parse_model(spec: str) -> Checkpoint:
+    """KEY:TABLES:PATH; a malformed spec or a missing file is refused (exit 2)."""
+    parts = spec.split(":", 2)
+    if len(parts) != 3 or not parts[2]:
+        raise Refused(f"--model {spec!r}: expected KEY:TABLES:PATH", 2)
+    key, tables, path = parts[0], parts[1].upper(), parts[2]
+    if key not in MODEL_KEYS:
+        raise Refused(f"--model {spec!r}: KEY must be one of {', '.join(MODEL_KEYS)}", 2)
+    if tables not in TABLE_LETTERS:
+        raise Refused(f"--model {spec!r}: TABLES must be A, B or AB", 2)
+    if path != PRETRAINED_PATH:
+        path = os.path.normpath(path)
+        if not Path(path).is_file():
+            raise Refused(f"--model {spec!r}: {path} is not a file", 2)
+    return Checkpoint(key, tables, path)
+
+
+def recorded(root: Path) -> List[Checkpoint]:
+    path = root / MODELS_FILE
+    if not path.is_file():
+        return []
+    return [Checkpoint(**c) for c in json.loads(path.read_text(encoding="utf-8"))["checkpoints"]]
+
+
+def merge(known: Sequence[Checkpoint], new: Iterable[Checkpoint]) -> List[Checkpoint]:
+    """known plus new; a table of a row takes one checkpoint, so another one for it is refused (exit 3)."""
+    out = list(known)
+    for checkpoint in new:
+        if checkpoint in out:
             continue
-        out.append(Entry(label, "ablation", ABLATION_TAGS[label], step2.run_name({**mplc, key: value})))
-    return out, covered
+        for other in out:
+            if other.key == checkpoint.key and set(TABLE_LETTERS[other.tables]) & set(TABLE_LETTERS[checkpoint.tables]):
+                raise Refused(
+                    f"--model {checkpoint.spec} conflicts with {other.spec}: a table of a row takes one "
+                    f"checkpoint, and one recorded in {MODELS_FILE} cannot change; restore it or use a new STEP3_ROOT", 3)
+        out.append(checkpoint)
+    return out
 
 
-def checkpoint_epochs(run_dir: Path) -> Dict[str, int]:
-    """Epochs behind best_model_budget5.pth and best_model.pth of a finished run (-1 = initial)."""
-    status = run_dir / "run_status.json"
-    if not status.is_file():
-        raise Blocked(f"{run_dir.name} has not run")
-    state = json.loads(status.read_text(encoding="utf-8")).get("state", "")
-    if state not in TERMINAL_STATES:
-        raise Blocked(f"{run_dir.name} is {state or 'unfinished'}")
-    log = run_dir / "info.log"
-    found = BEST_LINE.findall(log.read_text(encoding="utf-8", errors="replace")) if log.is_file() else []
-    if not found:
-        raise Blocked(f"{log} records no checkpoint epochs")
-    # The log is appended across resumed sessions, so its last line is the final state.
-    recorded = ast.literal_eval(found[-1])
-    budget = next((value for key, value in recorded.items() if key != "best" and float(key) == BUDGET), None)
-    if budget is None or "best" not in recorded:
-        raise Blocked(f"{log} records no budget-{BUDGET:g} or best checkpoint: {recorded}")
-    epochs = {"budget5": int(budget), "best": int(recorded["best"])}
-    validated = set()
-    records = run_dir / "validation_recalls.jsonl"
-    if records.is_file():
-        validated = {int(json.loads(line)["epoch"]) for line in records.read_text(encoding="utf-8").splitlines() if line.strip()}
-    for table, epoch in epochs.items():
-        if epoch not in validated:
-            raise Blocked(f"{run_dir.name}: epoch {epoch} of {CHECKPOINT_FILES[table]} has no validation record")
-        if epoch != -1 and not (run_dir / CHECKPOINT_FILES[table]).is_file():
-            raise Blocked(f"{run_dir / CHECKPOINT_FILES[table]} is missing")
-    return epochs
+def register(root: Path, checkpoints: Sequence[Checkpoint]) -> None:
+    """Record the checkpoints in models.json, keeping when it was created."""
+    path = root / MODELS_FILE
+    now = datetime.now().isoformat(timespec="seconds")
+    data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {"created": now}
+    rows = [asdict(c) for c in checkpoints]
+    if data.get("checkpoints") == rows:
+        return
+    data.update(checkpoints=rows, updated=now)
+    root.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 @dataclass(frozen=True)
 class Model:
     tag: str
     path: str
-    epoch: Optional[int]  # None for the pretrained model
     group: str  # main | ablation
 
 
@@ -192,7 +221,7 @@ class Row:
     label: str
     group: str
     tag: str  # the model whose results fill the row
-    checkpoint: str  # epoch, "initial" or "-"
+    checkpoint: str  # checkpoint file name, "initial" or "-"
     note: str = ""
 
 
@@ -200,8 +229,8 @@ class Row:
 class Resolution:
     models: List[Model]
     rows: Dict[str, List[Row]]  # table -> rows (main and ablation)
-    blockers: List[str]
-    covered: List[str]  # ablations MPLC* already covers
+    checkpoints: List[Checkpoint]
+    covered: List[str] = field(default_factory=lambda: list(COVERED_ABLATIONS))  # ablations MPLC* already covers
 
     def tags(self, group: str) -> List[str]:
         return [m.tag for m in self.models if m.group == group]
@@ -209,57 +238,32 @@ class Resolution:
     def entry_tags(self, label: str) -> List[str]:
         return list(dict.fromkeys(r.tag for t in TABLES for r in self.rows[t] if r.label == label and r.checkpoint != "initial"))
 
+    def transfer_waits_for(self) -> List[str]:
+        keys = {c.key for c in self.checkpoints}
+        return [key for key in TRANSFER_KEYS if key not in keys]
 
-def resolve(step2_root: Path, pretrained: str = PRETRAINED) -> Resolution:
-    """Every model to evaluate and every table row; runs that are not finished go to blockers."""
+
+def resolve(checkpoints: Sequence[Checkpoint], pretrained: str = PRETRAINED) -> Resolution:
+    """Every model to evaluate and every table row, in table order whatever order they were given in."""
     res = Resolution(
-        models=[Model("pretrained", pretrained, None, "main")],
+        models=[Model("pretrained", pretrained, "main")],
         rows={t: [Row("pretrained", "main", "pretrained", "-")] for t in TABLES},
-        blockers=[],
-        covered=[],
+        checkpoints=list(checkpoints),
     )
-    try:
-        star = load_star(step2_root)
-    except Blocked as blocked:
-        res.blockers.append(str(blocked))
-        return res
-    found, res.covered = entries(star)
-    for entry in found:
-        try:
-            epochs = checkpoint_epochs(step2_root / entry.run)
-        except Blocked as blocked:
-            res.blockers.append(str(blocked))
-            continue
-        trained = {epoch for epoch in epochs.values() if epoch != -1}
+    for key, (label, group, base) in MODEL_KEYS.items():
+        given = [c for c in checkpoints if c.key == key]
         for table in TABLES:
-            epoch = epochs[table]
-            if epoch == -1:
-                res.rows[table].append(Row(entry.label, entry.group, "pretrained", "initial", INITIAL_NOTES[table]))
+            checkpoint = next((c for c in given if table in TABLE_LETTERS[c.tables]), None)
+            if checkpoint is None:
                 continue
-            tag = entry.tag if len(trained) == 1 else f"{entry.tag}_{'b5' if table == 'budget5' else 'best'}"
+            if checkpoint.path == PRETRAINED_PATH:
+                res.rows[table].append(Row(label, group, "pretrained", "initial", INITIAL_NOTES[table]))
+                continue
+            tag = base + TAG_SUFFIXES[checkpoint.tables]
             if tag not in {m.tag for m in res.models}:
-                # One checkpoint for both tables: name it by best_model.pth, which holds the same epoch.
-                file = CHECKPOINT_FILES["best" if epoch == epochs["best"] else table]
-                res.models.append(Model(tag, str(step2_root / entry.run / file), epoch, entry.group))
-            res.rows[table].append(Row(entry.label, entry.group, tag, str(epoch)))
+                res.models.append(Model(tag, checkpoint.path, group))
+            res.rows[table].append(Row(label, group, tag, Path(checkpoint.path).name))
     return res
-
-
-def freeze_models(root: Path, res: Resolution) -> None:
-    """Record the models at the first start; refuse a later call whose checkpoints differ."""
-    path = root / MODELS_FILE
-    current = {m.tag: {"path": m.path, "epoch": m.epoch, "group": m.group} for m in res.models}
-    if path.is_file():
-        stored = json.loads(path.read_text(encoding="utf-8"))["models"]
-        if stored != current:
-            raise SystemExit(
-                f"{path} was planned from other checkpoints (stored {stored}, now {current}); "
-                "restore them or use a new STEP3_ROOT"
-            )
-        return
-    root.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"models": current, "created": datetime.now().isoformat(timespec="seconds")}, indent=2),
-                    encoding="utf-8")
 
 
 # --------------------------------------------------------------------------- pieces
@@ -330,7 +334,7 @@ def pieces(res: Resolution, target_rank: int) -> List[Piece]:
     out = []
     for spec in run_specs(target_rank):
         tags = model_set(res, spec.models)
-        if not tags or (spec.shared and len(tags) < 2):
+        if not tags or (spec.shared and len(tags) < 2) or (spec.models == "transfer" and res.transfer_waits_for()):
             continue
         for dataset in spec.datasets:
             if spec.shared:
@@ -762,15 +766,18 @@ def write_summary(root: Path, res: Resolution, all_pieces: Sequence[Piece], targ
             "result": info["result_dir"] if info else "",
         })
     done = sum(1 for r in piece_rows if r["state"] == "done")
-    model_rows = [{"tag": m.tag, "group": m.group, "epoch": "-" if m.epoch is None else m.epoch, "path": m.path} for m in res.models]
+    model_rows = [{"tag": m.tag, "group": m.group, "path": m.path} for m in res.models]
     shown_rates = ", ".join(f"{t} {fmt(r, '.1f')} %" for t, r in rates.items())
+    waits = res.transfer_waits_for()
     lines = [
         "# Step 3 status", "",
         f"- Pieces done: {done} / {len(piece_rows)}",
         f"- Targeted pilot (target rank {target_rank}): {state} ({shown_rates})",
-        *[f"- **Blocked:** {b}" for b in res.blockers],
+        *([f"- Run 7 (transfer from pretrained) waits for {' and '.join(waits)}"] if waits else []),
         *[f"- Ablation '{c}' is covered by MPLC* itself" for c in res.covered],
-        "", "## Models", "", *markdown_table(["tag", "group", "epoch", "path"], model_rows),
+        "", "## Checkpoints given", "",
+        *markdown_table(["key", "tables", "path"], [asdict(c) for c in res.checkpoints]),
+        "", "## Models", "", *markdown_table(["tag", "group", "path"], model_rows),
         "", "## Table rows", "",
         *markdown_table(["table", "row", "model", "checkpoint", "note"],
                         [{"table": t, "row": r.label, "model": r.tag, "checkpoint": r.checkpoint, "note": r.note}
@@ -798,12 +805,21 @@ def pending(root: Path, res: Resolution, all_pieces: Sequence[Piece], target_ran
     return runnable, waiting, state, rates
 
 
+def run3_ranks(root: Path) -> List[int]:
+    """Target ranks at which run 3 has finished a piece."""
+    prefix = "r3_targeted_tr"
+    return sorted(int(d.name[len(prefix):]) for d in root.glob(f"{prefix}*") if any(d.glob(f"*/*/{DONE_FILE}")))
+
+
 def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=("next", "list", "record", "summarize", "plain-at-env"))
+    parser.add_argument("command", choices=("register", "next", "list", "record", "summarize", "plain-at-env"))
     parser.add_argument("piece", nargs="?", help="record: the piece id that finished.")
     parser.add_argument("--root", type=Path, default=Path("output/mplc_v2_step3"), help="Step 3 output root (STEP3_ROOT).")
-    parser.add_argument("--step2-root", type=Path, default=Path("logs/mplc_v2_step2"), help="Step 2 run directory (STEP2_ROOT).")
+    parser.add_argument("--model", dest="models", action="append", default=[], metavar="KEY:TABLES:PATH",
+                        help="A checkpoint to evaluate (repeatable); register records it, the other commands add it "
+                             "to the recorded ones without recording it.")
+    parser.add_argument("--step2-root", type=Path, default=Path("logs/mplc_v2_step2"), help="plain-at-env: Step 2 run directory.")
     parser.add_argument("--pretrained", default=PRETRAINED, help="Pretrained SuperVLAD checkpoint.")
     parser.add_argument("--target-rank", type=int, default=10, help="Targeted attack's target rank (STEP3_TARGET_RANK).")
     parser.add_argument("--time-left", type=float, default=math.inf, help="next: seconds left before the session's stop-by time.")
@@ -817,7 +833,22 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         print(step2.run_name(plain_at_env(load_star(args.step2_root))))
         return
 
-    res = resolve(args.step2_root, args.pretrained)
+    try:
+        known = recorded(args.root)
+        checkpoints = merge(known, [parse_model(spec) for spec in args.models])
+        if not checkpoints and args.command in ("register", "list"):
+            raise Refused("no models given: pass --model KEY:TABLES:PATH (see scripts/mplc_v2_step3.sh --help)", 2)
+    except Refused as refused:
+        print(refused, file=sys.stderr)
+        sys.exit(refused.code)
+
+    if args.command == "register":
+        register(args.root, checkpoints)
+        for checkpoint in checkpoints:
+            print(f"model {checkpoint.spec}{'' if checkpoint in known else ' (new)'}")
+        return
+
+    res = resolve(checkpoints, args.pretrained)
     all_pieces = pieces(res, args.target_rank)
 
     if args.command == "record":
@@ -833,26 +864,34 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         print(f"Tables written to {args.root / SUMMARY_DIR}")
         return
 
+    waits = res.transfer_waits_for()
     if args.command == "list":
-        for blocker in res.blockers:
-            print(f"# blocked: {blocker}")
+        for checkpoint in checkpoints:
+            print(f"# model {checkpoint.spec}{'' if checkpoint in known else ' (not recorded yet)'}")
+        if waits:
+            print(f"# run 7 (transfer) waits for {' and '.join(waits)}")
         runnable, waiting, state, _ = pending(args.root, res, all_pieces, args.target_rank)
         measured = measured_per_model(args.root)
         for piece in runnable + waiting:
             note = " (waits for the pilot)" if piece in waiting else ""
             print(f"=== {piece.id}: {piece.spec.label}, ~{estimate_seconds(piece, measured) / 3600:.1f} h{note}")
             print("+ eval.py " + " ".join(shlex.quote(a) for a in eval_args(piece, res, args.root, args.target_rank)))
-        print(f"# {len(runnable) + len(waiting)} pending pieces; targeted pilot: {state}")
+        total = sum(estimate_seconds(p, measured) for p in runnable + waiting) / 3600
+        print(f"# {len(runnable) + len(waiting)} pending pieces, ~{total:.0f} h; targeted pilot: {state}")
         return
 
     # next
-    if res.blockers:
-        print("STOP Step 3 needs every run finished: " + "; ".join(res.blockers))
+    if not checkpoints:
+        print("STOP no models recorded: pass --model KEY:TABLES:PATH")
         return
-    try:
-        freeze_models(args.root, res)
-    except SystemExit as stop:
-        print(f"STOP {stop}")
+    missing = [m.path for m in res.models if not Path(m.path).is_file()]
+    if missing:
+        print("STOP checkpoint files are missing: " + ", ".join(missing))
+        return
+    other = [rank for rank in run3_ranks(args.root) if rank != args.target_rank]
+    if other:
+        print(f"STOP run 3 has finished pieces at target rank {other[0]}; set STEP3_TARGET_RANK={other[0]} "
+              "so every model is attacked at the same rank")
         return
     runnable, waiting, state, rates = pending(args.root, res, all_pieces, args.target_rank)
     if state == "fail":
@@ -862,6 +901,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             print(f"STOP {pilot_advice(rates, args.target_rank)}")
         else:
             print("DONE")
+            if waits:
+                print(f"run 7 (transfer) waits for {' and '.join(waits)}: give them with --model")
         return
     measured = measured_per_model(args.root)
     for piece in runnable:
