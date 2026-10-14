@@ -1,7 +1,7 @@
 """Step 3 evaluation: plan every eval.py call from the checkpoints given and the results on disk.
 
-Models (seed 0; FARE, the clean twin and seed 1 are not evaluated): the pretrained model,
-always, and the checkpoints given with --model KEY:TABLES:PATH. KEY is the table row (plain_at,
+Models (seed 0; the clean twin and seed 1 are not evaluated): the pretrained model, always,
+and the checkpoints given with --model KEY:TABLES:PATH. KEY is the table row (plain_at, fare,
 mplc, or the ablations no_anchor, hinge and single_pos; MPLC* already covers "no perceptual
 attacks"). TABLES is the table the checkpoint fills: A, the budget-5 checkpoint (the most robust
 within 5 clean R@1 points, the rule Steps 1 and 2 used), B, best_model.pth (the most robust
@@ -20,7 +20,7 @@ model's attack RNG depends only on (seed, dataset, model tag) and the attacked q
 fixed, so a per-model call gives the same numbers as a call with every model. A piece is done
 once its directory holds DONE, written after eval.py exits 0; a piece killed mid-way is run
 again. Run order follows the runbook (§3.2), without runs 1b, 10 and 11. The transfer run
-waits until both mplc and plain_at are given.
+waits until mplc, plain_at and fare are all given.
 
 The targeted pilot runs first: it fails when every main model's targeted success rate is at
 most 5 % or every one is at least 95 % (the column could not tell the models apart). Then the
@@ -80,6 +80,7 @@ INITIAL_NOTES = {
 # --model KEY -> (row label, group, model tag), in table order.
 MODEL_KEYS = {
     "plain_at": ("plain_at", "main", "plain_at_s0"),
+    "fare": ("FARE", "main", "fare_s0"),
     "mplc": ("MPLC*", "main", "mplc_s0"),
     "no_anchor": ("no anchor", "ablation", "abl_no_anchor"),
     "hinge": ("hinge loss", "ablation", "abl_hinge"),
@@ -92,7 +93,7 @@ PRETRAINED_PATH = "pretrained"  # --model PATH for a table whose checkpoint is t
 # MPLC* trains on L-inf attacks only (Step 1), so it is its own "no perceptual attacks" ablation.
 COVERED_ABLATIONS = ("no perceptual attacks",)
 # The transfer run applies one set of attacks to every main model in a single call.
-TRANSFER_KEYS = ("mplc", "plain_at")
+TRANSFER_KEYS = ("mplc", "plain_at", "fare")
 
 PILOT_LOW, PILOT_HIGH = 5.0, 95.0
 
