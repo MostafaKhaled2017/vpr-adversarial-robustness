@@ -23,9 +23,10 @@ MPLC = "mplc_v2_supervlad_mplc_mixlinf_fte0_s0"
 NO_ANCHOR = "mplc_v2_supervlad_mplc_aw0_mixlinf_fte0_s0"
 HINGE = "mplc_v2_supervlad_mplc_mixlinf_hinge_fte0_s0"
 SINGLE_POS = "mplc_v2_supervlad_mplc_mixlinf_sp_fte0_s0"
+FARE = "mplc_v2_supervlad_fare_fte0_s0"
 STEP3A = ("mplc", "no_anchor")
-STEP3B = ("plain_at", "hinge", "single_pos")
-ALL = STEP3B[:1] + STEP3A + STEP3B[1:]
+STEP3B = ("plain_at", "fare", "hinge", "single_pos")
+ALL = STEP3B[:2] + STEP3A + STEP3B[2:]
 
 
 def write_run(root, name, budget5, best, state="early_stopped", earlier=None):
@@ -52,7 +53,7 @@ def write_step2(root, plain_at=(-1, 12), sp=(30, 40), skip=()):
     root.mkdir(parents=True, exist_ok=True)
     (root / step2.CONFIG_NAME).write_text(yaml.safe_dump({"mplc_star": STAR}), encoding="utf-8")
     (root / "SuperVLAD_base.pth").write_bytes(b"")
-    runs = {PLAIN_AT: plain_at, MPLC: (63, 63), NO_ANCHOR: (-1, 96), HINGE: (57, 57), SINGLE_POS: sp}
+    runs = {PLAIN_AT: plain_at, FARE: (3, 30), MPLC: (63, 63), NO_ANCHOR: (-1, 96), HINGE: (57, 57), SINGLE_POS: sp}
     for name, (budget5, best) in runs.items():
         if name not in skip:
             write_run(root, name, budget5, best)
@@ -64,6 +65,7 @@ def specs(s2, keys=ALL):
     s2 = Path(s2)
     every = {
         "plain_at": ["plain_at:A:pretrained", f"plain_at:B:{s2 / PLAIN_AT / 'best_model.pth'}"],
+        "fare": [f"fare:A:{s2 / FARE / 'best_model_budget5.pth'}", f"fare:B:{s2 / FARE / 'best_model.pth'}"],
         "mplc": [f"mplc:AB:{s2 / MPLC / 'best_model.pth'}"],
         "no_anchor": ["no_anchor:A:pretrained", f"no_anchor:B:{s2 / NO_ANCHOR / 'best_model.pth'}"],
         "hinge": [f"hinge:AB:{s2 / HINGE / 'best_model.pth'}"],
@@ -109,7 +111,7 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(step3.parse_model(f"mplc:ab:{self.mplc}"), step3.Checkpoint("mplc", "AB", self.mplc))
         self.assertEqual(step3.parse_model("no_anchor:A:pretrained").path, "pretrained")
         self.assertEqual(step3.parse_model(f"mplc:B:{self.s2}/./{MPLC}/best_model.pth").path, self.mplc)
-        for spec in (f"fare:AB:{self.mplc}", f"mplc:C:{self.mplc}", "mplc:AB", "mplc:AB:", f"mplc:AB:{self.s2}/absent.pth",
+        for spec in (f"clean_ft:AB:{self.mplc}", f"mplc:C:{self.mplc}", "mplc:AB", "mplc:AB:", f"mplc:AB:{self.s2}/absent.pth",
                      f"mplc:AB:{self.s2 / MPLC}"):
             with self.assertRaises(step3.Refused) as caught:
                 step3.parse_model(spec)
@@ -134,14 +136,14 @@ class ModelTests(unittest.TestCase):
         later = step3.merge(step3.recorded(self.root), [step3.parse_model(s) for s in specs(self.s2, STEP3B)])
         step3.register(self.root, later)
         self.assertEqual(step3.recorded(self.root), later)
-        self.assertEqual(len(later), 8)
+        self.assertEqual(len(later), 10)
         self.assertEqual(json.loads((self.root / step3.MODELS_FILE).read_text())["created"], created)
 
     def test_models_and_rows_in_table_order(self):
         res = resolution(self.s2)
         models = {m.tag: m for m in res.models}
-        self.assertEqual(list(models), ["pretrained", "plain_at_s0_best", "mplc_s0", "abl_no_anchor_best", "abl_hinge",
-                                        "abl_single_pos_b5", "abl_single_pos_best"])
+        self.assertEqual(list(models), ["pretrained", "plain_at_s0_best", "fare_s0_b5", "fare_s0_best", "mplc_s0",
+                                        "abl_no_anchor_best", "abl_hinge", "abl_single_pos_b5", "abl_single_pos_best"])
         self.assertEqual(models["mplc_s0"].path, self.mplc)
         self.assertTrue(models["abl_single_pos_b5"].path.endswith("best_model_budget5.pth"))
         rows = {(t, r.label): r for t in step3.TABLES for r in res.rows[t]}
@@ -151,7 +153,8 @@ class ModelTests(unittest.TestCase):
         self.assertEqual((rows["best", "plain_at"].tag, rows["best", "plain_at"].checkpoint), ("plain_at_s0_best", "best_model.pth"))
         self.assertEqual((rows["budget5", "MPLC*"].tag, rows["best", "MPLC*"].tag), ("mplc_s0", "mplc_s0"))
         self.assertEqual(rows["budget5", "single positive"].checkpoint, "best_model_budget5.pth")
-        self.assertEqual(res.tags("main"), ["pretrained", "plain_at_s0_best", "mplc_s0"])
+        self.assertEqual(res.tags("main"), ["pretrained", "plain_at_s0_best", "fare_s0_b5", "fare_s0_best", "mplc_s0"])
+        self.assertEqual((rows["budget5", "FARE"].tag, rows["best", "FARE"].tag), ("fare_s0_b5", "fare_s0_best"))
         self.assertEqual(res.covered, ["no perceptual attacks"])
         # The order the models are given in does not matter.
         shuffled = step3.resolve([step3.parse_model(s) for s in reversed(specs(self.s2))], res.models[0].path)
@@ -179,12 +182,12 @@ class PieceTests(unittest.TestCase):
         counts = {}
         for piece in found:
             counts[piece.spec.key] = counts.get(piece.spec.key, 0) + 1
-        self.assertEqual(counts, {"pilot_tr10": 3, "r1_apgd": 12, "r3_targeted_tr10": 12, "r4_embshift": 12,
-                                  "r2_pgd_grid": 12, "r7_transfer": 1, "r8_large_eps": 2, "r9_apgd_steps500": 1,
-                                  "r9b_apgd_r3": 1, "r6_l2": 12, "rA_apgd": 8, "rA_pgd_grid": 8})
+        self.assertEqual(counts, {"pilot_tr10": 5, "r1_apgd": 20, "r3_targeted_tr10": 20, "r4_embshift": 20,
+                                  "r2_pgd_grid": 20, "r7_transfer": 1, "r8_large_eps": 4, "r9_apgd_steps500": 1,
+                                  "r9b_apgd_r3": 1, "r6_l2": 20, "rA_apgd": 8, "rA_pgd_grid": 8})
         self.assertEqual(list(dict.fromkeys(p.spec.key for p in found))[:3], ["pilot_tr10", "r1_apgd", "r3_targeted_tr10"])
         transfer = next(p for p in found if p.spec.key == "r7_transfer")
-        self.assertEqual(transfer.tags, ("pretrained", "plain_at_s0_best", "mplc_s0"))  # attacks crafted on pretrained
+        self.assertEqual(transfer.tags, ("pretrained", "plain_at_s0_best", "fare_s0_b5", "fare_s0_best", "mplc_s0"))  # attacks crafted on pretrained
         self.assertEqual(transfer.id, "r7_transfer/msls/shared")
         self.assertEqual({p.dataset for p in found if p.spec.key == "rA_apgd"}, {"msls", "nordland"})
         self.assertEqual({p.tags for p in found if p.spec.key == "r9_apgd_steps500"}, {("mplc_s0",)})
@@ -194,7 +197,7 @@ class PieceTests(unittest.TestCase):
         found = step3.pieces(res, 10)
         self.assertEqual(len(found), 49)
         self.assertNotIn("r7_transfer", {p.spec.key for p in found})
-        self.assertEqual(res.transfer_waits_for(), ["plain_at"])
+        self.assertEqual(res.transfer_waits_for(), ["plain_at", "fare"])
         self.assertEqual({p.tags for p in found if p.spec.key == "rA_apgd"}, {("abl_no_anchor_best",)})
         self.assertEqual(self.res.transfer_waits_for(), [])
 
@@ -208,8 +211,8 @@ class PieceTests(unittest.TestCase):
         self.assertEqual(args[args.index("--model_paths") + 1], str(self.s2 / MPLC / "best_model.pth"))
         args = step3.eval_args(found["r7_transfer/msls/shared"], self.res, self.root, 25)
         self.assertIn("--shared_attacks", args)
-        self.assertEqual(args[args.index("--model_tags") + 1:args.index("--model_tags") + 4],
-                         ["pretrained", "plain_at_s0_best", "mplc_s0"])
+        self.assertEqual(args[args.index("--model_tags") + 1:args.index("--model_tags") + 6],
+                         ["pretrained", "plain_at_s0_best", "fare_s0_b5", "fare_s0_best", "mplc_s0"])
         args = step3.eval_args(found["r9b_apgd_r3/msls/mplc_s0"], self.res, self.root, 25)
         self.assertIn("--rank_restarts=3", args)
         self.assertNotIn("--target_rank=25", args)
@@ -345,10 +348,13 @@ class NextTests(unittest.TestCase):
             results.attacked = lambda run, dataset, tag, eps, field="R@1": rates[tag]
             return step3.pilot_state(self.res, results, 10)[0]
 
-        self.assertEqual(state({"pretrained": 99.0, "plain_at_s0_best": 40.0, "mplc_s0": 20.0}), "pass")
-        self.assertEqual(state({"pretrained": 99.0, "plain_at_s0_best": 96.0, "mplc_s0": 95.0}), "fail")
-        self.assertEqual(state({"pretrained": 5.0, "plain_at_s0_best": 0.0, "mplc_s0": 1.0}), "fail")
-        self.assertEqual(state({"pretrained": 99.0, "plain_at_s0_best": None, "mplc_s0": 1.0}), "pending")
+        def fare(rate):
+            return {"fare_s0_b5": rate, "fare_s0_best": rate}
+
+        self.assertEqual(state({"pretrained": 99.0, "plain_at_s0_best": 40.0, **fare(30.0), "mplc_s0": 20.0}), "pass")
+        self.assertEqual(state({"pretrained": 99.0, "plain_at_s0_best": 96.0, **fare(97.0), "mplc_s0": 95.0}), "fail")
+        self.assertEqual(state({"pretrained": 5.0, "plain_at_s0_best": 0.0, **fare(2.0), "mplc_s0": 1.0}), "fail")
+        self.assertEqual(state({"pretrained": 99.0, "plain_at_s0_best": None, **fare(30.0), "mplc_s0": 1.0}), "pending")
 
     def test_failed_pilot_holds_run_3_back_until_another_target_rank(self):
         finish(self.root, self.res, 10, lambda p: p.spec.key.startswith("pilot"))
@@ -388,14 +394,14 @@ class NextTests(unittest.TestCase):
         plan("register", root, self.s2, *model_flags(self.s2, STEP3A))
         step3a = resolution(self.s2, STEP3A)
         finish(root, step3a, 10)
-        self.assertEqual(plan_next(root, self.s2), ["DONE", "run 7 (transfer) waits for plain_at: give them with --model"])
+        self.assertEqual(plan_next(root, self.s2), ["DONE", "run 7 (transfer) waits for plain_at and fare: give them with --model"])
         lines = plan("register", root, self.s2, *model_flags(self.s2, STEP3B))
-        self.assertEqual(sum(line.endswith("(new)") for line in lines), 5)
+        self.assertEqual(sum(line.endswith("(new)") for line in lines), 7)
         self.assertEqual(plan_next(root, self.s2)[0], "PIECE pilot_tr10/sped/plain_at_s0_best")
         done = {p.id for p in step3.pieces(step3a, 10)}
         finish(root, self.res, 10, lambda p: p.id not in done)
         self.assertEqual(plan_next(root, self.s2), ["DONE"])
-        self.assertEqual(len(step3.read_csv(root / step3.DURATIONS_FILE)), 84)  # no piece ran twice
+        self.assertEqual(len(step3.read_csv(root / step3.DURATIONS_FILE)), 128)  # no piece ran twice
 
 
 class SummaryTests(unittest.TestCase):
@@ -435,12 +441,12 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(paired[0]["mcnemar_p"], f"{step3.mcnemar_p(3, 0):.3g}")
         self.assertNotIn("pending", validity)
         self.assertIn("**fail**", validity)  # fake APGD is 10 points below PGD-20
-        self.assertIn("Pieces done: 84 / 84", status)
+        self.assertIn("Pieces done: 128 / 128", status)
         self.assertIn(f"| mplc | AB | {s2 / MPLC / 'best_model.pth'} |", status)
         self.assertNotIn("Run 7", status)
         self.assertEqual({r["model"] for r in curves if r["dataset"] == "nordland"},
-                         {"pretrained", "plain_at_s0_best", "mplc_s0", "abl_no_anchor_best", "abl_hinge",
-                          "abl_single_pos_b5", "abl_single_pos_best"})
+                         {"pretrained", "plain_at_s0_best", "fare_s0_b5", "fare_s0_best", "mplc_s0", "abl_no_anchor_best",
+                          "abl_hinge", "abl_single_pos_b5", "abl_single_pos_best"})
 
     def test_mcnemar(self):
         self.assertEqual(step3.mcnemar_p(0, 0), 1.0)
@@ -472,7 +478,7 @@ class DriverTests(unittest.TestCase):
     def test_dry_run_lists_pieces(self):
         result = run_script(STEP3_SCRIPT, self.env, ["--dry-run", *model_flags(self.s2)])
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertEqual(result.stdout.count("\n=== "), 84, result.stdout)
+        self.assertEqual(result.stdout.count("\n=== "), 128, result.stdout)
         self.assertIn("--test_method=hard_resize", result.stdout.splitlines()[0])
         self.assertIn("(not recorded yet)", result.stdout)
         self.assertFalse(self.root.exists())
@@ -494,7 +500,7 @@ class DriverTests(unittest.TestCase):
         self.assertNotIn("=== Step 3 piece", result.stdout)
         result = run_script(STEP3_SCRIPT, env, model_flags(self.s2, STEP3B))
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn("Pieces done: 84 / 84", (self.root / "summary" / "status.md").read_text())
+        self.assertIn("Pieces done: 128 / 128", (self.root / "summary" / "status.md").read_text())
 
     def test_bad_or_conflicting_models_stop(self):
         env = {**self.env, "STEP3_STOP_AT": "+3 hours"}

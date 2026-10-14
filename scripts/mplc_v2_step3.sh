@@ -3,7 +3,7 @@
 # --model. Session commands: docs/reports/sprint5/step3_session_commands.md.
 #
 # Models (seed 0): the pretrained model, always, and every --model KEY:TABLES:PATH.
-#   KEY     the table row: plain_at, mplc (main models), no_anchor, hinge, single_pos
+#   KEY     the table row: plain_at, fare, mplc (main models), no_anchor, hinge, single_pos
 #           (ablations). MPLC* is its own "no perceptual attacks" ablation.
 #   TABLES  A: Table A, the budget-5 checkpoint (most robust within 5 clean R@1 points);
 #           B: Table B, best_model.pth (most robust overall); AB: one checkpoint for both,
@@ -19,7 +19,7 @@
 # src/step3_plan.py lists the work as pieces, one eval.py call per (run, dataset, model).
 # Runs, in order (runbook §3.2): P targeted pilot on SPED; 1 rank-APGD-100 at 4/255
 # (headline); 3 targeted rank-PGD-20; 4 embedding-shift PGD-20; 2 rank-PGD-20 over the eps
-# grid; 7 transfer from pretrained (MSLS; waits until both mplc and plain_at are given); 8
+# grid; 7 transfer from pretrained (MSLS; waits until mplc, plain_at and fare are given); 8
 # 32/255 (MSLS); 9 and 9b APGD with 500 steps / 3 restarts (MPLC*, MSLS); 6 L2 rank-PGD-20; A
 # runs 1 and 2 for the ablations on MSLS and Nordland. The worst case over runs 1, 3 and 4
 # (run 5) is computed in the summary.
