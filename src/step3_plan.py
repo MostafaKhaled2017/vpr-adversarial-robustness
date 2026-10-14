@@ -46,8 +46,21 @@ import yaml
 
 from . import step2_plan as step2
 from .paired_analysis import compute_paired_ccasr
-from .robustness_curve_summary import summarize as curve_summary
-from .robustness_curve_summary import worst_case
+
+
+# src.robustness_curve_summary imports torch (through src.config): it is imported on first use,
+# so this planner (and the follow-up planner built on it) loads without torch.
+def curve_summary(*args, **kwargs):
+    from .robustness_curve_summary import summarize
+
+    return summarize(*args, **kwargs)
+
+
+def worst_case(*args, **kwargs):
+    from .robustness_curve_summary import worst_case as summarize_worst_case
+
+    return summarize_worst_case(*args, **kwargs)
+
 
 PRETRAINED = "checkpoints/SuperVLAD_base.pth"
 SUMMARY_DIR = "summary"
