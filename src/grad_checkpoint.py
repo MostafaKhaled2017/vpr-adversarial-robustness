@@ -20,21 +20,30 @@ class CheckpointedBlock(nn.Module):
         return self.block(x)
 
 
+def _blocks_owner(model: nn.Module) -> nn.Module:
+    """The module whose ``blocks`` is the DINOv2 block list: ``model.backbone`` (SuperVLAD) or
+    ``model.backbone.dino`` (BoQ). Accepts a model wrapped in ``nn.DataParallel``."""
+    target = model.module if isinstance(model, nn.DataParallel) else model
+    backbone = getattr(target, "backbone", None)
+    for owner in (backbone, getattr(backbone, "dino", None)):
+        if isinstance(getattr(owner, "blocks", None), nn.ModuleList):
+            return owner
+    raise ValueError(
+        "Gradient checkpointing requires a model exposing backbone.blocks or backbone.dino.blocks "
+        "(DINOv2-style transformer backbone)."
+    )
+
+
 def enable_backbone_grad_checkpointing(model: nn.Module) -> nn.Module:
-    """Wrap every ``model.backbone.blocks`` entry in :class:`CheckpointedBlock` in place.
+    """Wrap every DINOv2 block (``model.backbone.blocks`` or ``model.backbone.dino.blocks``) in
+    :class:`CheckpointedBlock` in place.
 
     Accepts either a bare model or one wrapped in ``nn.DataParallel``. Safe to
     call more than once. Raises ``ValueError`` for models without a
-    DINOv2-style ``backbone.blocks`` module list.
+    DINOv2-style block list.
     """
-    target = model.module if isinstance(model, nn.DataParallel) else model
-    backbone = getattr(target, "backbone", None)
-    blocks = getattr(backbone, "blocks", None)
-    if not isinstance(blocks, nn.ModuleList):
-        raise ValueError(
-            "Gradient checkpointing requires a model exposing backbone.blocks "
-            "(DINOv2-style transformer backbone)."
-        )
+    backbone = _blocks_owner(model)
+    blocks = backbone.blocks
     backbone.blocks = nn.ModuleList(
         block if isinstance(block, CheckpointedBlock) else CheckpointedBlock(block)
         for block in blocks
@@ -59,7 +68,8 @@ def _checkpointed_class(cls):
 
 
 def checkpoint_backbone_blocks_in_place(model: nn.Module) -> nn.Module:
-    """Checkpoint every ``model.backbone.blocks`` entry without changing the module tree.
+    """Checkpoint every DINOv2 block (``model.backbone.blocks`` or ``model.backbone.dino.blocks``)
+    without changing the module tree.
 
     Unlike :func:`enable_backbone_grad_checkpointing`, ``state_dict`` keys stay unchanged, so
     checkpoints saved during training load into plain models with ``strict=True``. Every block is
@@ -71,14 +81,7 @@ def checkpoint_backbone_blocks_in_place(model: nn.Module) -> nn.Module:
     ``nn.DataParallel`` replication); whole-model pickling of a checkpointed model is therefore not
     supported, though ``state_dict`` saving is unaffected.
     """
-    target = model.module if isinstance(model, nn.DataParallel) else model
-    blocks = getattr(getattr(target, "backbone", None), "blocks", None)
-    if not isinstance(blocks, nn.ModuleList):
-        raise ValueError(
-            "Gradient checkpointing requires a model exposing backbone.blocks "
-            "(DINOv2-style transformer backbone)."
-        )
-    for block in blocks:
+    for block in _blocks_owner(model).blocks:
         if type(block) not in _CHECKPOINTED_CLASSES.values():
             block.__class__ = _checkpointed_class(type(block))
     return model

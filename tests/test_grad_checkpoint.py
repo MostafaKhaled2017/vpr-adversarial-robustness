@@ -47,6 +47,18 @@ class _Model(nn.Module):
         return self.backbone(x)
 
 
+class _BoQShapedModel(nn.Module):
+    """BoQ's layout: the DINOv2 blocks sit one level deeper, at backbone.dino.blocks."""
+
+    def __init__(self):
+        super().__init__()
+        self.backbone = nn.Module()
+        self.backbone.dino = _Backbone()
+
+    def forward(self, x):
+        return self.backbone.dino(x)
+
+
 class GradCheckpointTests(unittest.TestCase):
     def test_outputs_and_input_gradients_are_identical(self):
         torch.manual_seed(0)
@@ -99,6 +111,11 @@ class GradCheckpointTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             enable_backbone_grad_checkpointing(nn.Linear(4, 4))
 
+    def test_boq_style_dino_blocks_are_wrapped(self):
+        model = enable_backbone_grad_checkpointing(_BoQShapedModel())
+        for block in model.backbone.dino.blocks:
+            self.assertIsInstance(block, CheckpointedBlock)
+
 
 class InPlaceCheckpointTests(unittest.TestCase):
     def test_state_dict_keys_are_unchanged(self):
@@ -129,6 +146,15 @@ class InPlaceCheckpointTests(unittest.TestCase):
         model = _Model()
         checkpoint_backbone_blocks_in_place(model)
         checkpoint_backbone_blocks_in_place(model)
+        with mock.patch("src.grad_checkpoint.checkpoint", wraps=torch.utils.checkpoint.checkpoint) as spy:
+            model(torch.randn(2, 8)).sum().backward()
+        self.assertEqual(spy.call_count, 3)
+
+    def test_boq_style_dino_blocks_are_checkpointed_in_place(self):
+        model = _BoQShapedModel()
+        keys = list(model.state_dict())
+        checkpoint_backbone_blocks_in_place(model)
+        self.assertEqual(list(model.state_dict()), keys)
         with mock.patch("src.grad_checkpoint.checkpoint", wraps=torch.utils.checkpoint.checkpoint) as spy:
             model(torch.randn(2, 8)).sum().backward()
         self.assertEqual(spy.call_count, 3)
