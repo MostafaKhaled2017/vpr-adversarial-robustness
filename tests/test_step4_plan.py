@@ -215,7 +215,7 @@ class DriverTests(unittest.TestCase):
         self.assertEqual(result.stdout.count("=== Step 4 run: "), 4, result.stdout)
         call = (self.root / EXPECTED["boq"]["araft"] / "train_calls.txt").read_text(encoding="utf-8")
         self.assertIn("--stop_by=", call)
-        text = (self.root / "summary" / "runs.md").read_text(encoding="utf-8")
+        text = (self.root / "summary" / "boq" / "runs.md").read_text(encoding="utf-8")
         self.assertIn("# Step 4 training runs (boq)", text)
         self.assertIn(f"| fare_eps2 | {EXPECTED['boq']['fare_eps2']} | pending |", text)
         result = self.run_driver("train")

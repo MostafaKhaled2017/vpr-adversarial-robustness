@@ -106,7 +106,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "--all", action="store_true", help="Print every unfinished run, one per line.")
     add("name", "Print a run's directory name.", root=False, run_keys=False).add_argument(
         "key", choices=keys, metavar="KEY")
-    add("summary", "Write ROOT/summary/runs.md and runs.csv (default: every key).")
+    add("summary", "Write ROOT/summary/<model>/runs.md and runs.csv (default: every key).")
     add("models", "Print the evaluation checkpoints.", run_keys=False).add_argument(
         "--pretrained", required=True, help="The pretrained release's checkpoint.")
     args = parser.parse_args(argv)
@@ -131,8 +131,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         return
     if args.command == "summary":
         rows = [followup.table_row(key, args.root, runs=table, naming=run_name) for key in selected]
-        followup.write_summary(rows, args.root / followup.SUMMARY_DIR, title=f"Step 4 training runs ({args.model})")
-        print(f"Tables written to {args.root / followup.SUMMARY_DIR}")
+        out = args.root / followup.SUMMARY_DIR / args.model  # both models share the run directory
+        followup.write_summary(rows, out, title=f"Step 4 training runs ({args.model})")
+        print(f"Tables written to {out}")
         return
     pending = [key for key in selected if not followup.is_finished(args.root / run_name(table[key]))]
     for key in pending if args.all else pending[:1]:
