@@ -118,3 +118,56 @@ SUPERVLAD_EVAL_MODEL_FLAGS=(
   --infer_batch_size=8
   --grad_checkpointing
 )
+
+# Step 4 (runbook §4): BoQ and MixVPR trained with this same recipe. SHARED_RECIPE_FLAGS is
+# SUPERVLAD_RECIPE_FLAGS minus its SuperVLAD-only model flags and image sizes, so the recipe is
+# still defined once above; each model adds its own model flags and sizes.
+SHARED_RECIPE_FLAGS=()
+_skip=0
+for _flag in "${SUPERVLAD_RECIPE_FLAGS[@]}"; do
+  if [ "${_skip}" -gt 0 ]; then
+    _skip=$((_skip - 1))
+    continue
+  fi
+  case "${_flag}" in
+    --model=* | --foundation_model_path=* | --backbone=* | --supervlad_clusters=* | --crossimage_encoder | --freeze_te=*) ;;
+    --train_resize | --resize) _skip=2 ;;
+    *) SHARED_RECIPE_FLAGS+=("${_flag}") ;;
+  esac
+done
+unset _flag _skip
+
+# Initial weights: the official releases.
+BOQ_BASE_CHECKPOINT="${BOQ_BASE_CHECKPOINT:-checkpoints/boq_dinov2_12288.pth}"
+MIXVPR_BASE_CHECKPOINT="${MIXVPR_BASE_CHECKPOINT:-third_party/VPR-methods-evaluation/trained_models/mixvpr/resnet50_MixVPR_4096_channels(1024)_rows(4)}"
+
+# Each model trains at the size its release was trained at and validates at its evaluation
+# size: BoQ (DINOv2) 224 / 322 (third_party/Bag-of-Queries/train.py), MixVPR 320 / 320.
+BOQ_MODEL_FLAGS=(
+  --model=boq
+  --boq_backbone=Dinov2
+  --boq_descriptors_dimension=12288
+  --train_resize 224 224
+  --resize 322 322
+)
+MIXVPR_MODEL_FLAGS=(
+  --model=mixvpr
+  --mixvpr_descriptors_dimension=4096
+  --train_resize 320 320
+  --resize 320 320
+)
+
+# Model flags eval.py needs to rebuild a BoQ or MixVPR checkpoint. Batch size and gradient
+# checkpointing affect memory, not metrics; checkpointing only wraps DINOv2 blocks.
+BOQ_EVAL_MODEL_FLAGS=(
+  --model_type=boq
+  --boq_backbone=Dinov2
+  --boq_descriptors_dimension=12288
+  --infer_batch_size=8
+  --grad_checkpointing
+)
+MIXVPR_EVAL_MODEL_FLAGS=(
+  --model_type=mixvpr
+  --mixvpr_descriptors_dimension=4096
+  --infer_batch_size=8
+)
