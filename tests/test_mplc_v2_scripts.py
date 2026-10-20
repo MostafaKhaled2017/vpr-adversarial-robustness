@@ -520,6 +520,33 @@ class MplcV2EvalScriptOptionTests(unittest.TestCase):
     def test_invalid_goal_exits_2(self):
         self.assertEqual(run_script(EVAL_SCRIPT, args=["--goal", "sideways"]).returncode, 2)
 
+    def test_boq_model_type_uses_boq_flags_and_output_dir(self):
+        result = run_script(EVAL_SCRIPT, args=("--model-type", "boq", "--datasets", "msls",
+                                               "--model", "araft=logs/x/best_model.pth"))
+        self.assertEqual(result.returncode, 0, result.stdout)
+        for flag in ("--model_type=boq", "--boq_descriptors_dimension=12288", "--grad_checkpointing",
+                     "output/mplc_v2/boq_msls/rank_eval_results.json"):
+            self.assertIn(flag, result.stdout)
+        self.assertNotIn("supervlad", result.stdout)
+
+    def test_boq_pretrained_is_boq_checkpoint(self):
+        result = run_script(EVAL_SCRIPT, {"MPLC_V2_MODEL": "boq"}, args=("--datasets", "msls", "--seeds", "0"))
+        self.assertIn("checkpoints/boq_dinov2_12288.pth", result.stdout)
+        self.assertIn("no finished checkpoint for mplc_v2_boq_clean_ft_s0", result.stdout)
+
+    def test_mixvpr_model_type_has_no_grad_checkpointing(self):
+        result = run_script(EVAL_SCRIPT, args=("--model-type", "mixvpr", "--datasets", "msls",
+                                               "--model", "m=logs/x/best_model.pth"))
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("--model_type=mixvpr", result.stdout)
+        self.assertIn("output/mplc_v2/mixvpr_msls/", result.stdout)
+        self.assertNotIn("--grad_checkpointing", result.stdout)
+
+    def test_unknown_model_type_exits_two(self):
+        result = run_script(EVAL_SCRIPT, args=("--model-type", "netvlad"))
+        self.assertEqual(result.returncode, 2)
+        self.assertNotIn("eval.py", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

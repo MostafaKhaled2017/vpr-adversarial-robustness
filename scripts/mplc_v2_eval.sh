@@ -11,7 +11,11 @@
 #   --datasets "msls sped nordland"  datasets to evaluate on       (MPLC_V2_DATASETS)
 #   --seeds "0 1"                    seeds to discover runs for     (MPLC_V2_SEEDS)
 #   --arms "clean_ft mplc"           arms to discover runs for      (MPLC_V2_ARMS)
-#   --no-pretrained                  do not evaluate checkpoints/SuperVLAD_base.pth
+#   --model-type NAME                supervlad | boq | mixvpr: the architecture of every model, its
+#                                    pretrained release, discovered runs mplc_v2_<NAME>_* and
+#                                    output dirs <NAME>_<dataset> (default supervlad) (MPLC_V2_MODEL)
+#   --no-pretrained                  do not evaluate the pretrained release
+#                                    (checkpoints/SuperVLAD_base.pth for supervlad)
 #   --model TAG=PATH                 evaluate PATH as TAG; repeatable. When given, only
 #                                    these models run (no discovery, no pretrained)
 #                                    unless --with-discovered is also passed
@@ -58,6 +62,7 @@ export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/third_party/SuperVLAD:${PYTHONPATH:
 source "${SCRIPT_DIR}/lib/supervlad_common.sh"
 
 PYTHON=${PYTHON:-python}
+MODEL=${MPLC_V2_MODEL:-supervlad}
 SEEDS=${MPLC_V2_SEEDS:-"0 1"}
 ARMS=${MPLC_V2_ARMS:-"clean_ft mplc"}
 DATASETS=${MPLC_V2_DATASETS:-"msls sped nordland"}
@@ -81,13 +86,14 @@ usage() {
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --datasets | --seeds | --arms | --model | --epsilons | --output-root | --attack | --steps | --restarts | --max-queries | --goal | --checkpoint)
+    --datasets | --seeds | --arms | --model | --model-type | --epsilons | --output-root | --attack | --steps | --restarts | --max-queries | --goal | --checkpoint)
       [ $# -ge 2 ] || { echo "$1 requires a value" >&2; exit 2; }
       case "$1" in
         --datasets) DATASETS=$2 ;;
         --seeds) SEEDS=$2 ;;
         --arms) ARMS=$2 ;;
         --model) EXPLICIT_MODELS="${EXPLICIT_MODELS:+${EXPLICIT_MODELS} }$2" ;;
+        --model-type) MODEL=$2 ;;
         --epsilons) EPSILONS=$2 ;;
         --output-root) OUTPUT_ROOT=$2 ;;
         --attack) ATTACK=$2 ;;
@@ -118,12 +124,28 @@ for dataset in ${DATASETS}; do
   [ -d "datasets/${dataset}/images/test" ] || echo "WARNING: datasets/${dataset}/images/test not found" >&2
 done
 
+case "${MODEL}" in
+  supervlad)
+    EVAL_MODEL_FLAGS=("${SUPERVLAD_EVAL_MODEL_FLAGS[@]}")
+    PRETRAINED=checkpoints/SuperVLAD_base.pth
+    ;;
+  boq)
+    EVAL_MODEL_FLAGS=("${BOQ_EVAL_MODEL_FLAGS[@]}")
+    PRETRAINED=${BOQ_BASE_CHECKPOINT}
+    ;;
+  mixvpr)
+    EVAL_MODEL_FLAGS=("${MIXVPR_EVAL_MODEL_FLAGS[@]}")
+    PRETRAINED=${MIXVPR_BASE_CHECKPOINT}
+    ;;
+  *) echo "unknown model type: ${MODEL} (expected supervlad, boq or mixvpr)" >&2; exit 2 ;;
+esac
+
 case "${GOAL}" in
   untargeted | targeted) ;;
   *) echo "unknown goal: ${GOAL} (expected untargeted or targeted)" >&2; exit 2 ;;
 esac
 
-# Output dir: ${OUTPUT_ROOT}/supervlad_<dataset>[_<attack>][_<goal>][_<checkpoint>][_steps<N>][_r<N>][_q<N>][_shared],
+# Output dir: ${OUTPUT_ROOT}/<model>_<dataset>[_<attack>][_<goal>][_<checkpoint>][_steps<N>][_r<N>][_q<N>][_shared],
 # each part only when it differs from the default, so non-default runs never overwrite each other.
 OUTPUT_SUFFIX=""
 [ "${ATTACK}" = "rank_pgd_linf" ] || OUTPUT_SUFFIX="${OUTPUT_SUFFIX}_${ATTACK}"
@@ -177,14 +199,14 @@ for entry in ${EXPLICIT_MODELS}; do
 done
 
 if [ -z "${EXPLICIT_MODELS}" ] || [ "${WITH_DISCOVERED}" = "1" ]; then
-  if [ "${INCLUDE_PRETRAINED}" = "1" ] && [ -e checkpoints/SuperVLAD_base.pth ]; then
-    MODEL_PATHS+=("checkpoints/SuperVLAD_base.pth")
+  if [ "${INCLUDE_PRETRAINED}" = "1" ] && [ -e "${PRETRAINED}" ]; then
+    MODEL_PATHS+=("${PRETRAINED}")
     MODEL_TAGS+=("pretrained")
   fi
 
   for seed in ${SEEDS}; do
     for arm in ${ARMS}; do
-      name="mplc_v2_supervlad_${arm}_s${seed}"
+      name="mplc_v2_${MODEL}_${arm}_s${seed}"
       run_dir="$(latest_finished_run "${name}")"
       if [ -n "${run_dir}" ]; then
         MODEL_PATHS+=("${run_dir}/${CHECKPOINT}")
@@ -208,13 +230,13 @@ echo "Models: ${MODEL_TAGS[*]+"${MODEL_TAGS[*]}"} | datasets: ${DATASETS} | epsi
 for dataset in ${DATASETS}; do
   run "${PYTHON}" eval.py \
     --eval_datasets_folder=datasets --datasets "${dataset}" --dataset_split=test \
-    "${SUPERVLAD_EVAL_MODEL_FLAGS[@]}" \
+    "${EVAL_MODEL_FLAGS[@]}" \
     --model_paths "${MODEL_PATHS[@]}" \
     --model_tags "${MODEL_TAGS[@]}" \
     --test_method=hard_resize \
     --rank_attack="${ATTACK}" --rank_steps="${STEPS}" --rank_restarts="${RESTARTS}" \
     --rank_attack_goal="${GOAL}" "${EXTRA_EVAL_FLAGS[@]+"${EXTRA_EVAL_FLAGS[@]}"}" \
     --epsilons ${EPSILONS} \
-    --output_json="${OUTPUT_ROOT}/supervlad_${dataset}${OUTPUT_SUFFIX}/rank_eval_results.json" \
-    --output_csv="${OUTPUT_ROOT}/supervlad_${dataset}${OUTPUT_SUFFIX}/rank_eval_results.csv"
+    --output_json="${OUTPUT_ROOT}/${MODEL}_${dataset}${OUTPUT_SUFFIX}/rank_eval_results.json" \
+    --output_csv="${OUTPUT_ROOT}/${MODEL}_${dataset}${OUTPUT_SUFFIX}/rank_eval_results.csv"
 done
