@@ -280,6 +280,41 @@ class MplcV2TrainScriptTests(unittest.TestCase):
         self.assertIn("--save_dir=mplc_v2_supervlad_plain_at_lr3e-6_ep9_s0", result.stdout)
         self.assertIn("--save_dir=mplc_v2_supervlad_fare_aw10_lr3e-6_ep9_s0", result.stdout)
 
+    def test_boq_runs_are_named_and_built_for_boq(self):
+        env = {"MPLC_V2_MODEL": "boq", "MPLC_V2_ARMS": "mplc", "MPLC_V2_ATTACK_MIX": "linf",
+               "MPLC_V2_MULTI_POSITIVE": "0", "MPLC_V2_FREEZE_TE": "0"}
+        result = run_script(TRAIN_SCRIPT, env)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("--save_dir=mplc_v2_boq_mplc_mixlinf_sp_fte0_s0", result.stdout)
+        for flag in ("--model=boq", "--boq_descriptors_dimension=12288", "--train_resize 224 224", "--resize 322 322",
+                     "--resume=checkpoints/boq_dinov2_12288.pth", "--resume_model_only", "--freeze_te=0",
+                     "--grad_checkpointing", "--batch_size=20", "--batches_per_epoch=200", "--optim=adam"):
+            self.assertIn(flag, result.stdout)
+        for flag in ("--model=supervlad", "--supervlad_clusters", "--crossimage_encoder",
+                     "--foundation_model_path", "--backbone=dino", "SuperVLAD_base.pth", "--train_resize 322 322"):
+            self.assertNotIn(flag, result.stdout)
+
+    def test_mixvpr_runs_skip_freeze_te_and_grad_checkpointing(self):
+        result = run_script(TRAIN_SCRIPT, {"MPLC_V2_MODEL": "mixvpr", "MPLC_V2_ARMS": "clean_ft"})
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("--save_dir=mplc_v2_mixvpr_clean_ft_s0", result.stdout)
+        self.assertIn("--model=mixvpr", result.stdout)
+        self.assertIn("--train_resize 320 320 --resize 320 320", result.stdout)
+        self.assertIn("resnet50_MixVPR_4096_channels(1024)_rows(4)", result.stdout)
+        self.assertNotIn("--freeze_te", result.stdout)
+        self.assertNotIn("--grad_checkpointing", result.stdout)
+
+    def test_mixvpr_rejects_freeze_te(self):
+        result = run_script(TRAIN_SCRIPT, {"MPLC_V2_MODEL": "mixvpr", "MPLC_V2_FREEZE_TE": "0"})
+        self.assertEqual(result.returncode, 2)
+        self.assertNotIn("train.py", result.stdout)
+
+    def test_unknown_model_exits_two(self):
+        result = run_script(TRAIN_SCRIPT, {"MPLC_V2_MODEL": "BoQ"})
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("unknown MPLC_V2_MODEL", result.stdout)
+        self.assertNotIn("train.py", result.stdout)
+
 
 class MplcV2EvalScriptTests(unittest.TestCase):
     def test_explicit_models_and_single_dataset(self):

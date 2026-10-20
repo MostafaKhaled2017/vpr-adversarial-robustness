@@ -9,6 +9,9 @@
 #   MPLC_V2_SEED=1 scripts/mplc_v2_train.sh  # seed 1: clean_ft, then mplc
 #
 # Environment overrides:
+#   MPLC_V2_MODEL         supervlad | boq | mixvpr; named in save_dir as mplc_v2_<model>_...
+#                         (default: supervlad). boq/mixvpr: same recipe, own model flags,
+#                         sizes and initial weights (lib/supervlad_common.sh, Step 4)
 #   MPLC_V2_SEED          training seed                          (default: 0)
 #   MPLC_V2_ARMS          arms to train: clean_ft mplc plain_at fare (default: "clean_ft mplc")
 #   MPLC_V2_TAU           listwise temperature (mplc arm)        (default: 0.05)
@@ -19,7 +22,7 @@
 #   MPLC_V2_ALIGN_WEIGHT  anchor weight λ_anchor (mplc arm)     (default: 1.0)
 #   MPLC_V2_TRAIN_EPS     rank-attack L-inf budget, normalized  (default: 0.0685, <=4/255)
 #   MPLC_V2_FREEZE_TE     frozen DINOv2 blocks, both arms       (default: 8; <8 adds
-#                         --grad_checkpointing)
+#                         --grad_checkpointing). Not for mixvpr (ResNet-50, fully trained)
 #   MPLC_V2_CLEAN_BUDGETS clean-drop reporting budgets, points  (default: "1 3 5")
 #   MPLC_V2_LR            learning rate, both arms              (default: 1e-5)
 #   MPLC_V2_NUM_EPOCHS    maximum epochs, both arms             (default: 100; 12 for screens)
@@ -73,6 +76,7 @@ export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/third_party/SuperVLAD:${PYTHONPATH:
 source "${SCRIPT_DIR}/lib/supervlad_common.sh"
 
 PYTHON=${PYTHON:-python}
+MODEL=${MPLC_V2_MODEL:-supervlad}
 SEED=${MPLC_V2_SEED:-0}
 ARMS=${MPLC_V2_ARMS:-"clean_ft mplc"}
 TAU=${MPLC_V2_TAU:-0.05}
@@ -136,6 +140,31 @@ case "${PIPE_LOADER}" in
   0 | 1) ;;
   *) echo "MPLC_V2_PIPE_LOADER must be 0 or 1, got: ${PIPE_LOADER}" >&2; exit 2 ;;
 esac
+# The recipe's model-independent flags are shared; each model brings its own model flags,
+# image sizes and initial weights (lib/supervlad_common.sh).
+case "${MODEL}" in
+  supervlad)
+    RECIPE_FLAGS=("${SUPERVLAD_RECIPE_FLAGS[@]}")
+    BASE_INIT_FLAGS=("${SUPERVLAD_INIT_FLAGS[@]}")
+    ;;
+  boq)
+    RECIPE_FLAGS=("${BOQ_MODEL_FLAGS[@]}" "${SHARED_RECIPE_FLAGS[@]}")
+    BASE_INIT_FLAGS=(--resume="${BOQ_BASE_CHECKPOINT}" --resume_model_only)
+    ;;
+  mixvpr)
+    # A ResNet-50: no DINOv2 blocks to freeze or checkpoint, the whole network trains.
+    if [ -n "${MPLC_V2_FREEZE_TE:-}" ]; then
+      echo "MPLC_V2_FREEZE_TE does not apply to mixvpr (the whole network trains); unset it." >&2
+      exit 2
+    fi
+    RECIPE_FLAGS=("${MIXVPR_MODEL_FLAGS[@]}" "${SHARED_RECIPE_FLAGS[@]}")
+    BASE_INIT_FLAGS=(--resume="${MIXVPR_BASE_CHECKPOINT}" --resume_model_only)
+    ;;
+  *)
+    echo "unknown MPLC_V2_MODEL: ${MODEL} (expected supervlad, boq or mixvpr)" >&2
+    exit 2
+    ;;
+esac
 
 # A run is finished, and should be skipped, when its run_status.json records a terminal
 # state. best_model.pth alone is not a reliable finished marker (it also exists mid-run).
@@ -194,7 +223,7 @@ mplc_override_suffix() {
 # clean twin.
 shared_suffix() {
   local suffix=""
-  [ "${FREEZE_TE}" = "8" ] || suffix="${suffix}_fte${FREEZE_TE}"
+  [ "${MODEL}" = "mixvpr" ] || [ "${FREEZE_TE}" = "8" ] || suffix="${suffix}_fte${FREEZE_TE}"
   [ "${LR}" = "1e-5" ] || suffix="${suffix}_lr${LR}"
   [ "${NUM_EPOCHS}" = "100" ] || suffix="${suffix}_ep${NUM_EPOCHS}"
   echo "${suffix}"
@@ -212,12 +241,13 @@ baseline_suffix() {
 }
 
 # shellcheck disable=SC2206 # CLEAN_BUDGETS is a space-separated list by design.
-COMMON_FLAGS=(
-  --freeze_te="${FREEZE_TE}"
+COMMON_FLAGS=()
+[ "${MODEL}" = "mixvpr" ] || COMMON_FLAGS+=(--freeze_te="${FREEZE_TE}")
+COMMON_FLAGS+=(
   --selection_clean_budgets ${CLEAN_BUDGETS}
   --val_rank_epsilons 0.0342 0.0685
 )
-if [ "${FREEZE_TE}" -lt 8 ]; then
+if [ "${MODEL}" != "mixvpr" ] && [ "${FREEZE_TE}" -lt 8 ]; then
   COMMON_FLAGS+=(--grad_checkpointing)
 fi
 # These override the recipe's --lr / --num_epochs / patience (argparse keeps the last value).
@@ -232,9 +262,9 @@ fi
 
 for arm in ${ARMS}; do
   case "${arm}" in
-    mplc) name="mplc_v2_supervlad_mplc$(mplc_override_suffix)$(shared_suffix)_s${SEED}" ;;
-    plain_at | fare) name="mplc_v2_supervlad_${arm}$(baseline_suffix "${arm}")$(shared_suffix)_s${SEED}" ;;
-    *) name="mplc_v2_supervlad_${arm}$(shared_suffix)_s${SEED}" ;;
+    mplc) name="mplc_v2_${MODEL}_mplc$(mplc_override_suffix)$(shared_suffix)_s${SEED}" ;;
+    plain_at | fare) name="mplc_v2_${MODEL}_${arm}$(baseline_suffix "${arm}")$(shared_suffix)_s${SEED}" ;;
+    *) name="mplc_v2_${MODEL}_${arm}$(shared_suffix)_s${SEED}" ;;
   esac
 
   arm_flags=()
@@ -281,7 +311,7 @@ for arm in ${ARMS}; do
       ;;
   esac
 
-  init_flags=("${SUPERVLAD_INIT_FLAGS[@]}")
+  init_flags=("${BASE_INIT_FLAGS[@]}")
   if [ -n "${RUN_ROOT}" ]; then
     # Resumable mode: a fixed run directory, classified by what it already holds.
     managed_dir="${RUN_ROOT}/${name}"
@@ -329,7 +359,7 @@ for arm in ${ARMS}; do
   fi
 
   run "${PYTHON}" train.py \
-    "${SUPERVLAD_RECIPE_FLAGS[@]}" \
+    "${RECIPE_FLAGS[@]}" \
     "${init_flags[@]}" \
     --validation_protocol=rank_pgd \
     "${COMMON_FLAGS[@]}" \
