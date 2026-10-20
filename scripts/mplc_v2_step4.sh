@@ -54,7 +54,7 @@
 # key; 3 (eval) every piece of the trained rows is done but some default rows are not trained
 # yet; 5 session over (rerun in the next session); 124 or 137 killed by the session's timeout.
 #
-# Outputs: STEP4_ROOT/summary/runs.md and runs.csv (train, one row per key, rebuilt after every
+# Outputs: STEP4_ROOT/summary/<model>/runs.md and runs.csv (train, one row per key, rebuilt after every
 # run); STEP4_EVAL_ROOT/<model>/<run>/<tag>/<model>_<dataset>_<suffix>/rank_eval_results.{json,csv}
 # and per_query_ranks.csv (eval).
 set -euo pipefail
@@ -125,7 +125,7 @@ train() {
 
   summarize() {
     plan summary --root "${ROOT}" >/dev/null ||
-      echo "=== Could not rebuild ${ROOT}/summary (see above); the runs are unaffected." >&2
+      echo "=== Could not rebuild ${ROOT}/summary/${MODEL} (see above); the runs are unaffected." >&2
   }
   run_name() {
     "${PYTHON}" -c 'import sys; from src.step4_plan import run_name; print(run_name(dict(a.split("=", 1) for a in sys.argv[1:])))' "$@"
@@ -167,7 +167,7 @@ train() {
     assignments="$(plan next --root "${ROOT}" "${run_flags[@]}")"
     if [ "${assignments}" = "DONE" ]; then
       summarize
-      echo "=== Step 4 training (${MODEL}) done. Tables: ${ROOT}/summary/runs.md"
+      echo "=== Step 4 training (${MODEL}) done. Tables: ${ROOT}/summary/${MODEL}/runs.md"
       exit 0
     fi
     # shellcheck disable=SC2086 # the assignments are separate VAR=value words
