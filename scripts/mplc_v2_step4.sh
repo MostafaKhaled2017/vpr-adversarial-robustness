@@ -8,8 +8,7 @@
 #   araft     ARAFT (single positive, rank L-inf only)  mplc_v2_<model>_mplc_mixlinf_sp[_fte0]_s0
 #   plain_at  plain_at baseline                          mplc_v2_<model>_plain_at[_fte0]_s0
 #   fare      FARE baseline, lambda_anchor 1.0           mplc_v2_<model>_fare[_fte0]_s0
-#   twin      clean twin                                 mplc_v2_<model>_clean_ft[_fte0]_s0
-# Optional keys (STEP4_RUNS): fare_eps2 (FARE at 2/255), screen_lr1e-5 and screen_lr3e-6
+# Optional keys (STEP4_RUNS): twin (clean twin), fare_eps2 (FARE at 2/255), screen_lr1e-5 and screen_lr3e-6
 # (9-epoch ARAFT lr screens). Each run lives in STEP4_ROOT/<name>: stop at any point and rerun
 # to resume; finished runs are skipped and a stopped run continues from its last epoch.
 #
@@ -17,7 +16,7 @@
 # robust; one file when the same epoch), on 1000 queries per dataset (SPED: all 607):
 #   r1_apgd      rank-APGD-100 at 2/255 and 4/255 (headline)   pretrained, araft, plain_at, fare[, fare_eps2]
 #   r2_pgd_grid  rank-PGD-20 over the eps grid                 the same models
-#   twin_clean   the twin's clean recall (rank-PGD-20 at 1/255 rides along)
+#   twin_clean   the twin's clean recall, once it is trained (rank-PGD-20 at 1/255 rides along)
 # A piece is one (run, model, dataset) eval.py call writing to
 # STEP4_EVAL_ROOT/<model>/<run>/<tag>/; it is marked <dataset>.done once eval.py exits 0, so
 # rerun to resume. A row whose run is not trained yet is skipped; rerun after it is.
@@ -39,7 +38,7 @@
 #   STEP4_MODEL          boq | mixvpr (required)
 #   STEP4_STOP_AT        end of this session, any `date -d` time (required for a real run)
 #   STEP4_ROOT           training runs                       (default: logs/mplc_v2_step4)
-#   STEP4_RUNS           run keys to train, in this order    (default: araft plain_at fare twin)
+#   STEP4_RUNS           run keys to train, in this order    (default: araft plain_at fare)
 #   STEP4_CLEAN_BUDGETS  clean budgets of the reporting checkpoints, points; keep 5, the
 #                        tables' budget                      (default: "1 3 5 7 10")
 #   STEP4_PIPE_LOADER    1 = data-loader batches through a pipe, not /dev/shm (default: 0)

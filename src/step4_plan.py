@@ -8,7 +8,7 @@ models:
   araft          ARAFT: single-positive MPLC on rank L-inf attacks only   (default)
   plain_at       plain_at baseline                                         (default)
   fare           FARE baseline, lambda_anchor 1.0                          (default)
-  twin           clean twin                                                (default)
+  twin           clean twin                                                (optional)
   fare_eps2      FARE at training eps 0.0342 (<= 2/255)                    (optional)
   screen_lr1e-5  9-epoch ARAFT lr screen, validated every epoch            (optional)
   screen_lr3e-6  the same at lr 3e-6                                       (optional)
@@ -32,7 +32,7 @@ from . import step2_plan as step2
 from .step3_plan import PRETRAINED_PATH, Refused
 
 MODELS = ("boq", "mixvpr")
-DEFAULT_RUNS = ("araft", "plain_at", "fare", "twin")
+DEFAULT_RUNS = ("araft", "plain_at", "fare")
 EVAL_ROWS = ("araft", "plain_at", "fare", "fare_eps2")  # the main table's rows, after the pretrained model
 TWIN = "twin"
 

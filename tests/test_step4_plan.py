@@ -34,7 +34,7 @@ EXPECTED = {
         "screen_lr3e-6": "mplc_v2_mixvpr_mplc_mixlinf_sp_lr3e-6_ep9_s0",
     },
 }
-DEFAULT = ["araft", "plain_at", "fare", "twin"]
+DEFAULT = ["araft", "plain_at", "fare"]
 DATASETS = ["msls", "pitts30k", "sped", "nordland"]
 
 
@@ -212,7 +212,7 @@ class DriverTests(unittest.TestCase):
         result = self.run_driver("train")
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn(f"=== RESUME {EXPECTED['boq']['araft']} from", result.stdout)
-        self.assertEqual(result.stdout.count("=== Step 4 run: "), 4, result.stdout)
+        self.assertEqual(result.stdout.count("=== Step 4 run: "), 3, result.stdout)
         call = (self.root / EXPECTED["boq"]["araft"] / "train_calls.txt").read_text(encoding="utf-8")
         self.assertIn("--stop_by=", call)
         text = (self.root / "summary" / "boq" / "runs.md").read_text(encoding="utf-8")
@@ -238,6 +238,7 @@ class DriverTests(unittest.TestCase):
             write_run(self.root, "boq", key)
         result = self.run_driver("eval", "--dry-run")
         self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertNotIn("twin", result.stdout)  # optional and not trained: not waited for
         self.assertNotIn("pretrained", "".join(commands(result.stdout)))  # finished pieces are skipped
         result = self.run_driver("eval", FAKE_EVAL="fail")
         self.assertEqual(result.returncode, 1, result.stdout)
@@ -255,11 +256,15 @@ class DriverTests(unittest.TestCase):
         for flag in ("--model_type=boq", "--rank_attack=rank_apgd_linf", "--rank_steps=100", "--max_queries=1000",
                      "--epsilons 0.03425 0.0685", "best_model_budget5.pth"):
             self.assertIn(flag, call)
-        for dataset in DATASETS:
-            self.assertTrue((base / "twin_clean" / "twin" / f"boq_{dataset}_q1000" / "rank_eval_results.json").is_file())
+        self.assertFalse((base / "twin_clean").exists())
         result = self.run_driver("eval")
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertNotIn("=== Piece", result.stdout)
+        write_run(self.root, "boq", "twin")  # an optional run, once trained, is evaluated too
+        result = self.run_driver("eval")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        for dataset in DATASETS:
+            self.assertTrue((base / "twin_clean" / "twin" / f"boq_{dataset}_q1000" / "rank_eval_results.json").is_file())
 
 
 if __name__ == "__main__":
