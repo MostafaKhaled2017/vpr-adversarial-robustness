@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 from types import ModuleType
+from typing import Optional
 
 import torch
 from torch import nn
@@ -91,7 +92,20 @@ def _build_model_classes(upstream):
     return GradientDinoV2, GradientResNet, DescriptorModel
 
 
-def _build_dinov2_backbone(backbone_class):
+def apply_freeze_te(dino: nn.Module, freeze_te: Optional[int]) -> None:
+    """Choose the trainable DINOv2 blocks. None keeps BoQ's upstream default (only the last 2
+    blocks train); otherwise SuperVLAD's --freeze_te rule: 0 trains the whole backbone, k > 0
+    trains the blocks from index k on."""
+    if freeze_te == 0:
+        dino.requires_grad_(True)
+        return
+    first = len(dino.blocks) - 2 if freeze_te is None else freeze_te
+    dino.requires_grad_(False)
+    for block in dino.blocks[first:]:
+        block.requires_grad_(True)
+
+
+def _build_dinov2_backbone(backbone_class, freeze_te: Optional[int] = None):
     from model.vision_transformer import vit_base
 
     backbone = backbone_class.__new__(backbone_class)
@@ -100,9 +114,7 @@ def _build_dinov2_backbone(backbone_class):
     backbone.unfreeze_n_blocks = 2
     backbone.reshape_output = True
     backbone.dino = vit_base(patch_size=14, img_size=518, init_values=1, block_chunks=0)
-    backbone.dino.requires_grad_(False)
-    for block in backbone.dino.blocks[-backbone.unfreeze_n_blocks :]:
-        block.requires_grad_(True)
+    apply_freeze_te(backbone.dino, freeze_te)
     backbone.out_channels = backbone.dino.embed_dim
     return backbone
 
@@ -137,7 +149,7 @@ def build(args) -> ModelBundle:
     descriptor_dim = resolve_descriptor_dimension(args)
 
     if args.boq_backbone == "Dinov2":
-        backbone = _build_dinov2_backbone(gradient_dino)
+        backbone = _build_dinov2_backbone(gradient_dino, getattr(args, "freeze_te", None))
         projection_channels = 384
     else:
         backbone = _build_resnet50_backbone(gradient_resnet)

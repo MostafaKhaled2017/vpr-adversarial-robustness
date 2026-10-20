@@ -4,7 +4,7 @@ import unittest
 import torch
 from torch import nn
 
-from src.models.boq import _build_model_classes
+from src.models.boq import _build_model_classes, apply_freeze_te
 
 
 class TokenBlock(nn.Module):
@@ -98,6 +98,36 @@ class BoQAdapterTests(unittest.TestCase):
         self.assertGreater(float(inputs.grad.abs().sum()), 0.0)
         self.assertTrue(all(parameter.grad is None for parameter in backbone.frozen_layers.parameters()))
 
+
+
+class FakeTwelveBlockDino(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.patch_embed = nn.Linear(2, 2)
+        self.blocks = nn.ModuleList(nn.Linear(2, 2) for _ in range(12))
+
+
+def trainable(dino):
+    return [i for i, block in enumerate(dino.blocks) if all(p.requires_grad for p in block.parameters())]
+
+
+class BoQFreezeTeTests(unittest.TestCase):
+    def setUp(self):
+        self.dino = FakeTwelveBlockDino()
+
+    def test_freeze_te_none_keeps_last_two_blocks(self):
+        apply_freeze_te(self.dino, None)
+        self.assertEqual(trainable(self.dino), [10, 11])
+        self.assertFalse(any(p.requires_grad for p in self.dino.patch_embed.parameters()))
+
+    def test_freeze_te_zero_trains_everything(self):
+        apply_freeze_te(self.dino, 0)
+        self.assertTrue(all(p.requires_grad for p in self.dino.parameters()))
+
+    def test_freeze_te_eight_trains_blocks_from_eight(self):
+        apply_freeze_te(self.dino, 8)
+        self.assertEqual(trainable(self.dino), [8, 9, 10, 11])
+        self.assertFalse(any(p.requires_grad for p in self.dino.patch_embed.parameters()))
 
 if __name__ == "__main__":
     unittest.main()
