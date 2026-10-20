@@ -26,7 +26,7 @@ import argparse
 import csv
 import json
 from pathlib import Path
-from typing import Dict, Mapping, Optional, Sequence
+from typing import Callable, Dict, Mapping, Optional, Sequence
 
 from . import step1_sweep as sweep
 from . import step2_plan as step2
@@ -117,9 +117,11 @@ def _checkpoint_columns(prefix: str, record: Optional[Mapping], initial_clean: O
     }
 
 
-def table_row(key: str, root: Path) -> Dict[str, object]:
-    """One run's row: its state, and for a finished run its budget-5 and best checkpoints."""
-    name = run_name(RUNS[key])
+def table_row(key: str, root: Path, runs: Mapping[str, Mapping[str, str]] = RUNS,
+              naming: Callable[[Mapping[str, str]], str] = run_name) -> Dict[str, object]:
+    """One run's row: its state, and for a finished run its budget-5 and best checkpoints.
+    ``runs`` and ``naming`` let another driver's planner (src/step4_plan.py) reuse it."""
+    name = naming(runs[key])
     run_dir = root / name
     records = sweep._read_records(run_dir)
     row: Dict[str, object] = {
@@ -147,7 +149,7 @@ def table_row(key: str, root: Path) -> Dict[str, object]:
     return row
 
 
-def write_summary(rows: Sequence[Mapping[str, object]], out: Path) -> None:
+def write_summary(rows: Sequence[Mapping[str, object]], out: Path, title: str = "Follow-up training runs") -> None:
     out.mkdir(parents=True, exist_ok=True)
     with (out / "runs.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=TABLE_FIELDS)
@@ -155,7 +157,7 @@ def write_summary(rows: Sequence[Mapping[str, object]], out: Path) -> None:
         writer.writerows(rows)
     shown = TABLE_FIELDS[:-1]
     lines = [
-        "# Follow-up training runs", "",
+        f"# {title}", "",
         f"- b5: the budget-{BUDGET:g} checkpoint, the most robust trained epoch within {BUDGET:g} clean R@1 "
         "points of the initial model (`initial`: no trained epoch stayed within the budget).",
         "- best: the most robust trained epoch, with no clean budget (ties: higher clean R@1).",
