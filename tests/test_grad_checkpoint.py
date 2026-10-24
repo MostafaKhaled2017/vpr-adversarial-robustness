@@ -59,6 +59,22 @@ class _BoQShapedModel(nn.Module):
         return self.backbone.dino(x)
 
 
+class _NestedBackboneModel(nn.Module):
+    """DINOMix (backbone.dino_model.blocks) and QAA (backbone.model.blocks) layouts."""
+
+    def __init__(self, attribute):
+        super().__init__()
+        self.attribute = attribute
+        self.backbone = nn.Module()
+        setattr(self.backbone, attribute, _Backbone())
+
+    def forward(self, x):
+        return getattr(self.backbone, self.attribute)(x)
+
+
+NESTED_LAYOUTS = ("dino_model", "model")  # DINOMix, QAA
+
+
 class GradCheckpointTests(unittest.TestCase):
     def test_outputs_and_input_gradients_are_identical(self):
         torch.manual_seed(0)
@@ -116,6 +132,13 @@ class GradCheckpointTests(unittest.TestCase):
         for block in model.backbone.dino.blocks:
             self.assertIsInstance(block, CheckpointedBlock)
 
+    def test_dinomix_and_qaa_style_blocks_are_wrapped(self):
+        for attribute in NESTED_LAYOUTS:
+            with self.subTest(attribute=attribute):
+                model = enable_backbone_grad_checkpointing(_NestedBackboneModel(attribute))
+                for block in getattr(model.backbone, attribute).blocks:
+                    self.assertIsInstance(block, CheckpointedBlock)
+
 
 class InPlaceCheckpointTests(unittest.TestCase):
     def test_state_dict_keys_are_unchanged(self):
@@ -158,6 +181,17 @@ class InPlaceCheckpointTests(unittest.TestCase):
         with mock.patch("src.grad_checkpoint.checkpoint", wraps=torch.utils.checkpoint.checkpoint) as spy:
             model(torch.randn(2, 8)).sum().backward()
         self.assertEqual(spy.call_count, 3)
+
+    def test_dinomix_and_qaa_style_blocks_are_checkpointed_in_place(self):
+        for attribute in NESTED_LAYOUTS:
+            with self.subTest(attribute=attribute):
+                model = _NestedBackboneModel(attribute)
+                keys = list(model.state_dict())
+                checkpoint_backbone_blocks_in_place(model)
+                self.assertEqual(list(model.state_dict()), keys)
+                with mock.patch("src.grad_checkpoint.checkpoint", wraps=torch.utils.checkpoint.checkpoint) as spy:
+                    model(torch.randn(2, 8)).sum().backward()
+                self.assertEqual(spy.call_count, 3)
 
     def test_no_grad_bypasses_checkpoint(self):
         model = _Model()
