@@ -309,6 +309,26 @@ class MplcV2TrainScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertNotIn("train.py", result.stdout)
 
+    def test_dinomix_and_qaa_runs_are_named_and_built_for_their_model(self):
+        expected = {
+            "dinomix": ("--train_resize 224 224 --resize 224 224", "checkpoints/dinomix_dinov2_4096.pth"),
+            "qaa": ("--train_resize 224 224 --resize 322 322", "checkpoints/qaa_dinov2_8192.pth"),
+        }
+        for model, (sizes, checkpoint) in expected.items():
+            with self.subTest(model=model):
+                env = {"MPLC_V2_MODEL": model, "MPLC_V2_ARMS": "mplc", "MPLC_V2_ATTACK_MIX": "linf",
+                       "MPLC_V2_MULTI_POSITIVE": "0", "MPLC_V2_FREEZE_TE": "0"}
+                result = run_script(TRAIN_SCRIPT, env)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertIn(f"--save_dir=mplc_v2_{model}_mplc_mixlinf_sp_fte0_s0", result.stdout)
+                for flag in (f"--model={model}", sizes, f"--resume={checkpoint}", "--resume_model_only",
+                             "--freeze_te=0", "--grad_checkpointing", "--batch_size=20",
+                             "--batches_per_epoch=200", "--optim=adam"):
+                    self.assertIn(flag, result.stdout)
+                for flag in ("--model=supervlad", "--supervlad_clusters", "--crossimage_encoder",
+                             "--foundation_model_path", "--backbone=dino", "SuperVLAD_base.pth", "--boq_"):
+                    self.assertNotIn(flag, result.stdout)
+
     def test_unknown_model_exits_two(self):
         result = run_script(TRAIN_SCRIPT, {"MPLC_V2_MODEL": "BoQ"})
         self.assertEqual(result.returncode, 2)
@@ -541,6 +561,26 @@ class MplcV2EvalScriptOptionTests(unittest.TestCase):
         self.assertIn("--model_type=mixvpr", result.stdout)
         self.assertIn("output/mplc_v2/mixvpr_msls/", result.stdout)
         self.assertNotIn("--grad_checkpointing", result.stdout)
+
+    def test_dinomix_and_qaa_model_types_use_their_flags_and_output_dir(self):
+        for model in ("dinomix", "qaa"):
+            with self.subTest(model=model):
+                result = run_script(EVAL_SCRIPT, args=("--model-type", model, "--datasets", "msls",
+                                                       "--model", "araft=logs/x/best_model.pth"))
+                self.assertEqual(result.returncode, 0, result.stdout)
+                for flag in (f"--model_type={model}", "--grad_checkpointing",
+                             f"output/mplc_v2/{model}_msls/rank_eval_results.json"):
+                    self.assertIn(flag, result.stdout)
+                self.assertNotIn("supervlad", result.stdout)
+                self.assertNotIn("--boq_", result.stdout)
+
+    def test_dinomix_and_qaa_pretrained_are_their_checkpoints(self):
+        for model, checkpoint in (("dinomix", "checkpoints/dinomix_dinov2_4096.pth"),
+                                  ("qaa", "checkpoints/qaa_dinov2_8192.pth")):
+            with self.subTest(model=model):
+                result = run_script(EVAL_SCRIPT, {"MPLC_V2_MODEL": model}, args=("--datasets", "msls", "--seeds", "0"))
+                self.assertIn(checkpoint, result.stdout)
+                self.assertIn(f"no finished checkpoint for mplc_v2_{model}_clean_ft_s0", result.stdout)
 
     def test_unknown_model_type_exits_two(self):
         result = run_script(EVAL_SCRIPT, args=("--model-type", "netvlad"))
