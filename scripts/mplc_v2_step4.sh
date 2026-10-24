@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Step 4 (runbook §4): ARAFT and its baselines on a second architecture, one model per call
-# (STEP4_MODEL=boq or mixvpr). `train` trains the runs, `eval` evaluates the trained ones.
+# (STEP4_MODEL=boq, mixvpr, dinomix or qaa). `train` trains the runs, `eval` evaluates the trained ones.
 #
 # train: runs (src/step4_plan.py), each one arm of scripts/mplc_v2_train.sh at the follow-up
 # runs' settings (validate every 3 epochs, patience 6, lr-plateau patience 3, up to 100 epochs,
-# lr 1e-5; freeze_te 0 for BoQ, the whole network for MixVPR). Default keys, in order:
+# lr 1e-5; freeze_te 0 for BoQ, DINOMix and QAA, the whole network for MixVPR). Default keys, in order:
 #   araft     ARAFT (single positive, rank L-inf only)  mplc_v2_<model>_mplc_mixlinf_sp[_fte0]_s0
 #   plain_at  plain_at baseline                          mplc_v2_<model>_plain_at[_fte0]_s0
 #   fare      FARE baseline, lambda_anchor 1.0           mplc_v2_<model>_fare[_fte0]_s0
@@ -35,7 +35,7 @@
 #   STEP4_MODEL=boq scripts/mplc_v2_step4.sh eval --dry-run        # print the pending pieces' commands only
 #
 # Environment overrides:
-#   STEP4_MODEL          boq | mixvpr (required)
+#   STEP4_MODEL          boq | mixvpr | dinomix | qaa (required)
 #   STEP4_STOP_AT        end of this session, any `date -d` time (required for a real run)
 #   STEP4_ROOT           training runs                       (default: logs/mplc_v2_step4)
 #   STEP4_RUNS           run keys to train, in this order    (default: araft plain_at fare)
@@ -44,7 +44,8 @@
 #   STEP4_PIPE_LOADER    1 = data-loader batches through a pipe, not /dev/shm (default: 0)
 #   STEP4_EVAL_ROOT      evaluation outputs                  (default: output/mplc_v2_step4)
 #   STEP4_EVAL_DATASETS  datasets to evaluate on             (default: "msls pitts30k sped nordland")
-#   BOQ_BASE_CHECKPOINT / MIXVPR_BASE_CHECKPOINT  pretrained releases (lib/supervlad_common.sh)
+#   BOQ_BASE_CHECKPOINT / MIXVPR_BASE_CHECKPOINT / DINOMIX_BASE_CHECKPOINT / QAA_BASE_CHECKPOINT
+#                        pretrained releases (lib/supervlad_common.sh)
 #   PYTHON               python interpreter                  (default: python)
 # Other MPLC_V2_* variables are ignored: the driver sets every launcher setting itself.
 #
@@ -101,7 +102,9 @@ esac
 case "${MODEL}" in
   boq) PRETRAINED=${BOQ_BASE_CHECKPOINT} ;;
   mixvpr) PRETRAINED=${MIXVPR_BASE_CHECKPOINT} ;;
-  *) echo "Set STEP4_MODEL to boq or mixvpr, got: ${MODEL:-nothing}" >&2; exit 2 ;;
+  dinomix) PRETRAINED=${DINOMIX_BASE_CHECKPOINT} ;;
+  qaa) PRETRAINED=${QAA_BASE_CHECKPOINT} ;;
+  *) echo "Set STEP4_MODEL to boq, mixvpr, dinomix or qaa, got: ${MODEL:-nothing}" >&2; exit 2 ;;
 esac
 
 plan() {

@@ -33,7 +33,20 @@ EXPECTED = {
         "screen_lr1e-5": "mplc_v2_mixvpr_mplc_mixlinf_sp_ep9_s0",
         "screen_lr3e-6": "mplc_v2_mixvpr_mplc_mixlinf_sp_lr3e-6_ep9_s0",
     },
+    **{
+        model: {
+            "araft": f"mplc_v2_{model}_mplc_mixlinf_sp_fte0_s0",
+            "plain_at": f"mplc_v2_{model}_plain_at_fte0_s0",
+            "fare": f"mplc_v2_{model}_fare_fte0_s0",
+            "twin": f"mplc_v2_{model}_clean_ft_fte0_s0",
+            "fare_eps2": f"mplc_v2_{model}_fare_eps0.0342_fte0_s0",
+            "screen_lr1e-5": f"mplc_v2_{model}_mplc_mixlinf_sp_fte0_ep9_s0",
+            "screen_lr3e-6": f"mplc_v2_{model}_mplc_mixlinf_sp_fte0_lr3e-6_ep9_s0",
+        }
+        for model in ("dinomix", "qaa")
+    },
 }
+SIZES = {"dinomix": "--train_resize 224 224 --resize 224 224", "qaa": "--train_resize 224 224 --resize 322 322"}
 DEFAULT = ["araft", "plain_at", "fare"]
 DATASETS = ["msls", "pitts30k", "sped", "nordland"]
 
@@ -185,6 +198,30 @@ class DriverTests(unittest.TestCase):
             self.assertIn(f"--run_dir={self.root}/", line)
             self.assertNotIn("--listwise_tau=0.1", line)
         self.assertFalse(self.root.exists())
+
+    def test_dinomix_and_qaa_train_and_eval_dry_runs(self):
+        for model, base in (("dinomix", "DINOMIX_BASE_CHECKPOINT"), ("qaa", "QAA_BASE_CHECKPOINT")):
+            with self.subTest(model=model):
+                pretrained = Path(self.tmp.name) / f"{model}.pth"
+                pretrained.write_text("", encoding="utf-8")
+                env = {"STEP4_MODEL": model, base: str(pretrained)}
+                result = self.run_driver("train", "--dry-run", **env)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                lines = commands(result.stdout)
+                self.assertEqual([save_dir(line) for line in lines], [EXPECTED[model][k] for k in DEFAULT])
+                for line in lines:
+                    for flag in (f"--model={model}", SIZES[model], f"--resume={pretrained}", "--freeze_te=0",
+                                 "--grad_checkpointing", "--selection_clean_budgets 1 3 5 7 10"):
+                        self.assertIn(flag, line)
+                result = self.run_driver("eval", "--dry-run", **env)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertTrue(commands(result.stdout), result.stdout)  # nothing trained: the pretrained row
+                for line in commands(result.stdout):
+                    self.assertIn(f"--model_type={model}", line)
+                    self.assertIn(f"--model_paths {pretrained}", line)
+                    dataset = line.split("--datasets ", 1)[1].split()[0]
+                    self.assertRegex(line, rf"/{model}/r(1_apgd|2_pgd_grid)/pretrained/{model}_{dataset}_")
+                self.assertFalse(self.root.exists())
 
     def test_options_are_checked(self):
         cases = [
