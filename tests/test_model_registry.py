@@ -11,6 +11,7 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertIn("boq", model_names())
         self.assertIn("mixvpr", model_names())
         self.assertIn("dinomix", model_names())
+        self.assertIn("qaa", model_names())
         self.assertEqual(get_model_adapter("supervlad").name, "supervlad")
         self.assertEqual(get_model_adapter("mixvpr").name, "mixvpr")
 
