@@ -11,7 +11,7 @@
 #   --datasets "msls sped nordland"  datasets to evaluate on       (MPLC_V2_DATASETS)
 #   --seeds "0 1"                    seeds to discover runs for     (MPLC_V2_SEEDS)
 #   --arms "clean_ft mplc"           arms to discover runs for      (MPLC_V2_ARMS)
-#   --model-type NAME                supervlad | boq | mixvpr: the architecture of every model, its
+#   --model-type NAME                supervlad | boq | mixvpr | dinomix | qaa: the architecture of every model, its
 #                                    pretrained release, discovered runs mplc_v2_<NAME>_* and
 #                                    output dirs <NAME>_<dataset> (default supervlad) (MPLC_V2_MODEL)
 #   --no-pretrained                  do not evaluate the pretrained release
@@ -137,7 +137,15 @@ case "${MODEL}" in
     EVAL_MODEL_FLAGS=("${MIXVPR_EVAL_MODEL_FLAGS[@]}")
     PRETRAINED=${MIXVPR_BASE_CHECKPOINT}
     ;;
-  *) echo "unknown model type: ${MODEL} (expected supervlad, boq or mixvpr)" >&2; exit 2 ;;
+  dinomix)
+    EVAL_MODEL_FLAGS=("${DINOMIX_EVAL_MODEL_FLAGS[@]}")
+    PRETRAINED=${DINOMIX_BASE_CHECKPOINT}
+    ;;
+  qaa)
+    EVAL_MODEL_FLAGS=("${QAA_EVAL_MODEL_FLAGS[@]}")
+    PRETRAINED=${QAA_BASE_CHECKPOINT}
+    ;;
+  *) echo "unknown model type: ${MODEL} (expected supervlad, boq, mixvpr, dinomix or qaa)" >&2; exit 2 ;;
 esac
 
 case "${GOAL}" in

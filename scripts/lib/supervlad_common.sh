@@ -171,3 +171,30 @@ MIXVPR_EVAL_MODEL_FLAGS=(
   --mixvpr_descriptors_dimension=4096
   --infer_batch_size=8
 )
+
+# DINOMix and QAA (Step 4, sprint 6): DINOv2 ViT-B/14 with MixVPR's and QAA's aggregators. Their
+# initial weights are the releases written by src/fetch_pretrained.py. DINOMix runs at 224 only
+# (its MixVPR aggregator expects a 16 x 16 token grid); QAA trains at 224 and validates and
+# evaluates at 322, as its release (and BoQ) does.
+DINOMIX_BASE_CHECKPOINT="${DINOMIX_BASE_CHECKPOINT:-checkpoints/dinomix_dinov2_4096.pth}"
+QAA_BASE_CHECKPOINT="${QAA_BASE_CHECKPOINT:-checkpoints/qaa_dinov2_8192.pth}"
+DINOMIX_MODEL_FLAGS=(
+  --model=dinomix
+  --train_resize 224 224
+  --resize 224 224
+)
+QAA_MODEL_FLAGS=(
+  --model=qaa
+  --train_resize 224 224
+  --resize 322 322
+)
+DINOMIX_EVAL_MODEL_FLAGS=(
+  --model_type=dinomix
+  --infer_batch_size=8
+  --grad_checkpointing
+)
+QAA_EVAL_MODEL_FLAGS=(
+  --model_type=qaa
+  --infer_batch_size=8
+  --grad_checkpointing
+)

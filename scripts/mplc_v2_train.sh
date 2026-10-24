@@ -9,9 +9,9 @@
 #   MPLC_V2_SEED=1 scripts/mplc_v2_train.sh  # seed 1: clean_ft, then mplc
 #
 # Environment overrides:
-#   MPLC_V2_MODEL         supervlad | boq | mixvpr; named in save_dir as mplc_v2_<model>_...
-#                         (default: supervlad). boq/mixvpr: same recipe, own model flags,
-#                         sizes and initial weights (lib/supervlad_common.sh, Step 4)
+#   MPLC_V2_MODEL         supervlad | boq | mixvpr | dinomix | qaa; named in save_dir as
+#                         mplc_v2_<model>_... (default: supervlad). The others: same recipe,
+#                         own model flags, sizes and initial weights (lib/supervlad_common.sh, Step 4)
 #   MPLC_V2_SEED          training seed                          (default: 0)
 #   MPLC_V2_ARMS          arms to train: clean_ft mplc plain_at fare (default: "clean_ft mplc")
 #   MPLC_V2_TAU           listwise temperature (mplc arm)        (default: 0.05)
@@ -160,8 +160,16 @@ case "${MODEL}" in
     RECIPE_FLAGS=("${MIXVPR_MODEL_FLAGS[@]}" "${SHARED_RECIPE_FLAGS[@]}")
     BASE_INIT_FLAGS=(--resume="${MIXVPR_BASE_CHECKPOINT}" --resume_model_only)
     ;;
+  dinomix)
+    RECIPE_FLAGS=("${DINOMIX_MODEL_FLAGS[@]}" "${SHARED_RECIPE_FLAGS[@]}")
+    BASE_INIT_FLAGS=(--resume="${DINOMIX_BASE_CHECKPOINT}" --resume_model_only)
+    ;;
+  qaa)
+    RECIPE_FLAGS=("${QAA_MODEL_FLAGS[@]}" "${SHARED_RECIPE_FLAGS[@]}")
+    BASE_INIT_FLAGS=(--resume="${QAA_BASE_CHECKPOINT}" --resume_model_only)
+    ;;
   *)
-    echo "unknown MPLC_V2_MODEL: ${MODEL} (expected supervlad, boq or mixvpr)" >&2
+    echo "unknown MPLC_V2_MODEL: ${MODEL} (expected supervlad, boq, mixvpr, dinomix or qaa)" >&2
     exit 2
     ;;
 esac

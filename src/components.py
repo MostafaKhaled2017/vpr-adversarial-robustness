@@ -10,11 +10,14 @@ from .config import unwrap_model
 from .data import build_training_dataloader, setup_datasets
 from .models import get_model_adapter
 
+# Models that start from their official release (key -> display name).
+PRETRAINED_ONLY_MODELS = {"boq": "BoQ", "mixvpr": "MixVPR", "dinomix": "DINOMix", "qaa": "QAA"}
+
 
 def build_training_components(args):
     adapter = get_model_adapter(args.model)
-    if args.model in {"boq", "mixvpr"} and args.resume is None and not args.download_pretrained:
-        model_name = "BoQ" if args.model == "boq" else "MixVPR"
+    if args.model in PRETRAINED_ONLY_MODELS and args.resume is None and not args.download_pretrained:
+        model_name = PRETRAINED_ONLY_MODELS[args.model]
         raise ValueError(
             f"{model_name} requires initial weights. Pass --resume with a local checkpoint or "
             "pass --download_pretrained to download the official weights."
