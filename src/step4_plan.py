@@ -1,9 +1,9 @@
-"""Step 4 (runbook §4): ARAFT and its baselines on a second architecture, BoQ or MixVPR.
+"""Step 4 (runbook §4): ARAFT and its baselines on another architecture: BoQ, MixVPR, DINOMix or QAA.
 
 Each run is one arm of scripts/mplc_v2_train.sh with MPLC_V2_MODEL set, at the follow-up runs'
 settings (validate every 3 epochs, patience 6, lr-plateau patience 3, up to 100 epochs, lr
-1e-5; freeze_te 0 for BoQ, the whole network for MixVPR). Keys, in order, the same for both
-models:
+1e-5; freeze_te 0 for BoQ, DINOMix and QAA, the whole network for MixVPR). Keys, in order, the
+same for every model:
 
   araft          ARAFT: single-positive MPLC on rank L-inf attacks only   (default)
   plain_at       plain_at baseline                                         (default)
@@ -31,7 +31,7 @@ from . import followup_plan as followup
 from . import step2_plan as step2
 from .step3_plan import PRETRAINED_PATH, Refused
 
-MODELS = ("boq", "mixvpr")
+MODELS = ("boq", "mixvpr", "dinomix", "qaa")
 DEFAULT_RUNS = ("araft", "plain_at", "fare")
 EVAL_ROWS = ("araft", "plain_at", "fare", "fare_eps2")  # the main table's rows, after the pretrained model
 TWIN = "twin"
@@ -131,7 +131,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         return
     if args.command == "summary":
         rows = [followup.table_row(key, args.root, runs=table, naming=run_name) for key in selected]
-        out = args.root / followup.SUMMARY_DIR / args.model  # both models share the run directory
+        out = args.root / followup.SUMMARY_DIR / args.model  # the models share the run directory
         followup.write_summary(rows, out, title=f"Step 4 training runs ({args.model})")
         print(f"Tables written to {out}")
         return
