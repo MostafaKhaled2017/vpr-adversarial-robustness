@@ -30,7 +30,7 @@ from src.config import denormalize_imagenet, normalized_epsilon_to_raw_pixels, v
 from src.faiss_utils import validate_faiss_runtime
 from src.grad_checkpoint import enable_backbone_grad_checkpointing
 from src.models import add_model_arguments, get_model_adapter, model_names
-from src.rank_attacks import EmbeddingShiftPGDAttack, RankAPGDLinfAttack, RankAttackConfig, RankPGDAttack
+from src.rank_attacks import RankAPGDLinfAttack, RankAttackConfig, RankPGDAttack
 from src.retrieval_metrics import (
     compute_recalls_from_features,
     nearest_positive_ranks,
@@ -38,19 +38,17 @@ from src.retrieval_metrics import (
     prepare_distance_database,
     rank_metric_bundle,
     squared_l2_distance_chunk,
-    targeted_success_rate,
 )
 from src.targets import (
     RetrievalAttackBatch,
     build_attack_targets,
     cap_query_indices,
     pad_positive_sets,
-    retarget_attack_targets,
 )
 
 
 SUPPORTED_TEST_METHODS = {"hard_resize", "central_crop", "single_query"}
-SUPPORTED_RANK_ATTACKS = {"rank_pgd_linf", "rank_pgd_l2", "rank_apgd_linf", "embshift_linf"}
+SUPPORTED_RANK_ATTACKS = {"rank_pgd_linf", "rank_apgd_linf"}
 REQUIRED_RECALL_VALUES = (1, 5, 10, 100)
 DEFAULT_MODEL_TAGS = ("base", "checkpoint")
 PER_QUERY_RANK_FIELDNAMES = (
@@ -134,19 +132,6 @@ def build_parser():
         default="rank_pgd_linf",
         choices=sorted(SUPPORTED_RANK_ATTACKS),
         help="Retrieval-native rank attack to evaluate.",
-    )
-    parser.add_argument(
-        "--rank_attack_goal",
-        choices=["untargeted", "targeted"],
-        default="untargeted",
-        help="untargeted: push every true positive out of the top ranks. targeted: pull the "
-        "--target_rank-th nearest wrong place to rank 1 (spec 2026-09-25 D5).",
-    )
-    parser.add_argument(
-        "--target_rank",
-        type=int,
-        default=10,
-        help="For --rank_attack_goal targeted: which nearest non-positive database image is the target.",
     )
     parser.add_argument(
         "--epsilons",
@@ -333,17 +318,6 @@ def validate_arguments(args) -> None:
         raise ValueError("--save_attack_image_count must be at least 1.")
     if args.attack_image_amplification <= 0:
         raise ValueError("--attack_image_amplification must be positive.")
-    if args.target_rank < 1:
-        raise ValueError("--target_rank must be at least 1.")
-    if args.rank_attack == "embshift_linf" and args.rank_attack_goal == "targeted":
-        raise ValueError("--rank_attack embshift_linf is untargeted; it cannot take --rank_attack_goal targeted.")
-    if args.rank_attack_goal == "targeted" and (
-        args.audit_sample_database_size is not None or args.max_dataset_samples is not None
-    ):
-        raise ValueError(
-            "--rank_attack_goal targeted requires the full gallery (no --audit_sample_database_size / "
-            "--max_dataset_samples)."
-        )
     if args.audit_sample_database_size is not None:
         if not args.audit_attack_implementation:
             raise ValueError("--audit_sample_database_size requires --audit_attack_implementation.")
@@ -904,11 +878,6 @@ def make_attack_batch(
         # push away whichever positive ends up closest under perturbation.
         positive_rows = np.asarray(target.get("positive_indexes", [target["positive_index"]]), dtype=np.int64)
         negative_rows = np.asarray(target["negative_indexes"], dtype=np.int64)
-        if "target_index" in target:
-            # Targeted (spec D5): the target is the only "negative", which the attack pulls in;
-            # true positives plus the nearest other non-positives are the competitors it pushes out.
-            positive_rows = np.concatenate([positive_rows, np.asarray(target["competitor_indexes"], dtype=np.int64)])
-            negative_rows = np.asarray([target["target_index"]], dtype=np.int64)
         positive_banks.append(
             database_features[torch.as_tensor(positive_rows, dtype=torch.long, device=database_features.device)]
         )
@@ -931,13 +900,11 @@ def make_attack_batch(
 
 
 def build_rank_attack(model: nn.Module, args, epsilon: float) -> nn.Module:
-    norm = "l2" if args.rank_attack == "rank_pgd_l2" else "linf"
     config = RankAttackConfig(
         epsilon=float(epsilon),
         steps=args.rank_steps,
         restarts=args.rank_restarts,
         step_size=args.rank_step_size,
-        norm=norm,
         margin=args.adv_margin,
         device=args.device,
         audit=bool(args.audit_attack_implementation),
@@ -945,8 +912,6 @@ def build_rank_attack(model: nn.Module, args, epsilon: float) -> nn.Module:
     )
     if args.rank_attack == "rank_apgd_linf":
         return RankAPGDLinfAttack(model, config)
-    if args.rank_attack == "embshift_linf":
-        return EmbeddingShiftPGDAttack(model, config)
     return RankPGDAttack(model, config)
 
 
@@ -1958,8 +1923,7 @@ def get_context_targets(
 ) -> tuple[list[Dict[str, object]], float]:
     cache = context.setdefault("target_cache", {})
     assert isinstance(cache, dict)
-    goal = getattr(args, "rank_attack_goal", "untargeted")
-    cache_key = (reference_tag, int(args.adv_negatives), goal, int(getattr(args, "target_rank", 10)))
+    cache_key = (reference_tag, int(args.adv_negatives))
     if cache_key in cache:
         return cache[cache_key]["targets"], 0.0
 
@@ -1987,14 +1951,6 @@ def get_context_targets(
         )
         if not np.array_equal(returned_valid_query_indices, context["valid_query_indices"]):
             raise RuntimeError("Unexpected change in valid query indices while building attack targets.")
-        if goal == "targeted":
-            targets = retarget_attack_targets(
-                targets,
-                reference_features["database"],
-                reference_features["queries"],
-                args.target_rank,
-                args.adv_negatives,
-            )
     target_seconds = perf_counter() - target_start
     cache[cache_key] = {"targets": targets, "target_seconds": target_seconds}
     return targets, target_seconds
@@ -2058,8 +2014,7 @@ def evaluate_condition_from_context(
     valid_query_indices = context["valid_query_indices"]
     valid_positives = context["valid_positives"]
     models = context["models"]
-    goal = getattr(args, "rank_attack_goal", "untargeted")
-    condition_name = f"{args.rank_attack}_eps_{epsilon:g}" + ("_targeted" if goal == "targeted" else "")
+    condition_name = f"{args.rank_attack}_eps_{epsilon:g}"
     audit_by_condition: Dict[str, object] = {}
     image_manifest: list[Dict[str, object]] = []
     per_query_rows: list[Dict[str, object]] = []
@@ -2165,7 +2120,6 @@ def evaluate_condition_from_context(
                 **attacked_recalls,
                 "condition": condition_name,
                 "attack": args.rank_attack,
-                "attack_goal": goal,
                 "attack_reference_model": reference_tag,
                 "epsilon": float(epsilon),
                 "rank_steps": int(args.rank_steps),
@@ -2181,10 +2135,6 @@ def evaluate_condition_from_context(
                 "runtime_per_query_seconds": float(elapsed / max(1, len(valid_query_indices))),
                 "attack_metadata": attack_metadata_summary,
             }
-            if goal == "targeted":
-                results[model_tag][condition_name]["targeted_success_rate"] = targeted_success_rate(
-                    model_database_features, attacked_features, [target["target_index"] for target in targets]
-                )
             logging.info("%s/%s recalls: %s", model_tag, condition_name, attacked_recalls["recalls_str"])
 
     runtimes = {
@@ -2261,7 +2211,6 @@ def flatten_rows(results: Mapping[str, Mapping[str, Mapping[str, object]]], reca
                     "runtime_per_query_seconds": metrics.get("runtime_per_query_seconds", ""),
                     "clean_correct_attack_success_rate": "",
                     "all_valid_attack_success_rate": "",
-                    "targeted_success_rate": metrics.get("targeted_success_rate", ""),
                     "mean_rank_displacement": "",
                     "median_rank_displacement": "",
                     "p90_rank_displacement": "",
@@ -2300,7 +2249,6 @@ def write_csv(path: Path, rows: Sequence[Mapping[str, object]], recall_values: S
         "runtime_per_query_seconds",
         "clean_correct_attack_success_rate",
         "all_valid_attack_success_rate",
-        "targeted_success_rate",
         "mean_rank_displacement",
         "median_rank_displacement",
         "p90_rank_displacement",

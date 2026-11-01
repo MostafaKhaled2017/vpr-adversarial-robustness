@@ -35,15 +35,6 @@ def _dummy_dino_model():
 
 
 class RankEvalInterfaceTests(unittest.TestCase):
-    def test_embshift_linf_builds_the_embedding_shift_attack(self):
-        from src.rank_attacks import EmbeddingShiftPGDAttack
-
-        args = Namespace(rank_attack="embshift_linf", rank_steps=20, rank_restarts=1, rank_step_size=None,
-                         adv_margin=0.1, device="cpu", audit_attack_implementation=False, trace_query_indices=None)
-        attack = rank_eval.build_rank_attack(nn.Identity(), args, 0.0685)
-        self.assertIsInstance(attack, EmbeddingShiftPGDAttack)
-        self.assertEqual(attack.config.norm, "linf")
-
     def test_query_cap_spreads_evenly_over_valid_queries(self):
         positives = [[1], [], *[[1]] * 9]  # valid: 0, 2, 3, ..., 10
         np.testing.assert_array_equal(rank_eval.select_valid_query_indices(positives, 5), [0, 3, 5, 7, 9])
@@ -519,7 +510,7 @@ class RankEvalInterfaceTests(unittest.TestCase):
             rank_eval.build_attack_targets = original_build_attack_targets
 
         self.assertEqual(seen_databases, [0.0, 1.0])
-        self.assertEqual(set(context["target_cache"]), {("base", 2, "untargeted", 10), ("adv", 2, "untargeted", 10)})
+        self.assertEqual(set(context["target_cache"]), {("base", 2), ("adv", 2)})
 
     def test_query_diagnostics_compute_margins_and_cwr_estimate(self):
         database = np.array(
@@ -753,8 +744,8 @@ class RankEvalInterfaceTests(unittest.TestCase):
                 "feature_times": {},
                 "feature_shared_input_seconds": 0.0,
                 "target_cache": {
-                    ("base", 1, "untargeted", 10): {"targets": targets, "target_seconds": 0.0},
-                    ("adv", 1, "untargeted", 10): {"targets": targets, "target_seconds": 0.0},
+                    ("base", 1): {"targets": targets, "target_seconds": 0.0},
+                    ("adv", 1): {"targets": targets, "target_seconds": 0.0},
                 },
             }
 
@@ -872,8 +863,8 @@ class RankEvalInterfaceTests(unittest.TestCase):
                 "feature_times": {},
                 "feature_shared_input_seconds": 0.0,
                 "target_cache": {
-                    ("base", 1, "untargeted", 10): {"targets": targets, "target_seconds": 0.0},
-                    ("adv", 1, "untargeted", 10): {"targets": targets, "target_seconds": 0.0},
+                    ("base", 1): {"targets": targets, "target_seconds": 0.0},
+                    ("adv", 1): {"targets": targets, "target_seconds": 0.0},
                 },
             }
 

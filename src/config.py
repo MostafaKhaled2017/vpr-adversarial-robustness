@@ -56,7 +56,6 @@ SUPPORTED_ATTACK_NAMES = {
     "PerceptualPGDAttack",
     "LagrangePerceptualAttack",
     "RankLinfAttack",
-    "EmbeddingShiftLinfAttack",
 }
 UNSUPPORTED_ATTACK_NAMES = {"AutoAttack", "AutoLinfAttack", "AutoL2Attack"}
 

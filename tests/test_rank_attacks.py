@@ -9,7 +9,7 @@ from src.config import (
     normalized_epsilon_to_raw_pixels,
 )
 from src.losses import compute_attack_score, query_is_correct
-from src.rank_attacks import EmbeddingShiftPGDAttack, RankAPGDLinfAttack, RankAttackConfig, RankPGDAttack
+from src.rank_attacks import RankAPGDLinfAttack, RankAttackConfig, RankPGDAttack
 from src.targets import RetrievalAttackBatch, select_rank_targets
 
 
@@ -42,7 +42,7 @@ class RankAttackTests(unittest.TestCase):
         clean = torch.zeros(2, 3, 4, 4)
         attack = RankPGDAttack(
             self.model,
-            RankAttackConfig(epsilon=0.05, steps=3, restarts=2, norm="linf", device="cpu"),
+            RankAttackConfig(epsilon=0.05, steps=3, restarts=2, device="cpu"),
         )
 
         result = attack(clean, make_targets(clean.shape[0]))
@@ -50,24 +50,12 @@ class RankAttackTests(unittest.TestCase):
 
         self.assertTrue(torch.all(max_delta <= 0.050001))
 
-    def test_l2_projection_respects_epsilon(self):
-        clean = torch.zeros(2, 3, 4, 4)
-        attack = RankPGDAttack(
-            self.model,
-            RankAttackConfig(epsilon=0.25, steps=4, restarts=2, norm="l2", device="cpu"),
-        )
-
-        result = attack(clean, make_targets(clean.shape[0]))
-        l2_delta = (result.adversarial - clean).flatten(1).norm(p=2, dim=1)
-
-        self.assertTrue(torch.all(l2_delta <= 0.250001))
-
     def test_adversarial_inputs_are_clamped_to_normalized_bounds(self):
         min_value, max_value = get_normalized_bounds("cpu")
         clean = min_value.expand(2, 3, 4, 4).clone() + 0.001
         attack = RankPGDAttack(
             self.model,
-            RankAttackConfig(epsilon=5.0, steps=3, restarts=1, norm="linf", device="cpu"),
+            RankAttackConfig(epsilon=5.0, steps=3, restarts=1, device="cpu"),
         )
 
         result = attack(clean, make_targets(clean.shape[0]))
@@ -96,7 +84,7 @@ class RankAttackTests(unittest.TestCase):
         )
         attack = RankPGDAttack(
             OnePixelDescriptorModel(),
-            RankAttackConfig(epsilon=0.1, steps=1, restarts=1, step_size=0.1, norm="linf", device="cpu", audit=True),
+            RankAttackConfig(epsilon=0.1, steps=1, restarts=1, step_size=0.1, device="cpu", audit=True),
         )
 
         result = attack(clean, targets)
@@ -123,7 +111,6 @@ class RankAttackTests(unittest.TestCase):
                 steps=2,
                 restarts=1,
                 step_size=0.05,
-                norm="linf",
                 device="cpu",
                 trace_query_indices=(7,),
             ),
@@ -142,7 +129,7 @@ class RankAttackTests(unittest.TestCase):
         clean = torch.zeros(3, 3, 4, 4)
         attack = RankAPGDLinfAttack(
             self.model,
-            RankAttackConfig(epsilon=0.5, steps=5, restarts=3, norm="linf", device="cpu"),
+            RankAttackConfig(epsilon=0.5, steps=5, restarts=3, device="cpu"),
         )
 
         result = attack(clean, make_targets(clean.shape[0]))
@@ -290,31 +277,3 @@ class MultiPositiveAttackScoreTests(unittest.TestCase):
         self.assertFalse(bool(masked[0]))
 
 
-class EmbeddingShiftAttackTests(unittest.TestCase):
-    def setUp(self):
-        torch.manual_seed(7)
-        self.model = TinyDescriptorModel()
-
-    def test_score_is_squared_shift_from_the_reference(self):
-        inputs = torch.rand(2, 3, 4, 4)
-        targets = make_targets(2)
-        attack = EmbeddingShiftPGDAttack(self.model, RankAttackConfig(epsilon=0.05, steps=1, device="cpu"))
-
-        score = attack._rank_components(inputs, targets)[0]
-
-        torch.testing.assert_close(score, (self.model(inputs) - targets.clean_query_descriptors).pow(2).sum(dim=1))
-
-    def test_embedding_shift_moves_from_zero_gradient_start(self):
-        # The reference is the model's own clean descriptor, so the objective and its
-        # gradient are exactly zero at the clean input: only a random start can move.
-        clean = torch.zeros(2, 3, 4, 4)
-        targets = make_targets(2)
-        targets.clean_query_descriptors = self.model(clean).detach()
-        attack = EmbeddingShiftPGDAttack(self.model, RankAttackConfig(epsilon=0.05, steps=3, device="cpu"))
-
-        result = attack(clean, targets)
-
-        max_delta = (result.adversarial - clean).flatten(1).abs().max(dim=1).values
-        self.assertTrue(torch.all(max_delta <= 0.050001))
-        shift = (self.model(result.adversarial) - targets.clean_query_descriptors).norm(dim=1)
-        self.assertTrue(torch.all(shift > 0))
