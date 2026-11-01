@@ -11,7 +11,7 @@ from .data import build_training_dataloader, setup_datasets
 from .models import get_model_adapter
 
 # Models that start from their official release (key -> display name).
-PRETRAINED_ONLY_MODELS = {"boq": "BoQ", "mixvpr": "MixVPR", "dinomix": "DINOMix", "qaa": "QAA"}
+PRETRAINED_ONLY_MODELS = {"boq": "BoQ"}
 
 
 def build_training_components(args):

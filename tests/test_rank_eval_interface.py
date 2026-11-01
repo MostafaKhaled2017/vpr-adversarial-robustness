@@ -156,44 +156,29 @@ class RankEvalInterfaceTests(unittest.TestCase):
         self.assertEqual(rank_eval.attack_generation_mode(Namespace(shared_attacks=False)), "per_model")
         self.assertEqual(rank_eval.attack_generation_mode(Namespace(shared_attacks=True)), "shared_first_model")
 
-    def test_boq_and_mixvpr_resolve_reference_input_sizes(self):
+    def test_boq_resolves_reference_input_sizes(self):
         boq_args = Namespace(
             boq_backbone="Dinov2",
             boq_descriptors_dimension=None,
             resize=None,
             test_method="hard_resize",
         )
-        mixvpr_args = Namespace(
-            mixvpr_descriptors_dimension=None,
-            resize=None,
-            test_method="hard_resize",
-        )
 
         rank_eval.get_model_adapter("boq").configure_evaluation(boq_args)
-        rank_eval.get_model_adapter("mixvpr").configure_evaluation(mixvpr_args)
 
         self.assertEqual(boq_args.boq_descriptors_dimension, 12288)
         self.assertEqual(boq_args.resize, [322, 322])
-        self.assertEqual(mixvpr_args.mixvpr_descriptors_dimension, 4096)
-        self.assertEqual(mixvpr_args.resize, [320, 320])
 
-    def test_boq_and_mixvpr_reject_non_reference_test_methods(self):
+    def test_boq_rejects_non_reference_test_methods(self):
         boq_args = Namespace(
             boq_backbone="Dinov2",
             boq_descriptors_dimension=None,
             resize=None,
             test_method="central_crop",
         )
-        mixvpr_args = Namespace(
-            mixvpr_descriptors_dimension=None,
-            resize=None,
-            test_method="single_query",
-        )
 
         with self.assertRaisesRegex(ValueError, "hard_resize"):
             rank_eval.get_model_adapter("boq").configure_evaluation(boq_args)
-        with self.assertRaisesRegex(ValueError, "hard_resize"):
-            rank_eval.get_model_adapter("mixvpr").configure_evaluation(mixvpr_args)
 
     def test_descriptor_norm_summary(self):
         summary = rank_eval.summarize_descriptor_norms(np.array([[3.0, 4.0], [0.0, 2.0]], dtype=np.float32))

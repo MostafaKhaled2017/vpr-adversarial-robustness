@@ -20,23 +20,22 @@ class CheckpointedBlock(nn.Module):
         return self.block(x)
 
 
-# Where each model keeps its DINOv2, under model.backbone: SuperVLAD (the backbone itself),
-# BoQ (dino), DINOMix (dino_model) and QAA (model).
-_DINO_ATTRIBUTES = ("dino", "dino_model", "model")
+# Where each model keeps its DINOv2, under model.backbone: SuperVLAD (the backbone itself)
+# and BoQ (dino).
+_DINO_ATTRIBUTES = ("dino",)
 
 
 def _blocks_owner(model: nn.Module) -> nn.Module:
-    """The module whose ``blocks`` is the DINOv2 block list: ``model.backbone`` (SuperVLAD),
-    ``model.backbone.dino`` (BoQ), ``model.backbone.dino_model`` (DINOMix) or
-    ``model.backbone.model`` (QAA). Accepts a model wrapped in ``nn.DataParallel``."""
+    """The module whose ``blocks`` is the DINOv2 block list: ``model.backbone`` (SuperVLAD) or
+    ``model.backbone.dino`` (BoQ). Accepts a model wrapped in ``nn.DataParallel``."""
     target = model.module if isinstance(model, nn.DataParallel) else model
     backbone = getattr(target, "backbone", None)
     for owner in (backbone, *(getattr(backbone, name, None) for name in _DINO_ATTRIBUTES)):
         if isinstance(getattr(owner, "blocks", None), nn.ModuleList):
             return owner
     raise ValueError(
-        "Gradient checkpointing requires a model exposing backbone.blocks, backbone.dino.blocks, "
-        "backbone.dino_model.blocks or backbone.model.blocks (DINOv2-style transformer backbone)."
+        "Gradient checkpointing requires a model exposing backbone.blocks or backbone.dino.blocks "
+        "(DINOv2-style transformer backbone)."
     )
 
 

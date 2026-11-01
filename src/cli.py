@@ -402,10 +402,6 @@ def parse_arguments(argv=None):
         from .models.boq import resolve_descriptor_dimension
 
         args.boq_descriptors_dimension = resolve_descriptor_dimension(args)
-    elif args.model == "mixvpr":
-        from .models.mixvpr import resolve_descriptor_dimension
-
-        args.mixvpr_descriptors_dimension = resolve_descriptor_dimension(args)
 
     args.recall_values = list(dict.fromkeys([*args.recall_values, *REQUIRED_RECALL_VALUES]))
     resolve_checkpoint_selection_rule(args)
