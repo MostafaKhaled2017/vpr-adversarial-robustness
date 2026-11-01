@@ -115,14 +115,8 @@ class RankEvalInterfaceTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parser.parse_args([*common, "--model", "supervlad", "--model_paths", "base.pth"])
 
-    def test_shared_attacks_flag_defaults_to_per_model(self):
-        parser = rank_eval.build_parser()
-
-        self.assertIn("--shared_attacks", parser._option_string_actions)
-        self.assertFalse(parser._option_string_actions["--shared_attacks"].default)
-
     def test_attack_groups_default_to_one_group_per_model(self):
-        args = Namespace(shared_attacks=False, model_tags=["base", "adv"])
+        args = Namespace(model_tags=["base", "adv"])
         models = {"base": ("model_base", "args_base"), "adv": ("model_adv", "args_adv")}
 
         groups = list(rank_eval.attack_groups(args, models))
@@ -134,18 +128,6 @@ class RankEvalInterfaceTests(unittest.TestCase):
                 ("adv", {"adv": ("model_adv", "args_adv")}),
             ],
         )
-
-    def test_attack_groups_shared_mode_uses_first_model_for_all(self):
-        args = Namespace(shared_attacks=True, model_tags=["base", "adv"])
-        models = {"base": ("model_base", "args_base"), "adv": ("model_adv", "args_adv")}
-
-        groups = list(rank_eval.attack_groups(args, models))
-
-        self.assertEqual(groups, [("base", models)])
-
-    def test_attack_generation_mode_labels(self):
-        self.assertEqual(rank_eval.attack_generation_mode(Namespace(shared_attacks=False)), "per_model")
-        self.assertEqual(rank_eval.attack_generation_mode(Namespace(shared_attacks=True)), "shared_first_model")
 
     def test_boq_resolves_reference_input_sizes(self):
         boq_args = Namespace(
@@ -633,7 +615,7 @@ class RankEvalInterfaceTests(unittest.TestCase):
         self.assertLess(first, 2**63)
 
     def test_reseed_attack_rng_makes_draws_reproducible(self):
-        args = Namespace(shared_attacks=False, seed=0)
+        args = Namespace(seed=0)
 
         rank_eval.reseed_attack_rng(args, "msls", "base", "rank_pgd_linf_eps_0.01")
         first_draw = torch.rand(4)
@@ -642,19 +624,14 @@ class RankEvalInterfaceTests(unittest.TestCase):
 
         self.assertTrue(torch.equal(first_draw, second_draw))
 
-    def test_reseed_attack_rng_is_noop_in_shared_mode_and_for_seed_minus_one(self):
+    def test_reseed_attack_rng_is_noop_for_seed_minus_one(self):
         torch.manual_seed(123)
         expected = torch.rand(4)
 
         torch.manual_seed(123)
-        rank_eval.reseed_attack_rng(Namespace(shared_attacks=True, seed=0), "msls", "base", "c")
-        shared_draw = torch.rand(4)
-
-        torch.manual_seed(123)
-        rank_eval.reseed_attack_rng(Namespace(shared_attacks=False, seed=-1), "msls", "base", "c")
+        rank_eval.reseed_attack_rng(Namespace(seed=-1), "msls", "base", "c")
         unseeded_draw = torch.rand(4)
 
-        self.assertTrue(torch.equal(expected, shared_draw))
         self.assertTrue(torch.equal(expected, unseeded_draw))
 
     def test_trace_csvs_support_per_model_subdirectory(self):
@@ -749,9 +726,8 @@ class RankEvalInterfaceTests(unittest.TestCase):
                 },
             }
 
-        def make_args(shared_attacks):
+        def make_args():
             return Namespace(
-                shared_attacks=shared_attacks,
                 seed=0,
                 device="cpu",
                 model_tags=["base", "adv"],
@@ -796,16 +772,10 @@ class RankEvalInterfaceTests(unittest.TestCase):
             rank_eval.write_trace_csvs = fake_write_trace_csvs
 
             results, runtimes, _, _, _, per_query_rows = rank_eval.evaluate_condition_from_context(
-                make_args(shared_attacks=False), build_context(), "msls", 0.01
+                make_args(), build_context(), "msls", 0.01
             )
             per_model_calls = list(generation_calls)
-            generation_calls.clear()
             per_model_trace_calls = list(trace_calls)
-            trace_calls.clear()
-
-            shared_results, shared_runtimes, _, _, _, _ = rank_eval.evaluate_condition_from_context(
-                make_args(shared_attacks=True), build_context(), "msls", 0.01
-            )
         finally:
             (
                 rank_eval.build_rank_attack,
@@ -828,13 +798,6 @@ class RankEvalInterfaceTests(unittest.TestCase):
         self.assertEqual({row["checkpoint_tag"] for row in per_query_rows}, {"base.pth", "adv.pth"})
         self.assertEqual({row["condition"] for row in per_query_rows}, {condition})
         self.assertEqual({int(row["query_id"]) for row in per_query_rows}, {0, 1})
-
-        self.assertEqual([call["models"] for call in generation_calls], [["base", "adv"]])
-        self.assertEqual(generation_calls[0]["attack"][1], "model_base")
-        self.assertIsNone(generation_calls[0]["group_tag"])
-        self.assertEqual(trace_calls, [None])
-        self.assertEqual(shared_results["adv"][condition]["attack_reference_model"], "base")
-        self.assertIsInstance(shared_runtimes["attack_seconds"][condition], float)
 
     def test_condition_evaluation_nests_audit_per_model(self):
         def build_context():
@@ -868,9 +831,8 @@ class RankEvalInterfaceTests(unittest.TestCase):
                 },
             }
 
-        def make_args(shared_attacks):
+        def make_args():
             return Namespace(
-                shared_attacks=shared_attacks,
                 seed=0,
                 device="cpu",
                 model_tags=["base", "adv"],
@@ -923,10 +885,7 @@ class RankEvalInterfaceTests(unittest.TestCase):
             rank_eval.write_trace_csvs = fake_write_trace_csvs
 
             per_model_results, _, _, per_model_audit, _, _ = rank_eval.evaluate_condition_from_context(
-                make_args(shared_attacks=False), build_context(), "msls", 0.01
-            )
-            _, _, _, shared_audit, _, _ = rank_eval.evaluate_condition_from_context(
-                make_args(shared_attacks=True), build_context(), "msls", 0.01
+                make_args(), build_context(), "msls", 0.01
             )
         finally:
             (
@@ -943,10 +902,6 @@ class RankEvalInterfaceTests(unittest.TestCase):
         self.assertIn("epsilon", per_model_condition_audit["base"])
         self.assertIn("epsilon", per_model_condition_audit["adv"])
 
-        shared_condition_audit = shared_audit[condition]
-        self.assertIn("epsilon", shared_condition_audit)
-        self.assertNotIn("base", shared_condition_audit)
-        self.assertNotIn("adv", shared_condition_audit)
 
 
     def test_get_context_targets_clears_cuda_cache_before_building_targets(self):

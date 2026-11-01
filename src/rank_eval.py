@@ -109,7 +109,7 @@ def build_parser():
         type=str,
         nargs="+",
         required=True,
-        help="One or more local checkpoint paths. Attacks are generated on each model separately unless --shared_attacks is set.",
+        help="One or more local checkpoint paths. Attacks are generated on each model separately.",
     )
     parser.add_argument(
         "--model_tags",
@@ -117,14 +117,6 @@ def build_parser():
         nargs="+",
         default=None,
         help="Labels for --model_paths. Defaults to 'base' for one model and 'base checkpoint' for two models.",
-    )
-    parser.add_argument(
-        "--shared_attacks",
-        action="store_true",
-        help=(
-            "Generate attacks once on the first model in --model_paths and evaluate every model on the same "
-            "attacked queries (transfer protocol). By default attacks are generated separately on each model."
-        ),
     )
     parser.add_argument(
         "--rank_attack",
@@ -500,19 +492,8 @@ def attack_reference_tag(args) -> str:
     return args.model_tags[0]
 
 
-def attack_generation_mode(args) -> str:
-    return "shared_first_model" if args.shared_attacks else "per_model"
-
-
 def attack_groups(args, models: Mapping[str, Tuple[nn.Module, object]]):
-    """Yield (reference_tag, models_to_evaluate) pairs for attack generation.
-
-    Shared mode generates one attack set on the first model and evaluates every model
-    on it. Per-model mode (the default) generates attacks on each model separately.
-    """
-    if args.shared_attacks:
-        yield attack_reference_tag(args), dict(models)
-        return
+    """Yield (reference_tag, models_to_evaluate) pairs: attacks are generated on each model separately."""
     for model_tag, model_bundle in models.items():
         yield model_tag, {model_tag: model_bundle}
 
@@ -650,9 +631,9 @@ def attack_generation_seed(seed: int, dataset_name: str, model_tag: str, conditi
 def reseed_attack_rng(args, dataset_name: str, model_tag: str, condition_name: str) -> None:
     """Give each per-model attack run a stable RNG state so metrics do not depend on model order.
 
-    Shared mode keeps the legacy RNG stream untouched; seed == -1 keeps the non-deterministic convention.
+    seed == -1 keeps the non-deterministic convention.
     """
-    if args.shared_attacks or args.seed == -1:
+    if args.seed == -1:
         return
     derived_seed = attack_generation_seed(args.seed, dataset_name, model_tag, condition_name)
     torch.manual_seed(derived_seed)
@@ -1617,11 +1598,7 @@ def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, 
         condition_name = f"{args.rank_attack}_eps_{epsilon:g}"
         for reference_tag, group_models in attack_groups(args, models):
             targets = targets_for_reference(reference_tag)
-            desc = (
-                f"{dataset_name}:{condition_name}:audit sample"
-                if args.shared_attacks
-                else f"{dataset_name}:{condition_name}:audit sample:{reference_tag}"
-            )
+            desc = f"{dataset_name}:{condition_name}:audit sample:{reference_tag}"
             attacked_features_by_model, attack_metadata, image_rows, elapsed = run_attack_for_group(
                 args,
                 eval_ds,
@@ -1647,12 +1624,8 @@ def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, 
                 attack_metadata,
                 clean_query_feature_indices=query_feature_indices,
             )
-            if args.shared_attacks:
-                attack_times[condition_name] = elapsed
-                audit_by_condition[condition_name] = group_audit
-            else:
-                attack_times.setdefault(condition_name, {})[reference_tag] = elapsed
-                audit_by_condition.setdefault(condition_name, {})[reference_tag] = group_audit
+            attack_times.setdefault(condition_name, {})[reference_tag] = elapsed
+            audit_by_condition.setdefault(condition_name, {})[reference_tag] = group_audit
 
             for model_tag, attacked_features in attacked_features_by_model.items():
                 model_database_features = clean_features[model_tag]["database"]
@@ -1986,7 +1959,7 @@ def run_attack_for_group(
         dataset_name,
         epsilon,
         desc=desc,
-        attack_group_tag=None if args.shared_attacks else reference_tag,
+        attack_group_tag=reference_tag,
     )
     elapsed = perf_counter() - attack_start
     write_trace_csvs(
@@ -1997,7 +1970,7 @@ def run_attack_for_group(
         trace_rows,
         reference_features["database"],
         positives_by_query,
-        model_subdir=None if args.shared_attacks else reference_tag,
+        model_subdir=reference_tag,
     )
     return attacked_features_by_model, attack_metadata, image_rows, elapsed
 
@@ -2031,11 +2004,7 @@ def evaluate_condition_from_context(
         reference_features = clean_features[reference_tag]
         targets, target_seconds = get_context_targets(args, context, reference_tag)
         total_target_seconds += target_seconds
-        desc = (
-            f"{dataset_name}:{condition_name}"
-            if args.shared_attacks
-            else f"{dataset_name}:{condition_name}:{reference_tag}"
-        )
+        desc = f"{dataset_name}:{condition_name}:{reference_tag}"
         attacked_features_by_model, attack_metadata, image_rows, elapsed = run_attack_for_group(
             args,
             context["eval_ds"],
@@ -2063,10 +2032,7 @@ def evaluate_condition_from_context(
                 attack_metadata,
                 clean_query_feature_indices=clean_query_feature_indices,
             )
-            if args.shared_attacks:
-                audit_by_condition[condition_name] = group_audit
-            else:
-                audit_by_condition.setdefault(condition_name, {})[reference_tag] = group_audit
+            audit_by_condition.setdefault(condition_name, {})[reference_tag] = group_audit
 
         for model_tag, attacked_features in attacked_features_by_model.items():
             model_database_features = clean_features[model_tag]["database"]
@@ -2141,13 +2107,7 @@ def evaluate_condition_from_context(
         "feature_seconds": context["feature_times"],
         "feature_shared_input_seconds": context["feature_shared_input_seconds"],
         "target_seconds": total_target_seconds,
-        "attack_seconds": {
-            condition_name: (
-                attack_seconds_by_group[attack_reference_tag(args)]
-                if args.shared_attacks
-                else dict(attack_seconds_by_group)
-            )
-        },
+        "attack_seconds": {condition_name: dict(attack_seconds_by_group)},
     }
     return results, runtimes, context["query_counts"], audit_by_condition, image_manifest, per_query_rows
 
@@ -2358,9 +2318,7 @@ def main() -> None:
             "epsilons": [float(epsilon) for epsilon in args.epsilons],
             "scope": "queries_only",
             "epsilon_space": "normalized_image_tensor",
-            "attack_reference_model": attack_reference_tag(args) if args.shared_attacks else None,
-            "attack_generation": attack_generation_mode(args),
-            "shared_attacks_across_models": bool(args.shared_attacks),
+            "attack_generation": "per_model",
             "target_selection": {
                 "adv_negatives": int(args.adv_negatives),
                 "adv_margin": float(args.adv_margin),
