@@ -6,7 +6,6 @@
 # Paper Table 1, except the per-run settings that scripts/train.sh adds: model, initial
 # weights, frozen blocks, lr, epochs, patience, attacks and loss.
 TRAIN_RECIPE_FLAGS=(
-  --validation_protocol=rank_pgd
   --eval_datasets_folder=datasets
   --gsv_cities_base_path=datasets/gsv_cities
   --eval_dataset_name=msls
@@ -24,10 +23,8 @@ TRAIN_RECIPE_FLAGS=(
   --adv_margin=0.1
   --adv_loss_weight=1.0
   --adv_align_weight=0.05
-  --selection_robust_weight=0.75
   --early_stop_min_delta=0.0
   --keep_every=0
-  --val_batches=200
   --val_every=3
   --val_rank_epsilons 0.0342 0.0685
   # Clean budgets only decide which extra best_model_budget<b>.pth files are kept.

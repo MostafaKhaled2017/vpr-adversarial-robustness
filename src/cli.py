@@ -73,7 +73,6 @@ def build_parser():
         default=None,
         help="Training batch size alias kept for perceptual-advex style.",
     )
-    parser.add_argument("--val_batches", type=int, default=10, help="Number of validation query batches to attack.")
     parser.add_argument(
         "--batches_per_epoch",
         type=int,
@@ -247,24 +246,11 @@ def build_parser():
         default=0.1,
         help="Margin used for the retrieval adversarial objective.",
     )
-    parser.add_argument(
-        "--selection_robust_weight",
-        type=float,
-        default=0.75,
-        help="Weight of the robust score in the validation selection score; clean weight is 1 minus this.",
-    )
-    parser.add_argument(
-        "--validation_protocol",
-        choices=["legacy", "rank_pgd"],
-        default="rank_pgd",
-        help="rank_pgd (default): clean and rank-PGD L-inf recall on a fixed query sample, selecting "
-        "the most robust epoch and keeping one extra checkpoint per --selection_clean_budgets entry. "
-        "legacy: perceptual validation attacks and the weighted score, as used by "
-        "the Phase 1/Phase 2 runs.",
-    )
-    parser.add_argument("--val_queries", type=int, default=2000, help="Validation queries sampled for rank_pgd.")
-    parser.add_argument("--val_query_seed", type=int, default=0, help="Seed of the rank_pgd validation query sample.")
-    parser.add_argument("--val_rank_steps", type=int, default=10, help="Rank-PGD steps in rank_pgd validation.")
+    # Validation measures clean and rank-PGD L-inf recall on a fixed query sample, selects the most
+    # robust epoch and keeps one extra checkpoint per --selection_clean_budgets entry.
+    parser.add_argument("--val_queries", type=int, default=2000, help="Validation queries sampled for rank-PGD validation.")
+    parser.add_argument("--val_query_seed", type=int, default=0, help="Seed of the validation query sample.")
+    parser.add_argument("--val_rank_steps", type=int, default=10, help="Rank-PGD steps in validation.")
     parser.add_argument(
         "--val_every",
         type=int,
@@ -313,12 +299,6 @@ def build_parser():
         type=str,
         default=None,
         help="Path to the GSV-Cities training dataset.",
-    )
-    parser.add_argument(
-        "--skip_initial_validation",
-        action="store_true",
-        default=False,
-        help="Skip baseline validation before the first training epoch.",
     )
     add_model_arguments(parser)
     return parser
@@ -369,10 +349,6 @@ def parse_arguments(argv=None):
         )
     if args.clip_grad <= 0:
         raise ValueError("--clip_grad must be positive")
-    if not 0.0 <= args.selection_robust_weight <= 1.0:
-        raise ValueError("--selection_robust_weight must be between 0 and 1 (inclusive)")
-    if args.validation_protocol == "rank_pgd" and args.skip_initial_validation:
-        raise ValueError("--validation_protocol rank_pgd requires the initial validation")
     if args.val_queries < 1:
         raise ValueError("--val_queries must be at least 1")
     if args.val_rank_steps < 1:
@@ -400,23 +376,14 @@ def parse_arguments(argv=None):
 
 
 def resolve_checkpoint_selection_rule(args):
-    """Derive the checkpoint-selection rule from the configured attacks (Task 1.1).
+    """Derive the checkpoint-selection rule from the configured attacks.
 
-    A clean-only fine-tune produces no adversarial validation signal, so the robust
-    score degenerates to the clean score and ``--selection_robust_weight`` must resolve
-    to pure clean-recall selection. Recording the resolution on ``args`` puts it into
-    ``training_config.yaml`` verbatim, which is what the paper's checkpoint-selection
-    subsection cites.
+    A clean-only fine-tune has no adversarial validation signal, so it selects on clean
+    recall; adversarial runs select on the rank-PGD robust score. Recording the rule on
+    ``args`` puts it into ``training_config.yaml``.
     """
     attack_names = parse_attack_names(args.attack)
     args.adversarial_attack_names = [name for name in attack_names if name != "NoAttack"]
     args.is_clean_only = len(args.adversarial_attack_names) == 0
-    if args.is_clean_only:
-        args.checkpoint_selection_rule = "clean_recall"
-        args.effective_selection_robust_weight = 0.0
-    else:
-        args.checkpoint_selection_rule = "robust_weighted"
-        args.effective_selection_robust_weight = args.selection_robust_weight
-    if getattr(args, "validation_protocol", "rank_pgd") == "rank_pgd":
-        args.checkpoint_selection_rule = "clean_recall" if args.is_clean_only else "robust_rank_pgd"
+    args.checkpoint_selection_rule = "clean_recall" if args.is_clean_only else "robust_rank_pgd"
     return args

@@ -89,31 +89,19 @@ BASE = [
 
 
 class RankValidationCliTests(unittest.TestCase):
-    def test_defaults_use_rank_pgd_protocol(self):
+    def test_defaults_use_rank_pgd_validation(self):
         args = parse_arguments(BASE)
-        self.assertEqual(args.validation_protocol, "rank_pgd")
         self.assertEqual(args.checkpoint_selection_rule, "robust_rank_pgd")
         self.assertEqual(args.val_queries, 2000)
         self.assertEqual(args.val_query_seed, 0)
         self.assertEqual(args.val_rank_steps, 10)
         self.assertEqual(args.selection_clean_budgets, [1.0, 3.0, 5.0])
 
-    def test_legacy_protocol_keeps_weighted_selection(self):
-        args = parse_arguments(BASE + ["--validation_protocol", "legacy"])
-        self.assertEqual(args.checkpoint_selection_rule, "robust_weighted")
-
-    def test_rank_pgd_sets_selection_rule(self):
-        args = parse_arguments(BASE + ["--validation_protocol", "rank_pgd"])
-        self.assertEqual(args.checkpoint_selection_rule, "robust_rank_pgd")
         self.assertEqual(args.val_rank_epsilons, [0.01, 0.1])
 
-    def test_rank_pgd_clean_only_selects_on_clean_recall(self):
-        args = parse_arguments(BASE[:5] + ["--validation_protocol", "rank_pgd"])
+    def test_clean_only_selects_on_clean_recall(self):
+        args = parse_arguments(BASE[:5])
         self.assertEqual(args.checkpoint_selection_rule, "clean_recall")
-
-    def test_rank_pgd_rejects_skipping_initial_validation(self):
-        with self.assertRaisesRegex(ValueError, "requires the initial validation"):
-            parse_arguments(BASE + ["--validation_protocol", "rank_pgd", "--skip_initial_validation"])
 
     def test_rejects_invalid_values(self):
         for extra in (
@@ -124,7 +112,7 @@ class RankValidationCliTests(unittest.TestCase):
             ["--selection_clean_budgets", "1", "-0.5"],
         ):
             with self.subTest(extra=extra), self.assertRaises(ValueError):
-                parse_arguments(BASE + ["--validation_protocol", "rank_pgd", *extra])
+                parse_arguments(BASE + extra)
 
 
 class FakeValDataset:
@@ -307,8 +295,8 @@ class RunTrainingRankProtocolTests(unittest.TestCase):
             train_loop.time, "time", side_effect=clock or __import__("time").time
         ):
             args = SimpleNamespace(
-                validation_protocol="rank_pgd", val_queries=10, val_query_seed=0, selection_clean_budgets=[1.0, 3.0, 5.0],
-                is_clean_only=is_clean_only, skip_initial_validation=False, lr_schedule="", lr_plateau_patience=None, lr=1e-4,
+                val_queries=10, val_query_seed=0, selection_clean_budgets=[1.0, 3.0, 5.0],
+                is_clean_only=is_clean_only, lr_schedule="", lr_plateau_patience=None, lr=1e-4,
                 epochs_num=epochs_num or start_epoch + len(scripted) - (0 if resume_runtime_state else 1), adv_warmup_epochs=0, randomize_attack=False, early_stop_min_delta=0.0, patience=patience,
                 save_dir=save_dir, tensorboard_dir=save_dir, device="cpu", test_method="hard_resize",
                 recall_values=[1, 5, 10, 100], mixed_precision=False, keep_every=keep_every, val_every=val_every,
@@ -316,7 +304,7 @@ class RunTrainingRankProtocolTests(unittest.TestCase):
             )
             outcome = train_loop.run_training(
                 args, model, torch.optim.Adam(model.parameters(), lr=1e-4), None, [], FakeValDataset(), None,
-                -math.inf, start_epoch, 0, mock.MagicMock(), [], [], resume_runtime_state=resume_runtime_state,
+                -math.inf, start_epoch, 0, mock.MagicMock(), [], resume_runtime_state=resume_runtime_state,
             )
         self.final_test_calls = final_test.call_count
         return outcome, saved, copied

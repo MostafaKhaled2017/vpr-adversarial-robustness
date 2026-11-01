@@ -27,7 +27,6 @@ from .checkpoints import (
 from .collapse_metrics import collapse_report, collect_descriptors, reference_sample_indices
 from .config import amp_autocast, unwrap_model
 from .attacks import attack_strength_scale
-from .eval import evaluate_against_attacks_retrieval, make_attack_name
 from .losses import (
     compute_align_loss,
     compute_listwise_loss,
@@ -37,6 +36,10 @@ from .losses import (
 )
 from .rank_validation import evaluate_rank_validation, sample_validation_queries, select_checkpoint
 from .targets import RetrievalAttackBatch, select_rank_targets
+
+
+def make_attack_name(attack: nn.Module) -> str:
+    return attack.__class__.__name__
 
 
 REPORTED_RECALL_VALUES = (1, 5, 10, 100)
@@ -245,47 +248,12 @@ def apply_attack_curriculum(train_attacks, args, epoch_num: int) -> float:
     return scale
 
 
-def resolved_selection_robust_weight(args) -> float:
-    """Weight actually used for checkpoint selection (see src/cli.py Task 1.1).
-
-    Clean-only fine-tunes resolve to 0.0 so selection is pure clean recall; adversarial
-    runs keep --selection_robust_weight.
-    """
-    return float(getattr(args, "effective_selection_robust_weight", args.selection_robust_weight))
-
-
-def compute_validation_selection_scores(metrics: Dict[str, object], robust_weight: float = 0.75) -> Dict[str, float]:
-    clean_score = compute_recall_score(metrics["NoAttack"])
-
-    attacked_scores: List[float] = []
-    for attack_name, attack_metrics in metrics.items():
-        if attack_name == "NoAttack":
-            continue
-        attacked_scores.append(compute_recall_score(attack_metrics))
-
-    if len(attacked_scores) == 0:
-        robust_score = clean_score
-    else:
-        robust_score = float(np.mean(attacked_scores))
-
-    selection_score = (1.0 - robust_weight) * clean_score + robust_weight * robust_score
-    return {
-        "clean_score": clean_score,
-        "robust_score": robust_score,
-        "selection_score": selection_score,
-    }
-
-
 def recall_value(metric: Dict[str, object], recall_at: int) -> float:
     key = f"R@{recall_at}"
     recalls = metric["recalls"]
     if key not in recalls:
         raise KeyError(f"Validation metric {key} is missing. Available metrics: {sorted(recalls)}")
     return float(recalls[key])
-
-
-def compute_recall_score(metric: Dict[str, object]) -> float:
-    return recall_value(metric, 1) + recall_value(metric, 5)
 
 
 def format_reported_recalls(metric: Dict[str, object]) -> str:
@@ -515,7 +483,6 @@ def run_training(
     not_improved,
     writer,
     train_attacks,
-    validation_attacks,
     resume_runtime_state=None,
     anchor_model=None,
 ):
@@ -550,45 +517,32 @@ def run_training(
     current_lr = float(optimizer.param_groups[0]["lr"])
     restore_rng_state(resume_runtime_state.get("rng_state"))
 
-    # Spec D2/D4: rank_pgd validates clean and rank-PGD recall on a fixed query sample and
-    # selects the most robust epoch, keeping one extra checkpoint per --selection_clean_budgets
-    # entry whose clean R@1 stays within that budget of the initial model's C0 (kept across resumes).
-    rank_protocol = getattr(args, "validation_protocol", "rank_pgd") == "rank_pgd"
+    # Validation measures clean and rank-PGD recall on a fixed query sample and selects the most
+    # robust epoch, keeping one extra checkpoint per --selection_clean_budgets entry whose clean
+    # R@1 stays within that budget of the initial model's C0 (kept across resumes).
     initial_clean_r1 = resume_runtime_state.get("initial_clean_r1")
     best_budget_scores = dict(resume_runtime_state.get("best_budget_scores", {}))
     # Which validation epoch (as in validation_recalls.jsonl, -1 = initial) best_model.pth ("best")
     # and each budget checkpoint currently hold, so an un-fine-tuned best checkpoint is visible.
     best_checkpoint_epochs = dict(resume_runtime_state.get("best_checkpoint_epochs", {}))
-    if rank_protocol:
-        validation_query_indices = sample_validation_queries(val_ds.get_positives(), args.val_queries, args.val_query_seed)
-        logging.info("Rank-PGD validation on %d sampled queries.", len(validation_query_indices))
+    validation_query_indices = sample_validation_queries(val_ds.get_positives(), args.val_queries, args.val_query_seed)
+    logging.info("Rank-PGD validation on %d sampled queries.", len(validation_query_indices))
 
     def validate(epoch_initial: bool):
-        if rank_protocol:
-            metrics = evaluate_rank_validation(args, model, val_ds, validation_query_indices)
-            scores = select_checkpoint(
-                metrics,
-                None if epoch_initial else initial_clean_r1,
-                args.selection_clean_budgets,
-                args.is_clean_only,
-            )
-            return metrics, scores
-        metrics = evaluate_against_attacks_retrieval(
-            args,
-            model,
-            val_ds,
-            validation_attacks,
-            writer=writer,
-            iteration=iteration,
+        metrics = evaluate_rank_validation(args, model, val_ds, validation_query_indices)
+        scores = select_checkpoint(
+            metrics,
+            None if epoch_initial else initial_clean_r1,
+            args.selection_clean_budgets,
+            args.is_clean_only,
         )
-        return metrics, compute_validation_selection_scores(metrics, resolved_selection_robust_weight(args))
+        return metrics, scores
 
-    if start_epoch == 0 and not resume_runtime_state and not args.skip_initial_validation:
+    if start_epoch == 0 and not resume_runtime_state:
         logging.info("Begin initial validation before training")
         initial_metrics, initial_scores = validate(True)
-        if rank_protocol:
-            initial_clean_r1 = initial_scores["clean_score"]
-            log_rank_selection(initial_scores, initial_clean_r1)
+        initial_clean_r1 = initial_scores["clean_score"]
+        log_rank_selection(initial_scores, initial_clean_r1)
         initial_record = build_validation_metrics_record(
             -1, initial_metrics, initial_scores, initial_clean_r1=initial_clean_r1
         )
@@ -633,9 +587,9 @@ def run_training(
             initial_scores["selection_score"],
         )
 
-    if rank_protocol and not args.is_clean_only and initial_clean_r1 is None:
+    if not args.is_clean_only and initial_clean_r1 is None:
         raise RuntimeError(
-            "--validation_protocol rank_pgd needs the initial clean R@1, but the resumed checkpoint "
+            "Rank-PGD validation needs the initial clean R@1, but the resumed checkpoint "
             "does not store it; resume from a checkpoint trained with this protocol."
         )
 
@@ -921,7 +875,7 @@ def run_training(
         )
         append_validation_metrics(args, validation_record)
         log_validation_recalls(f"after epoch {epoch_num + 1:02d}", metrics)
-        if rank_protocol and initial_clean_r1 is not None:
+        if initial_clean_r1 is not None:
             log_rank_selection(validation_scores, initial_clean_r1)
         log_collapse_report(writer, collapse, epoch_num)
 

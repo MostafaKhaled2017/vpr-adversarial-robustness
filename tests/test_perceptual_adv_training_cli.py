@@ -84,20 +84,6 @@ class PerceptualTrainingCliTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "lr_plateau_factor"):
             self.parse("--lr_plateau_factor", "1.5")
 
-    def test_selection_robust_weight_defaults(self):
-        self.assertEqual(self.parse().selection_robust_weight, 0.75)
-
-    def test_selection_robust_weight_parses_custom_value(self):
-        self.assertEqual(self.parse("--selection_robust_weight", "1.0").selection_robust_weight, 1.0)
-
-    def test_selection_robust_weight_rejects_values_above_one(self):
-        with self.assertRaisesRegex(ValueError, "selection_robust_weight"):
-            self.parse("--selection_robust_weight", "1.5")
-
-    def test_selection_robust_weight_rejects_negative_values(self):
-        with self.assertRaisesRegex(ValueError, "selection_robust_weight"):
-            self.parse("--selection_robust_weight", "-0.1")
-
     def test_supervlad_adv_launcher_arguments_parse(self):
         args = self.parse(
             "--model=supervlad",
@@ -123,7 +109,6 @@ class PerceptualTrainingCliTests(unittest.TestCase):
             "--adv_negatives=5",
             "--adv_warmup_epochs=5",
             "--keep_every=3",
-            "--val_batches=40",
         )
         self.assertEqual(len(args.attack), 5)
         self.assertTrue(args.randomize_attack)
@@ -133,7 +118,6 @@ class PerceptualTrainingCliTests(unittest.TestCase):
         self.assertEqual(args.lr_plateau_patience, 5)
         self.assertEqual(args.patience, 15)
         self.assertEqual(args.keep_every, 3)
-        self.assertEqual(args.val_batches, 40)
 
 
 class MatchedCleanOnlyFineTuneTests(unittest.TestCase):
@@ -152,7 +136,6 @@ class MatchedCleanOnlyFineTuneTests(unittest.TestCase):
         "--batches_per_epoch=400",
         "--lr_plateau_patience=5",
         "--keep_every=6",
-        "--val_batches=200",
         "--adv_negatives=5",
         "--adv_warmup_epochs=1",
         "--adv_margin=0.1",
@@ -174,7 +157,6 @@ class MatchedCleanOnlyFineTuneTests(unittest.TestCase):
         "adversarial_attack_names",
         "is_clean_only",
         "checkpoint_selection_rule",
-        "effective_selection_robust_weight",
     }
 
     def parse(self, *extra):
@@ -228,22 +210,9 @@ class MatchedCleanOnlyFineTuneTests(unittest.TestCase):
         self.assertEqual(args.adversarial_attack_names, [])
 
     def test_clean_only_resolves_checkpoint_selection_to_clean_recall(self):
-        args = self.parse("--selection_robust_weight=0.75")
+        args = self.parse()
         self.assertTrue(args.is_clean_only)
         self.assertEqual(args.checkpoint_selection_rule, "clean_recall")
-        self.assertEqual(args.effective_selection_robust_weight, 0.0)
-
-    def test_legacy_adversarial_run_keeps_robust_weighted_selection(self):
-        args = self.parse(
-            "--validation_protocol=legacy",
-            "--selection_robust_weight=0.75",
-            "--attack",
-            "PerceptualPGDAttack(model, bound=0.1, num_iterations=5)",
-        )
-        self.assertFalse(args.is_clean_only)
-        self.assertEqual(args.checkpoint_selection_rule, "robust_weighted")
-        self.assertEqual(args.effective_selection_robust_weight, 0.75)
-        self.assertEqual(args.adversarial_attack_names, ["PerceptualPGDAttack"])
 
 
 class Phase2FlagDefaultTests(unittest.TestCase):

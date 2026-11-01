@@ -75,7 +75,6 @@ def main():
             checkpoint_backbone_blocks_in_place(model)
 
         train_attacks = instantiate_attacks(model, args.attack, args)
-        validation_attacks = [instantiate_attacks(model, [attack_string], args)[0] for attack_string in args.attack]
         outcome = run_training(
             args,
             model,
@@ -89,7 +88,6 @@ def main():
             not_improved,
             writer,
             train_attacks,
-            validation_attacks,
             resume_runtime_state,
             anchor_model=anchor_model,
         )

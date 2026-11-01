@@ -16,7 +16,6 @@ if str(SUPERVLAD_ROOT) not in sys.path:
     sys.path.insert(0, str(SUPERVLAD_ROOT))
 
 from src import faiss_utils
-from src.eval import compute_recalls_from_features
 from src.targets import build_attack_targets
 from src import rank_eval
 
@@ -201,15 +200,10 @@ class FaissUtilsTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "startup GPU add/search probe failed"):
                 faiss_utils.validate_faiss_runtime("cuda")
 
-    def test_cpu_recall_and_target_searches_preserve_expected_neighbors(self):
+    def test_cpu_target_search_preserves_expected_neighbors(self):
         database = np.array([[0.0], [1.0], [10.0]], dtype=np.float32)
         queries = np.array([[0.1]], dtype=np.float32)
         positives = [np.array([0], dtype=np.int64)]
-        recall_args = Namespace(device="cpu", features_dim=1, recall_values=[1, 2])
-
-        recalls = compute_recalls_from_features(recall_args, database, queries, positives)
-
-        self.assertEqual(recalls["recalls"], {"R@1": 100.0, "R@2": 100.0})
 
         eval_ds = SimpleNamespace(database_num=3, get_positives=lambda: positives)
         target_args = Namespace(device="cpu", adv_negatives=1)

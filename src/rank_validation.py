@@ -47,7 +47,7 @@ def _extract(args, dataset, model: nn.Module, indices: Sequence[int], queryflag:
 def evaluate_rank_validation(args, model: nn.Module, val_ds, query_indices: np.ndarray) -> Dict[str, object]:
     """Clean and rank-PGD L-inf recalls on the sampled validation queries.
 
-    Returns the same metric shape as ``evaluate_against_attacks_retrieval``: ``NoAttack``
+    Returns the same metric shape as the training loop's validation records: ``NoAttack``
     plus one ``rank_pgd_linf_eps_<eps>`` entry per epsilon (none for clean-only runs).
     """
     from .rank_eval import make_attack_batch
