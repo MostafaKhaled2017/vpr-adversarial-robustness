@@ -261,7 +261,6 @@ class Phase2FlagDefaultTests(unittest.TestCase):
         args = self.parse()
 
         self.assertFalse(args.multi_positive)
-        self.assertEqual(args.negative_pool_size, 0)
         self.assertEqual(args.defense_loss, "hinge")
         self.assertEqual(args.attack_ramp_epochs, 0)
         self.assertIsNone(args.collapse_abort_knn)
@@ -269,7 +268,6 @@ class Phase2FlagDefaultTests(unittest.TestCase):
     def test_each_component_can_be_enabled_independently(self):
         args = self.parse(
             "--multi_positive",
-            "--negative_pool_size=4096",
             "--defense_loss=listwise",
             "--listwise_tau=0.01",
             "--listwise_k=5",
@@ -279,17 +277,12 @@ class Phase2FlagDefaultTests(unittest.TestCase):
         )
 
         self.assertTrue(args.multi_positive)
-        self.assertEqual(args.negative_pool_size, 4096)
         self.assertEqual(args.defense_loss, "listwise")
         self.assertAlmostEqual(args.listwise_tau, 0.01)
         self.assertEqual(args.listwise_k, 5)
         self.assertEqual(args.attack_ramp_epochs, 5)
         self.assertAlmostEqual(args.attack_ramp_min_scale, 0.25)
         self.assertAlmostEqual(args.collapse_abort_knn, 0.2)
-
-    def test_negative_pool_size_rejects_negative_values(self):
-        with self.assertRaisesRegex(ValueError, "negative_pool_size"):
-            self.parse("--negative_pool_size=-1")
 
     def test_listwise_tau_must_be_positive(self):
         with self.assertRaisesRegex(ValueError, "listwise_tau"):

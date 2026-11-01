@@ -11,9 +11,8 @@ SUPERVLAD_ROOT = REPO_ROOT / "third_party" / "SuperVLAD"
 if str(SUPERVLAD_ROOT) not in sys.path:
     sys.path.insert(0, str(SUPERVLAD_ROOT))
 
-from src.negative_pool import NegativePool
 from src.targets import select_rank_targets
-from src.train_loop import compute_attack_losses, compute_defense_loss, refresh_negative_pool
+from src.train_loop import compute_attack_losses, compute_defense_loss
 
 
 class TinyEncoder(nn.Module):
@@ -47,7 +46,6 @@ def make_args(**overrides):
         defense_loss="listwise",
         listwise_tau=0.05,
         listwise_k=1,
-        negative_pool_size=32,
     )
     for key, value in overrides.items():
         setattr(args, key, value)
@@ -57,8 +55,8 @@ def make_args(**overrides):
 class Phase2CompositionTests(unittest.TestCase):
     """The Phase 2 components have to compose, not just work individually.
 
-    Multi-positive targets change the shape of the positive tensor, the negative pool
-    replaces the negative tensor, and the listwise objective consumes both. A shape error
+    Multi-positive targets change the shape of the positive tensor, and the listwise
+    objective consumes it. A shape error
     anywhere in that chain would only surface hours into a training run.
     """
 
@@ -91,55 +89,10 @@ class Phase2CompositionTests(unittest.TestCase):
         loss.backward()
         self.assertIsNotNone(self.model.projection.weight.grad)
 
-    def test_the_negative_pool_replaces_the_mined_negatives(self):
-        flat_descriptors, descriptor_view = self.descriptors()
-        args = make_args()
-        targets = select_rank_targets(descriptor_view, self.place_ids, args.adv_negatives, multi_positive=True)
-        original_negatives = targets.negative_descriptors.clone()
-
-        pool = NegativePool(capacity=32, descriptor_dim=flat_descriptors.shape[1])
-        # Seed the pool with descriptors that are nearer than anything in the batch, so a
-        # working integration must change the mined set.
-        pool.push(targets.clean_query_descriptors + 1e-3, torch.full((self.batch_size,), 999))
-
-        refreshed = refresh_negative_pool(
-            pool,
-            args,
-            targets,
-            flat_descriptors,
-            self.place_ids.reshape(-1),
-            self.place_ids,
-        )
-
-        self.assertEqual(refreshed.negative_descriptors.shape, original_negatives.shape)
-        self.assertFalse(torch.allclose(refreshed.negative_descriptors, original_negatives))
-        # The batch is pushed on every step, so the pool grows past its seed.
-        self.assertGreater(len(pool), self.batch_size)
-
-    def test_a_disabled_pool_leaves_the_targets_untouched(self):
-        flat_descriptors, descriptor_view = self.descriptors()
-        args = make_args(negative_pool_size=0)
-        targets = select_rank_targets(descriptor_view, self.place_ids, args.adv_negatives, multi_positive=True)
-
-        refreshed = refresh_negative_pool(
-            NegativePool(capacity=0, descriptor_dim=flat_descriptors.shape[1]),
-            args,
-            targets,
-            flat_descriptors,
-            self.place_ids.reshape(-1),
-            self.place_ids,
-        )
-
-        self.assertIs(refreshed, targets)
-
     def test_full_attack_loss_path_runs_with_every_component_enabled(self):
         flat_descriptors, descriptor_view = self.descriptors()
         args = make_args()
         targets = select_rank_targets(descriptor_view, self.place_ids, args.adv_negatives, multi_positive=True)
-        pool = NegativePool(capacity=32, descriptor_dim=flat_descriptors.shape[1])
-        targets = refresh_negative_pool(
-            pool, args, targets, flat_descriptors, self.place_ids.reshape(-1), self.place_ids
-        )
 
         query_inputs = self.images[targets.query_indices, 0]
         outputs = compute_attack_losses(self.model, query_inputs, targets, [IdentityAttack()], args)

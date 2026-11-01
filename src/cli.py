@@ -234,13 +234,6 @@ def build_parser():
         help="Rank the best positive must reach for the listwise objective to be satisfied.",
     )
     parser.add_argument(
-        "--negative_pool_size",
-        type=int,
-        default=0,
-        help="Capacity of the cross-batch FIFO negative pool. 0 disables it and mines "
-        "negatives from the current batch only (Task 2.2).",
-    )
-    parser.add_argument(
         "--multi_positive",
         action="store_true",
         default=False,
@@ -354,8 +347,6 @@ def parse_arguments(argv=None):
         raise ValueError("--lr_plateau_factor must be between 0 and 1 (exclusive)")
     if args.adv_negatives < 1:
         raise ValueError("--adv_negatives must be at least 1")
-    if args.negative_pool_size < 0:
-        raise ValueError("--negative_pool_size must be non-negative")
     if args.listwise_tau <= 0:
         raise ValueError("--listwise_tau must be positive")
     if args.listwise_k < 1:

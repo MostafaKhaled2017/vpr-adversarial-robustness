@@ -72,7 +72,7 @@ class TrainingCheckpointTests(unittest.TestCase):
             "scaler_state_dict": {"scale": 128.0},
             "best_r5": 9.5,
             "not_improved_num": 3,
-            "runtime_state": {"iteration": 123, "negative_pool": {"size": 7}},
+            "runtime_state": {"iteration": 123},
         }
 
         with tempfile.TemporaryDirectory() as directory:

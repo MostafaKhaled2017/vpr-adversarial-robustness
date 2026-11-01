@@ -35,7 +35,6 @@ from .losses import (
     loss_function,
     query_is_correct,
 )
-from .negative_pool import NegativePool
 from .rank_validation import evaluate_rank_validation, sample_validation_queries, select_checkpoint
 from .targets import RetrievalAttackBatch, select_rank_targets
 
@@ -133,30 +132,6 @@ def compute_attack_losses(
         "align_loss": align_loss,
         "combined_adv_loss": combined_adv_loss,
     }
-
-
-def refresh_negative_pool(negative_pool, args, rank_targets, batch_descriptors, batch_place_ids, place_id):
-    """Re-mine the attack's negatives from the pool plus the current batch, then refill it.
-
-    The pool is pushed on every step whether or not targets were produced, so its contents
-    track the encoder rather than the subset of steps that happened to yield targets.
-    """
-    if negative_pool is None or not negative_pool.enabled:
-        return rank_targets
-
-    if rank_targets is not None:
-        mined = negative_pool.mine(
-            rank_targets.clean_query_descriptors,
-            place_id[rank_targets.query_indices, 0],
-            args.adv_negatives,
-            batch_descriptors=batch_descriptors,
-            batch_place_ids=batch_place_ids,
-        )
-        if mined is not None:
-            rank_targets = replace(rank_targets, negative_descriptors=mined)
-
-    negative_pool.push(batch_descriptors, batch_place_ids)
-    return rank_targets
 
 
 def measure_collapse(args, model, val_ds, reference_descriptors, sample_indices):
@@ -483,7 +458,6 @@ def build_checkpoint_state(
     *,
     scaler=None,
     iteration: int = 0,
-    negative_pool=None,
     collapse_sample_indices=None,
     reference_descriptors=None,
     initial_clean_r1=None,
@@ -514,7 +488,6 @@ def build_checkpoint_state(
         "rng_state": capture_rng_state(),
         "runtime_state": {
             "iteration": int(iteration),
-            "negative_pool": None if negative_pool is None else negative_pool.state_dict(),
             "collapse_sample_indices": list(collapse_sample_indices or []),
             "reference_descriptors": None
             if reference_descriptors is None
@@ -572,13 +545,6 @@ def run_training(
                 len(collapse_sample_indices),
             )
 
-    negative_pool_state = resume_runtime_state.get("negative_pool")
-    negative_pool = (
-        None
-        if negative_pool_state is None
-        else NegativePool.from_state_dict(negative_pool_state, device=args.device)
-    )
-    negative_pool_size = int(getattr(args, "negative_pool_size", 0))
     lr_drop_epochs = [int(epoch_str) for epoch_str in args.lr_schedule.split(",") if epoch_str.strip()]
     iteration = int(resume_runtime_state.get("iteration", start_epoch * len(train_loader)))
     current_lr = float(optimizer.param_groups[0]["lr"])
@@ -648,7 +614,6 @@ def run_training(
             not_improved,
             scaler=scaler,
             iteration=iteration,
-            negative_pool=negative_pool,
             collapse_sample_indices=collapse_sample_indices,
             reference_descriptors=reference_descriptors,
             initial_clean_r1=initial_clean_r1,
@@ -749,20 +714,6 @@ def run_training(
                     place_id,
                     args.adv_negatives,
                     multi_positive=getattr(args, "multi_positive", False),
-                )
-                if negative_pool_size > 0 and negative_pool is None:
-                    negative_pool = NegativePool(
-                        capacity=negative_pool_size,
-                        descriptor_dim=clean_descriptors_eval.shape[1],
-                        device=clean_descriptors_eval.device,
-                    )
-                rank_targets = refresh_negative_pool(
-                    negative_pool,
-                    args,
-                    rank_targets,
-                    clean_descriptors_eval,
-                    labels,
-                    place_id,
                 )
 
             use_adversarial_branch = epoch_num >= args.adv_warmup_epochs
@@ -944,7 +895,6 @@ def run_training(
                 not_improved,
                 scaler=scaler,
                 iteration=iteration,
-                negative_pool=negative_pool,
                 collapse_sample_indices=collapse_sample_indices,
                 reference_descriptors=reference_descriptors,
                 initial_clean_r1=initial_clean_r1,
@@ -1021,7 +971,6 @@ def run_training(
             next_not_improved,
             scaler=scaler,
             iteration=iteration,
-            negative_pool=negative_pool,
             collapse_sample_indices=collapse_sample_indices,
             reference_descriptors=reference_descriptors,
             initial_clean_r1=initial_clean_r1,
