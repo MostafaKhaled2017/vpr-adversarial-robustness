@@ -17,9 +17,11 @@ if str(SUPERVLAD_ROOT) not in sys.path:
 from src.cli import parse_arguments  # noqa: E402
 
 
-def run_script(root, script, *args):
+def run_script(root, script, *args, **extra_environment):
     environment = {**os.environ, "DRY_RUN": "1", "PYTHON": sys.executable,
                    "RUN_ROOT": str(root / "runs"), "OUT_ROOT": str(root / "out")}
+    environment.pop("BANK_ROOT", None)
+    environment.update(extra_environment)
     return subprocess.run(["bash", str(REPO_ROOT / "scripts" / script), *args], cwd=REPO_ROOT, env=environment,
                           text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
 
@@ -108,7 +110,7 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(args.collapse_abort_knn, 0.15)
 
     def test_settings_reach_their_flags(self):
-        bank = str(self.root / "runs" / "banks" / "supervlad_f0.pt")
+        bank = "logs/banks/supervlad_f0.pt"
         cases = (
             (("EPOCHS=12",), {"epochs_num": 12}),
             (("LRW=3",), {"adv_loss_weight": 3.0}),
@@ -182,22 +184,30 @@ class ScriptTests(unittest.TestCase):
 
 
     def test_build_bank_dry_run_prints_module_command(self):
-        result = run_script(self.root, "build_bank.sh", "supervlad")
+        bank_root = str(self.root / "banks")
+        result = run_script(self.root, "build_bank.sh", "supervlad", BANK_ROOT=bank_root)
         self.assertEqual(result.returncode, 0, result.stdout)
         [argv] = commands(result)
         self.assertEqual(argv[1:3], ["-m", "src.negative_bank"])
-        self.assertIn(f"--out={self.root / 'runs' / 'banks' / 'supervlad_f0.pt'}", argv)
+        self.assertIn(f"--out={bank_root}/supervlad_f0.pt", argv)
         self.assertIn("--resume=checkpoints/SuperVLAD_base.pth", argv)
         self.assertIn("--model=supervlad", argv)
 
     def test_build_bank_skips_existing_file(self):
-        bank = self.root / "runs" / "banks" / "supervlad_f0.pt"
+        bank = self.root / "banks" / "supervlad_f0.pt"
         bank.parent.mkdir(parents=True)
         bank.touch()
-        result = run_script(self.root, "build_bank.sh", "supervlad")
+        result = run_script(self.root, "build_bank.sh", "supervlad", BANK_ROOT=str(bank.parent))
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("=== SKIP", result.stdout)
         self.assertEqual(commands(result), [])
+
+    def test_train_bank_root_is_honoured(self):
+        bank_root = str(self.root / "banks")
+        result = run_script(self.root, "train.sh", "x", "supervlad", "araft", "0", "BANK=1", BANK_ROOT=bank_root)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        [argv] = commands(result)
+        self.assertEqual(parse_arguments(argv[2:]).negative_bank, f"{bank_root}/supervlad_f0.pt")
 
 
 if __name__ == "__main__":

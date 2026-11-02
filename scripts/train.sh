@@ -16,7 +16,7 @@
 #     POSITIVE=hardest|closest    protected positive, araft and plain_at         (default: hardest)
 #     LOSS=listwise|hinge         rank loss, araft and plain_at                  (default: listwise)
 #     LRW=<float>                 rank loss weight, araft and plain_at           (default: 1.0)
-#     BANK=0|1                    negatives from ${RUN_ROOT}/banks/MODEL_f0.pt
+#     BANK=0|1                    negatives from ${BANK_ROOT}/MODEL_f0.pt
 #                                 (scripts/build_bank.sh), araft and plain_at    (default: 0)
 #     NEG_BANK=<int>              bank negatives per query, needs BANK=1         (default: 5)
 #     BANK_DEVICE=cuda|cpu        device holding the bank, needs BANK=1          (default: cuda)
@@ -36,6 +36,7 @@
 #
 # Environment:
 #   RUN_ROOT  run directory root          (default: logs)
+#   BANK_ROOT bank directory              (default: logs/banks)
 #   DRY_RUN=1 print the train.py command instead of running it
 #   PYTHON    python interpreter          (default: python)
 set -euo pipefail
@@ -136,7 +137,7 @@ esac
 EXTRA_FLAGS=()
 [ -z "${LRW}" ] || EXTRA_FLAGS+=(--adv_loss_weight="${LRW}")
 [ -z "${DRIFT}" ] || EXTRA_FLAGS+=(--clean_drift_weight="${DRIFT}")
-[ "${BANK}" = 0 ] || EXTRA_FLAGS+=(--negative_bank="${RUN_ROOT:-logs}/banks/${MODEL}_f0.pt")
+[ "${BANK}" = 0 ] || EXTRA_FLAGS+=(--negative_bank="${BANK_ROOT:-logs/banks}/${MODEL}_f0.pt")
 [ -z "${NEG_BANK}" ] || EXTRA_FLAGS+=(--bank_negatives="${NEG_BANK}")
 [ -z "${BANK_DEVICE}" ] || EXTRA_FLAGS+=(--bank_device="${BANK_DEVICE}")
 case "${ANCHOR}" in
