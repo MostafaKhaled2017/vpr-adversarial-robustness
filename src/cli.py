@@ -246,6 +246,49 @@ def build_parser():
         default=0.1,
         help="Margin used for the retrieval adversarial objective.",
     )
+    parser.add_argument(
+        "--clean_drift_weight",
+        type=float,
+        default=0.0,
+        help="Weight of a squared-distance term pulling clean descriptors toward the frozen initial model's.",
+    )
+    parser.add_argument(
+        "--negative_bank",
+        type=str,
+        default=None,
+        help="Frozen descriptor bank whose nearest other-place entries are added as negatives to the rank objective.",
+    )
+    parser.add_argument(
+        "--bank_negatives",
+        type=int,
+        default=5,
+        help="Nearest bank entries added as negatives per attacked query.",
+    )
+    parser.add_argument(
+        "--bank_device",
+        choices=("cuda", "cpu"),
+        default="cuda",
+        help="Device holding the descriptor bank for nearest-neighbour lookup.",
+    )
+    parser.add_argument(
+        "--anchor_kind",
+        choices=("isotropic", "relational", "both"),
+        default="isotropic",
+        help="Alignment anchor: 'isotropic' pulls the attacked descriptor toward the clean one; "
+        "'relational' matches its similarity distribution over bank neighbours; 'both' sums the two.",
+    )
+    parser.add_argument(
+        "--relational_neighbours",
+        type=int,
+        default=32,
+        help="Bank neighbours over which the relational anchor compares similarity distributions.",
+    )
+    parser.add_argument(
+        "--relational_temperature",
+        type=float,
+        default=0.1,
+        help="Softmax temperature of the relational anchor's similarity distributions.",
+    )
     # Validation measures clean and rank-PGD L-inf recall on a fixed query sample, selects the most
     # robust epoch and keeps one extra checkpoint per --selection_clean_budgets entry.
     parser.add_argument("--val_queries", type=int, default=2000, help="Validation queries sampled for rank-PGD validation.")
@@ -347,6 +390,20 @@ def parse_arguments(argv=None):
         raise ValueError(
             "--align_target initial with --continue requires --run_dir (the original run directory holding initial_model.pth)"
         )
+    if args.clean_drift_weight < 0:
+        raise ValueError("--clean_drift_weight must be non-negative")
+    if args.clean_drift_weight > 0 and args.align_target != "initial":
+        raise ValueError("--clean_drift_weight requires --align_target initial (the frozen model to anchor to)")
+    if args.anchor_kind != "isotropic" and args.negative_bank is None:
+        raise ValueError(f"--anchor_kind {args.anchor_kind} requires --negative_bank (the neighbours to compare over)")
+    if args.anchor_kind != "isotropic" and args.align_target != "initial":
+        raise ValueError(f"--anchor_kind {args.anchor_kind} requires --align_target initial")
+    if args.bank_negatives < 1:
+        raise ValueError("--bank_negatives must be at least 1")
+    if args.relational_neighbours < 1:
+        raise ValueError("--relational_neighbours must be at least 1")
+    if args.relational_temperature <= 0:
+        raise ValueError("--relational_temperature must be positive")
     if args.clip_grad <= 0:
         raise ValueError("--clip_grad must be positive")
     if args.val_queries < 1:
