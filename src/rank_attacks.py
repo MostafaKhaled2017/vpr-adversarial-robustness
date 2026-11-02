@@ -354,6 +354,21 @@ class EmbeddingShiftPGDAttack(RankPGDAttack):
         return super()._initial_inputs(clean_inputs, max(restart_index, 1))
 
 
+class CombinedShiftRankPGDAttack(RankPGDAttack):
+    """PGD maximising ‖f(x′) − r‖² + rank_weight · rank score, with r = ``targets.clean_query_descriptors``,
+    the frozen model's descriptor."""
+
+    def __init__(self, model: nn.Module, config: RankAttackConfig, rank_weight: float = 1.0):
+        super().__init__(model, config)
+        self.rank_weight = float(rank_weight)
+
+    def _rank_components(self, inputs: Tensor, targets: RetrievalAttackBatch) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        score, positive_distance, hard_negative_distance, descriptors = super()._rank_components(inputs, targets)
+        reference = targets.clean_query_descriptors.detach().to(device=inputs.device, dtype=descriptors.dtype)
+        shift = (descriptors - reference).pow(2).sum(dim=1)
+        return shift + self.rank_weight * score, positive_distance, hard_negative_distance, descriptors
+
+
 class RankAPGDLinfAttack(RankPGDAttack):
 
     def forward(self, inputs: Tensor, targets: RetrievalAttackBatch) -> RankAttackResult:

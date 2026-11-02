@@ -502,6 +502,18 @@ def build_attack_namespace(model: nn.Module, args) -> Dict[str, object]:
 
             return EmbeddingShiftPGDAttack(self.model, config)
 
+    class CombinedShiftRankLinfAttack(RankLinfAttack):
+        """L∞ PGD maximising ‖f_θ(x′) − f₀(x)‖² + rank_weight · rank score."""
+
+        def __init__(self, model, epsilon: float = 0.1, steps: int = 5, rank_weight: float = 1.0):
+            super().__init__(model, epsilon, steps)
+            self.rank_weight = float(rank_weight)
+
+        def _pgd(self, config):
+            from .rank_attacks import CombinedShiftRankPGDAttack
+
+            return CombinedShiftRankPGDAttack(self.model, config, rank_weight=self.rank_weight)
+
     return {
         "model": unwrap_model(model),
         "NoAttack": NoAttack,
@@ -517,6 +529,7 @@ def build_attack_namespace(model: nn.Module, args) -> Dict[str, object]:
         "LagrangePerceptualAttack": LagrangePerceptualAttack,
         "RankLinfAttack": RankLinfAttack,
         "EmbeddingShiftLinfAttack": EmbeddingShiftLinfAttack,
+        "CombinedShiftRankLinfAttack": CombinedShiftRankLinfAttack,
         "AutoAttack": lambda *a, **k: UnsupportedAttack(*a, attack_name="AutoAttack", **k),
         "AutoLinfAttack": lambda *a, **k: UnsupportedAttack(*a, attack_name="AutoLinfAttack", **k),
         "AutoL2Attack": lambda *a, **k: UnsupportedAttack(*a, attack_name="AutoL2Attack", **k),
