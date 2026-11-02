@@ -165,6 +165,17 @@ def compute_align_loss(clean_query_descriptor: Tensor, adv_query_descriptor: Ten
     return (adv_query_descriptor - clean_query_descriptor).pow(2).sum(dim=1).mean()
 
 
+def compute_relational_loss(reference: Tensor, adversarial: Tensor, neighbours: Tensor, temperature: float) -> Tensor:
+    """KL divergence between the reference and adversarial similarity profiles, each a softmax
+    over negative squared distances to the neighbour descriptors scaled by the temperature.
+
+    The neighbours must exclude the query's own place; the caller handles that exclusion.
+    """
+    log_p = torch.log_softmax(-(reference.unsqueeze(1) - neighbours).pow(2).sum(dim=2) / temperature, dim=1)
+    log_q = torch.log_softmax(-(adversarial.unsqueeze(1) - neighbours).pow(2).sum(dim=2) / temperature, dim=1)
+    return torch.sum(log_p.exp() * (log_p - log_q), dim=1).mean()
+
+
 def query_is_correct(
     query_descriptor: Tensor,
     positive_descriptor: Tensor,
