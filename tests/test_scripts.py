@@ -45,15 +45,35 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(commands(result), [])
 
     def test_stopped_run_resumes_from_last_checkpoint(self):
-        run_dir = self.root / "runs" / "supervlad_araft_s0"
-        run_dir.mkdir(parents=True)
-        (run_dir / "run_status.json").write_text(json.dumps({"state": "paused"}))
-        (run_dir / "last_model.pth").touch()
-        result = run_script(self.root, "train.sh", "supervlad_araft_s0", "supervlad", "araft", "0")
+        for method in ("araft", "fare"):
+            with self.subTest(method=method):
+                name = f"supervlad_{method}_s0"
+                run_dir = self.root / "runs" / name
+                run_dir.mkdir(parents=True)
+                (run_dir / "run_status.json").write_text(json.dumps({"state": "paused"}))
+                (run_dir / "last_model.pth").touch()
+                result = run_script(self.root, "train.sh", name, "supervlad", method, "0")
+                [argv] = commands(result)
+                args = parse_arguments(argv[2:])
+                self.assertEqual(args.resume, str(run_dir / "last_model.pth"))
+                self.assertTrue(args.continue_training)
+
+    def test_fare_trains_anchor_only_against_embedding_shift(self):
+        result = run_script(self.root, "train.sh", "supervlad_fare_s0", "supervlad", "fare", "0")
         [argv] = commands(result)
         args = parse_arguments(argv[2:])
-        self.assertEqual(args.resume, str(run_dir / "last_model.pth"))
-        self.assertTrue(args.continue_training)
+        self.assertEqual(args.attack, ["EmbeddingShiftLinfAttack(model, epsilon=0.0685, steps=5)"])
+        self.assertEqual(args.adv_loss_weight, 0.0)
+        self.assertEqual(args.adv_align_weight, 1.0)
+        self.assertEqual(args.align_target, "initial")
+        self.assertEqual(args.attack_ramp_epochs, 5)
+        self.assertEqual(args.collapse_abort_knn, 0.15)
+        self.assertFalse(args.multi_positive)
+
+    def test_fare_rejects_araft_only_settings(self):
+        for setting in ("LOSS=hinge", "POSITIVE=closest"):
+            result = run_script(self.root, "train.sh", "x", "supervlad", "fare", "0", setting)
+            self.assertNotEqual(result.returncode, 0, setting)
 
     def test_done_piece_is_skipped(self):
         piece = self.root / "out" / "supervlad" / "apgd" / "sped" / "araft"

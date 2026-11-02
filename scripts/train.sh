@@ -6,9 +6,11 @@
 #
 #   MODEL   supervlad | boq
 #   METHOD  araft     ARAFT: listwise rank loss + anchor to the pretrained model
+#           fare      FARE: anchor loss only, against an attack pushing the descriptor away
+#                     from the pretrained model's
 #   KEY=VALUE overrides:
-#     POSITIVE=hardest|closest  protected positive              (default: hardest)
-#     LOSS=listwise|hinge       rank loss                       (default: listwise)
+#     POSITIVE=hardest|closest  protected positive, araft only  (default: hardest)
+#     LOSS=listwise|hinge       rank loss, araft only           (default: listwise)
 #     AW=<float>                anchor weight lambda_anc        (default: 1.0)
 #     FTE=<int>                 frozen DINOv2 blocks            (default: 0)
 #     LR=<float>                learning rate                   (default: 1e-5)
@@ -34,7 +36,11 @@ shift 4
 POSITIVE=hardest LOSS=listwise AW=1.0 FTE=0 LR=1e-5
 for setting in "$@"; do
   case "${setting}" in
-    POSITIVE=* | LOSS=* | AW=* | FTE=* | LR=*) declare "${setting}" ;;
+    POSITIVE=* | LOSS=*)
+      [ "${METHOD}" = "araft" ] || { echo "${setting%%=*} applies to araft only" >&2; exit 2; }
+      declare "${setting}"
+      ;;
+    AW=* | FTE=* | LR=*) declare "${setting}" ;;
     *) echo "unknown setting: ${setting}" >&2; exit 2 ;;
   esac
 done
@@ -67,6 +73,16 @@ case "${METHOD}" in
       closest) METHOD_FLAGS+=(--multi_positive) ;;
       *) echo "unknown POSITIVE: ${POSITIVE}" >&2; exit 2 ;;
     esac
+    ;;
+  fare)
+    METHOD_FLAGS=(
+      --attack "EmbeddingShiftLinfAttack(model, epsilon=${TRAIN_EPS}, steps=5)"
+      --adv_loss_weight=0
+      --align_target=initial
+      --adv_align_weight="${AW}"
+      --attack_ramp_epochs=5
+      --collapse_abort_knn=0.15
+    )
     ;;
   *) echo "unknown method: ${METHOD}" >&2; exit 2 ;;
 esac
