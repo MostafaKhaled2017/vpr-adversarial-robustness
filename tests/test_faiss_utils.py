@@ -16,7 +16,6 @@ if str(SUPERVLAD_ROOT) not in sys.path:
     sys.path.insert(0, str(SUPERVLAD_ROOT))
 
 from src import faiss_utils
-from src.eval import compute_recalls_from_features
 from src.targets import build_attack_targets
 from src import rank_eval
 
@@ -201,15 +200,10 @@ class FaissUtilsTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "startup GPU add/search probe failed"):
                 faiss_utils.validate_faiss_runtime("cuda")
 
-    def test_cpu_recall_and_target_searches_preserve_expected_neighbors(self):
+    def test_cpu_target_search_preserves_expected_neighbors(self):
         database = np.array([[0.0], [1.0], [10.0]], dtype=np.float32)
         queries = np.array([[0.1]], dtype=np.float32)
         positives = [np.array([0], dtype=np.int64)]
-        recall_args = Namespace(device="cpu", features_dim=1, recall_values=[1, 2])
-
-        recalls = compute_recalls_from_features(recall_args, database, queries, positives)
-
-        self.assertEqual(recalls["recalls"], {"R@1": 100.0, "R@2": 100.0})
 
         eval_ds = SimpleNamespace(database_num=3, get_positives=lambda: positives)
         target_args = Namespace(device="cpu", adv_negatives=1)
@@ -218,6 +212,28 @@ class FaissUtilsTests(unittest.TestCase):
         np.testing.assert_array_equal(valid_queries, np.array([0]))
         self.assertEqual(targets[0]["positive_index"], 0)
         np.testing.assert_array_equal(targets[0]["negative_indexes"], np.array([1]))
+
+    def test_build_attack_targets_carries_every_positive(self):
+        database = np.array([[0.0], [1.0], [1.5], [10.0]], dtype=np.float32)
+        queries = np.array([[0.1]], dtype=np.float32)
+        positives = [np.array([0, 1], dtype=np.int64)]
+
+        eval_ds = SimpleNamespace(database_num=4, get_positives=lambda: positives)
+        target_args = Namespace(device="cpu", adv_negatives=1)
+        targets, _ = build_attack_targets(target_args, eval_ds, database, queries)
+
+        np.testing.assert_array_equal(targets[0]["positive_indexes"], positives[0])
+
+    def test_build_attack_targets_caps_queries_like_rank_eval(self):
+        database = np.array([[0.0], [1.0], [10.0]], dtype=np.float32)
+        queries = np.zeros((10, 1), dtype=np.float32)
+        positives = [np.array([0], dtype=np.int64)] * 10
+        eval_ds = SimpleNamespace(database_num=3, get_positives=lambda: positives)
+
+        _, valid = build_attack_targets(Namespace(device="cpu", adv_negatives=1), eval_ds, database, queries, limit_queries=5)
+
+        np.testing.assert_array_equal(valid, [0, 2, 4, 6, 8])
+        np.testing.assert_array_equal(valid, rank_eval.select_valid_query_indices(positives, 5))
 
 
 if __name__ == "__main__":

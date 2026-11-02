@@ -1,18 +1,23 @@
+import copy
 import logging
+from os.path import join
 
 import torch
 from torch.cuda.amp import GradScaler
 
-import util
+from .checkpoints import load_training_state
 from .config import unwrap_model
 from .data import build_training_dataloader, setup_datasets
 from .models import get_model_adapter
 
+# Models that start from their official release (key -> display name).
+PRETRAINED_ONLY_MODELS = {"boq": "BoQ"}
+
 
 def build_training_components(args):
     adapter = get_model_adapter(args.model)
-    if args.model in {"boq", "mixvpr"} and args.resume is None and not args.download_pretrained:
-        model_name = "BoQ" if args.model == "boq" else "MixVPR"
+    if args.model in PRETRAINED_ONLY_MODELS and args.resume is None and not args.download_pretrained:
+        model_name = PRETRAINED_ONLY_MODELS[args.model]
         raise ValueError(
             f"{model_name} requires initial weights. Pass --resume with a local checkpoint or "
             "pass --download_pretrained to download the official weights."
@@ -53,6 +58,8 @@ def build_training_components(args):
     best_score = -1.0
     not_improved = 0
     start_epoch = 0
+    resume_runtime_state = {}
+    scaler = GradScaler(enabled=args.mixed_precision)
     if args.resume:
         if args.resume_model_only or not args.continue_training:
             adapter.load_weights(unwrap_model(model), args.resume, args)
@@ -61,15 +68,45 @@ def build_training_components(args):
                 args.resume,
             )
         else:
-            model, optimizer, best_score, start_epoch, not_improved = util.resume_train(
-                args,
+            resume_state = load_training_state(
+                args.resume,
                 model,
                 optimizer,
+                scaler,
+                map_location=args.device,
+                strict=False,
             )
+            best_score = resume_state.best_score
+            start_epoch = resume_state.next_epoch
+            not_improved = resume_state.not_improved
+            resume_runtime_state = dict(resume_state.runtime_state)
             logging.info("Resuming from epoch %d with best validation score %.1f", start_epoch, best_score)
     elif args.download_pretrained:
         adapter.download_weights(unwrap_model(model), args)
         logging.info("Downloaded and loaded pretrained weights for %s.", args.model)
-    scaler = GradScaler(enabled=args.mixed_precision)
     train_loader = build_training_dataloader(args)
-    return model, optimizer, scaler, train_loader, val_ds, test_ds, best_score, start_epoch, not_improved
+    return (
+        model,
+        optimizer,
+        scaler,
+        train_loader,
+        val_ds,
+        test_ds,
+        best_score,
+        start_epoch,
+        not_improved,
+        resume_runtime_state,
+    )
+
+
+def build_anchor_model(args, model):
+    """Frozen copy of the run's initial weights for the --align_target initial anchor.
+
+    Loads ``<save_dir>/initial_model.pth`` rather than copying ``model``'s current weights, so
+    a --continue resume still anchors to the weights the run started from.
+    """
+    anchor = copy.deepcopy(unwrap_model(model))
+    get_model_adapter(args.model).load_weights(anchor, join(args.save_dir, "initial_model.pth"), args)
+    anchor.eval()
+    anchor.requires_grad_(False)
+    return anchor

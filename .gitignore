@@ -23,3 +23,6 @@ reports
 output
 
 tmp*
+.claude/settings.local.json
+.headroom/
+.serena/

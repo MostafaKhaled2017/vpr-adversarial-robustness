@@ -114,7 +114,6 @@ class RankEvalModelTypeTests(unittest.TestCase):
             epsilon=0.1,
             steps=2,
             restarts=2,
-            norm="linf",
             device="cpu",
         )
 
@@ -127,7 +126,7 @@ class RankEvalModelTypeTests(unittest.TestCase):
 
     def test_restart_initialization_changes_reproducibly_with_seed(self):
         inputs = torch.full((1, 3, 4, 4), 0.25)
-        config = RankAttackConfig(epsilon=0.1, steps=1, restarts=2, norm="linf", device="cpu")
+        config = RankAttackConfig(epsilon=0.1, steps=1, restarts=2, device="cpu")
         attack = RankPGDAttack(TinyDescriptorModel(), config)
 
         torch.manual_seed(3)

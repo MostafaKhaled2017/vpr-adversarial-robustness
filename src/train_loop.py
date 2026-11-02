@@ -1,25 +1,68 @@
 import csv
 import json
 import logging
+import math
+import time
+from dataclasses import replace
 from datetime import datetime
 from os.path import exists, join
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 import torch
 from torch import Tensor, nn
 from tqdm import tqdm
 
-import test
-import util
-from .checkpoints import apply_lr_schedule, maybe_remove_old_checkpoint, should_drop_lr_on_plateau
+from . import supervlad_compat
+from .checkpoints import (
+    apply_lr_schedule,
+    capture_rng_state,
+    copy_budget_checkpoints,
+    load_trusted_checkpoint,
+    maybe_remove_old_checkpoint,
+    save_checkpoint,
+    restore_rng_state,
+    should_drop_lr_on_plateau,
+)
+from .collapse_metrics import collapse_report, collect_descriptors, reference_sample_indices
 from .config import amp_autocast, unwrap_model
-from .eval import evaluate_against_attacks_retrieval, make_attack_name
-from .losses import compute_align_loss, compute_rank_loss, loss_function, query_is_correct
+from .attacks import attack_strength_scale
+from .losses import (
+    compute_align_loss,
+    compute_listwise_loss,
+    compute_rank_loss,
+    loss_function,
+    query_is_correct,
+)
+from .rank_validation import evaluate_rank_validation, sample_validation_queries, select_checkpoint
 from .targets import RetrievalAttackBatch, select_rank_targets
 
 
+def make_attack_name(attack: nn.Module) -> str:
+    return attack.__class__.__name__
+
+
 REPORTED_RECALL_VALUES = (1, 5, 10, 100)
+
+
+def compute_defense_loss(query_descriptors: Tensor, attack_targets: RetrievalAttackBatch, args) -> Tensor:
+    """Dispatch to the configured adversarial defense objective."""
+    if getattr(args, "defense_loss", "hinge") == "listwise":
+        return compute_listwise_loss(
+            query_descriptors,
+            attack_targets.positive_descriptors,
+            attack_targets.negative_descriptors,
+            getattr(args, "listwise_tau", 0.05),
+            getattr(args, "listwise_k", 1),
+            attack_targets.positive_mask,
+        )
+    return compute_rank_loss(
+        query_descriptors,
+        attack_targets.positive_descriptors,
+        attack_targets.negative_descriptors,
+        args.adv_margin,
+        attack_targets.positive_mask,
+    )
 
 
 def compute_attack_losses(
@@ -28,6 +71,7 @@ def compute_attack_losses(
     attack_targets: RetrievalAttackBatch,
     attacks: Sequence[nn.Module],
     args,
+    align_reference: Optional[Tensor] = None,
 ) -> Dict[str, object]:
     if len(attack_targets) == 0 or len(attacks) == 0:
         zero = query_inputs.new_zeros(())
@@ -38,23 +82,24 @@ def compute_attack_losses(
             "combined_adv_loss": zero,
         }
 
+    # With --align_target initial the anchor is the frozen initial model's clean
+    # descriptor; otherwise the current model's.
+    if align_reference is None:
+        align_reference = attack_targets.clean_query_descriptors
+
     attack_logs = []
     combined_losses = []
     rank_losses = []
     align_losses = []
     for attack in attacks:
-        adv_queries = attack(query_inputs, attack_targets)
+        # Attacks see the anchor as the clean query descriptor (no current attack reads it).
+        adv_queries = attack(query_inputs, replace(attack_targets, clean_query_descriptors=align_reference))
         with amp_autocast(False, args.device):
-            adv_query_descriptors = model(adv_queries, queryflag=0)
+            adv_query_descriptors = model(adv_queries, queryflag=1)
         adv_query_descriptors = adv_query_descriptors.float()
-        rank_loss = compute_rank_loss(
-            adv_query_descriptors,
-            attack_targets.positive_descriptors,
-            attack_targets.negative_descriptors,
-            args.adv_margin,
-        )
+        rank_loss = compute_defense_loss(adv_query_descriptors, attack_targets, args)
         align_loss = compute_align_loss(
-            attack_targets.clean_query_descriptors,
+            align_reference,
             adv_query_descriptors,
         )
         combined_loss = args.adv_loss_weight * rank_loss + args.adv_align_weight * align_loss
@@ -92,26 +137,115 @@ def compute_attack_losses(
     }
 
 
-def compute_validation_selection_scores(metrics: Dict[str, object], robust_weight: float = 0.75) -> Dict[str, float]:
-    clean_score = compute_recall_score(metrics["NoAttack"])
+def measure_collapse(args, model, val_ds, reference_descriptors, sample_indices):
+    """Collapse and neighborhood-distortion report for the current model, or None."""
+    if reference_descriptors is None or not sample_indices:
+        return None
+    current = collect_descriptors(
+        model,
+        val_ds,
+        sample_indices,
+        args.infer_batch_size,
+        args.device,
+        args.mixed_precision,
+    )
+    return collapse_report(current, reference_descriptors, getattr(args, "collapse_knn", 10))
 
-    attacked_scores: List[float] = []
-    for attack_name, attack_metrics in metrics.items():
-        if attack_name == "NoAttack":
-            continue
-        attacked_scores.append(compute_recall_score(attack_metrics))
 
-    if len(attacked_scores) == 0:
-        robust_score = clean_score
-    else:
-        robust_score = float(np.mean(attacked_scores))
+def log_collapse_report(writer, report, epoch_num: int) -> None:
+    if report is None:
+        return
+    for metric_name, value in report.items():
+        writer.add_scalar(f"collapse/{metric_name}", float(value), epoch_num)
+    logging.info(
+        "Collapse monitor: knn_overlap = %.4f, mean_pairwise_cosine = %.4f, "
+        "dimension_std_mean = %.4f, collapsed_dimension_fraction = %.4f",
+        report["knn_overlap"],
+        report["mean_pairwise_cosine"],
+        report["dimension_std_mean"],
+        report["collapsed_dimension_fraction"],
+    )
 
-    selection_score = (1.0 - robust_weight) * clean_score + robust_weight * robust_score
-    return {
-        "clean_score": clean_score,
-        "robust_score": robust_score,
-        "selection_score": selection_score,
-    }
+
+def is_validation_epoch(epoch: int, val_every: int, num_epochs: int) -> bool:
+    """Whether 1-based ``epoch`` is validated under --val_every; the last epoch always is."""
+    return epoch % val_every == 0 or epoch == num_epochs
+
+
+def counts_toward_patience(args, epoch_num: int) -> bool:
+    """Whether a non-improving validation after 0-based ``epoch_num`` counts toward patience.
+
+    With an attack ramp, the model trains against weaker attacks than validation uses until
+    ``adv_warmup_epochs + attack_ramp_epochs``, so a stalled robust score there reflects the
+    curriculum, not a plateau. Those validations don't count toward lr-plateau or
+    early-stopping patience; they still update the best and budget checkpoints.
+    """
+    ramp_epochs = int(getattr(args, "attack_ramp_epochs", 0))
+    if ramp_epochs <= 0 or args.is_clean_only:
+        return True
+    return epoch_num >= args.adv_warmup_epochs + ramp_epochs
+
+
+def collapse_aborts(args, collapse, epoch_num: int) -> bool:
+    """Log and report whether k-NN overlap fell below --collapse_abort_knn."""
+    abort_threshold = getattr(args, "collapse_abort_knn", None)
+    if abort_threshold is None or collapse is None or collapse["knn_overlap"] >= abort_threshold:
+        return False
+    logging.error(
+        "Aborting: k-NN overlap %.4f fell below --collapse_abort_knn %.4f after epoch %02d. "
+        "The embedding's neighbourhood structure has been destroyed.",
+        collapse["knn_overlap"],
+        abort_threshold,
+        epoch_num + 1,
+    )
+    return True
+
+
+# Room kept after the last epoch of a session for the final test (~6 min on MSLS).
+FINAL_TEST_RESERVE_SECONDS = 15 * 60
+
+
+def pauses_for_deadline(args, slowest_epoch_seconds: float, now: Optional[float] = None) -> bool:
+    """Whether --stop_by leaves no room for one more epoch like the slowest so far plus the final test.
+
+    The session's first epoch (slowest_epoch_seconds 0) always starts: the caller
+    starts a run only with enough time left for it.
+    """
+    stop_by = getattr(args, "stop_by", None)
+    if stop_by is None or slowest_epoch_seconds <= 0:
+        return False
+    now = time.time() if now is None else now
+    if now + slowest_epoch_seconds + FINAL_TEST_RESERVE_SECONDS <= stop_by:
+        return False
+    logging.info(
+        "Pausing: an epoch (up to %.0f min) and the final test would end after --stop_by %s.",
+        slowest_epoch_seconds / 60,
+        datetime.fromtimestamp(stop_by).strftime("%Y-%m-%d %H:%M"),
+    )
+    return True
+
+
+def apply_attack_curriculum(train_attacks, args, epoch_num: int) -> float:
+    """Set this epoch's attack budget on the *training* attacks only.
+
+    Validation attacks are separate instances (see train.py) and deliberately stay at full
+    strength: the selection score has to mean the same thing in every epoch.
+    """
+    ramp_epochs = int(getattr(args, "attack_ramp_epochs", 0))
+    if ramp_epochs <= 0 or not train_attacks:
+        return 1.0
+
+    scale = attack_strength_scale(
+        epoch_num,
+        args.adv_warmup_epochs,
+        ramp_epochs,
+        getattr(args, "attack_ramp_min_scale", 0.1),
+    )
+    for attack in train_attacks:
+        set_strength_scale = getattr(attack, "set_strength_scale", None)
+        if set_strength_scale is not None:
+            set_strength_scale(scale)
+    return scale
 
 
 def recall_value(metric: Dict[str, object], recall_at: int) -> float:
@@ -120,10 +254,6 @@ def recall_value(metric: Dict[str, object], recall_at: int) -> float:
     if key not in recalls:
         raise KeyError(f"Validation metric {key} is missing. Available metrics: {sorted(recalls)}")
     return float(recalls[key])
-
-
-def compute_recall_score(metric: Dict[str, object]) -> float:
-    return recall_value(metric, 1) + recall_value(metric, 5)
 
 
 def format_reported_recalls(metric: Dict[str, object]) -> str:
@@ -163,10 +293,36 @@ def log_validation_recalls(epoch_label: str, metrics: Dict[str, object]) -> None
         logging.info("Validation recalls %s attacked/mean: %s", epoch_label, format_reported_recalls(attacked_mean))
 
 
+def log_rank_selection(scores: Dict[str, object], initial_clean_r1: float) -> None:
+    logging.info(
+        "Selection: clean R@1 %.2f (initial %.2f), mean attacked R@1 %.2f, within clean budgets %s",
+        scores["clean_score"],
+        initial_clean_r1,
+        scores["robust_score"],
+        [budget_key(budget) for budget in scores["eligible_budgets"]],
+    )
+
+
+def budget_key(budget: float) -> str:
+    return f"{float(budget):g}"
+
+
+def improved_budgets(validation_scores: Dict[str, object], best_budget_scores: Dict[str, float]) -> List[str]:
+    """Budgets whose best robust score this validation strictly beats."""
+    robust = float(validation_scores["robust_score"])
+    return [
+        budget_key(budget)
+        for budget in validation_scores.get("eligible_budgets", [])
+        if robust > best_budget_scores.get(budget_key(budget), -math.inf)
+    ]
+
+
 def build_validation_metrics_record(
     epoch_num: int,
     metrics: Dict[str, object],
     validation_scores: Dict[str, float],
+    collapse: Dict[str, float] | None = None,
+    initial_clean_r1: float | None = None,
 ) -> Dict[str, object]:
     attacks = {
         attack_name: {f"R@{recall_at}": recall_value(attack_metrics, recall_at) for recall_at in REPORTED_RECALL_VALUES}
@@ -174,7 +330,7 @@ def build_validation_metrics_record(
         if attack_name != "NoAttack"
     }
     attacked_mean = compute_attacked_mean_metrics(metrics)
-    return {
+    record = {
         "epoch": epoch_num,
         "clean": {f"R@{recall_at}": recall_value(metrics["NoAttack"], recall_at) for recall_at in REPORTED_RECALL_VALUES},
         "attacks": attacks,
@@ -186,7 +342,13 @@ def build_validation_metrics_record(
         "clean_score": validation_scores["clean_score"],
         "robust_score": validation_scores["robust_score"],
         "selection_score": validation_scores["selection_score"],
+        "collapse": collapse,
     }
+    if "eligible_budgets" in validation_scores:
+        record["eligible_budgets"] = list(validation_scores["eligible_budgets"])
+    if initial_clean_r1 is not None:
+        record["initial_clean_r1"] = initial_clean_r1
+    return record
 
 
 def append_validation_metrics(args, record: Dict[str, object]) -> None:
@@ -257,23 +419,54 @@ def build_checkpoint_state(
     model,
     optimizer,
     epoch_num: int,
-    metrics: Dict[str, object],
-    validation_scores: Dict[str, float],
+    metrics: Optional[Dict[str, object]],
+    validation_scores: Optional[Dict[str, float]],
     next_best_score: float,
     next_not_improved: int,
+    *,
+    scaler=None,
+    iteration: int = 0,
+    collapse_sample_indices=None,
+    reference_descriptors=None,
+    initial_clean_r1=None,
+    best_budget_scores=None,
+    best_checkpoint_epochs=None,
+    stop_state: Optional[str] = None,
 ) -> Dict[str, object]:
+    # An epoch skipped by --val_every has no validation; resuming needs none of these fields.
+    validated = metrics is not None
     return {
         "epoch_num": epoch_num,
+        "next_epoch": epoch_num + 1,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
-        "recalls": metrics["NoAttack"]["recalls_list"],
-        "clean_score": validation_scores["clean_score"],
-        "robust_score": validation_scores["robust_score"],
-        "selection_score": validation_scores["selection_score"],
+        "scaler_state_dict": None if scaler is None else scaler.state_dict(),
+        "recalls": metrics["NoAttack"]["recalls_list"] if validated else None,
+        "clean_score": validation_scores["clean_score"] if validated else None,
+        "robust_score": validation_scores["robust_score"] if validated else None,
+        "selection_score": validation_scores["selection_score"] if validated else None,
         "best_r5": next_best_score,
         "not_improved_num": next_not_improved,
         "tensorboard_dir": args.tensorboard_dir,
-        "validation_metrics": build_validation_metrics_record(epoch_num, metrics, validation_scores),
+        "validation_metrics": build_validation_metrics_record(
+            epoch_num, metrics, validation_scores, initial_clean_r1=initial_clean_r1
+        )
+        if validated
+        else None,
+        "rng_state": capture_rng_state(),
+        "runtime_state": {
+            "iteration": int(iteration),
+            "collapse_sample_indices": list(collapse_sample_indices or []),
+            "reference_descriptors": None
+            if reference_descriptors is None
+            else reference_descriptors.detach().cpu(),
+            "initial_clean_r1": initial_clean_r1,
+            "best_budget_scores": dict(best_budget_scores or {}),
+            "best_checkpoint_epochs": dict(best_checkpoint_epochs or {}),
+            # early_stopped / collapse_aborted when this epoch ends the run, so a run killed
+            # before its final test resumes straight into the final test.
+            "stop_state": stop_state,
+        },
     }
 
 
@@ -290,30 +483,80 @@ def run_training(
     not_improved,
     writer,
     train_attacks,
-    validation_attacks,
+    resume_runtime_state=None,
+    anchor_model=None,
 ):
     start_time = datetime.now()
-    lr_drop_epochs = [int(epoch_str) for epoch_str in args.lr_schedule.split(",") if epoch_str.strip()]
-    iteration = start_epoch * len(train_loader)
-    current_lr = float(optimizer.param_groups[0]["lr"])
+    resume_runtime_state = dict(resume_runtime_state or {})
 
-    if start_epoch == 0 and not args.skip_initial_validation:
-        logging.info("Begin initial validation before training")
-        initial_metrics = evaluate_against_attacks_retrieval(
-            args,
-            model,
-            val_ds,
-            validation_attacks,
-            writer=writer,
-            iteration=iteration,
+    # Reference embedding for neighborhood-distortion monitoring, captured before the first
+    # optimizer step and stored in every managed checkpoint so resumption keeps measuring
+    # drift from the same pretrained reference.
+    collapse_sample_indices = list(resume_runtime_state.get("collapse_sample_indices", []))
+    reference_descriptors = resume_runtime_state.get("reference_descriptors")
+    if reference_descriptors is not None:
+        reference_descriptors = reference_descriptors.to(args.device)
+    if not collapse_sample_indices and int(getattr(args, "collapse_sample_size", 0)) > 0:
+        collapse_sample_indices = reference_sample_indices(val_ds, args.collapse_sample_size)
+        if collapse_sample_indices:
+            reference_descriptors = collect_descriptors(
+                model,
+                val_ds,
+                collapse_sample_indices,
+                args.infer_batch_size,
+                args.device,
+                args.mixed_precision,
+            )
+            logging.info(
+                "Captured collapse reference embedding on %d validation images.",
+                len(collapse_sample_indices),
+            )
+
+    lr_drop_epochs = [int(epoch_str) for epoch_str in args.lr_schedule.split(",") if epoch_str.strip()]
+    iteration = int(resume_runtime_state.get("iteration", start_epoch * len(train_loader)))
+    current_lr = float(optimizer.param_groups[0]["lr"])
+    restore_rng_state(resume_runtime_state.get("rng_state"))
+
+    # Validation measures clean and rank-PGD recall on a fixed query sample and selects the most
+    # robust epoch, keeping one extra checkpoint per --selection_clean_budgets entry whose clean
+    # R@1 stays within that budget of the initial model's C0 (kept across resumes).
+    initial_clean_r1 = resume_runtime_state.get("initial_clean_r1")
+    best_budget_scores = dict(resume_runtime_state.get("best_budget_scores", {}))
+    # Which validation epoch (as in validation_recalls.jsonl, -1 = initial) best_model.pth ("best")
+    # and each budget checkpoint currently hold, so an un-fine-tuned best checkpoint is visible.
+    best_checkpoint_epochs = dict(resume_runtime_state.get("best_checkpoint_epochs", {}))
+    validation_query_indices = sample_validation_queries(val_ds.get_positives(), args.val_queries, args.val_query_seed)
+    logging.info("Rank-PGD validation on %d sampled queries.", len(validation_query_indices))
+
+    def validate(epoch_initial: bool):
+        metrics = evaluate_rank_validation(args, model, val_ds, validation_query_indices)
+        scores = select_checkpoint(
+            metrics,
+            None if epoch_initial else initial_clean_r1,
+            args.selection_clean_budgets,
+            args.is_clean_only,
         )
-        initial_scores = compute_validation_selection_scores(initial_metrics, args.selection_robust_weight)
-        initial_record = build_validation_metrics_record(-1, initial_metrics, initial_scores)
+        return metrics, scores
+
+    if start_epoch == 0 and not resume_runtime_state:
+        logging.info("Begin initial validation before training")
+        initial_metrics, initial_scores = validate(True)
+        initial_clean_r1 = initial_scores["clean_score"]
+        log_rank_selection(initial_scores, initial_clean_r1)
+        initial_record = build_validation_metrics_record(
+            -1, initial_metrics, initial_scores, initial_clean_r1=initial_clean_r1
+        )
         append_validation_metrics(args, initial_record)
         log_validation_recalls("before training", initial_metrics)
 
         best_score = initial_scores["selection_score"]
         not_improved = 0
+        initial_budgets = improved_budgets(initial_scores, best_budget_scores)
+        for key in initial_budgets:
+            best_budget_scores[key] = float(initial_scores["robust_score"])
+            best_checkpoint_epochs[key] = -1
+        best_checkpoint_epochs["best"] = -1
+        logging.info("Best checkpoints by epoch: %s", best_checkpoint_epochs)
         initial_checkpoint_state = build_checkpoint_state(
             args,
             model,
@@ -323,8 +566,17 @@ def run_training(
             initial_scores,
             best_score,
             not_improved,
+            scaler=scaler,
+            iteration=iteration,
+            collapse_sample_indices=collapse_sample_indices,
+            reference_descriptors=reference_descriptors,
+            initial_clean_r1=initial_clean_r1,
+            best_budget_scores=best_budget_scores,
+            best_checkpoint_epochs=best_checkpoint_epochs,
         )
-        util.save_checkpoint(args, initial_checkpoint_state, True, filename="initial_validation_model.pth")
+        save_checkpoint(args, initial_checkpoint_state, True, filename="initial_validation_model.pth")
+        if initial_budgets:
+            copy_budget_checkpoints(args, "initial_validation_model.pth", initial_budgets)
         writer.add_scalar("val_initial/clean_score", initial_scores["clean_score"], 0)
         writer.add_scalar("val_initial/robust_score", initial_scores["robust_score"], 0)
         writer.add_scalar("val_initial/selection_score", initial_scores["selection_score"], 0)
@@ -335,7 +587,30 @@ def run_training(
             initial_scores["selection_score"],
         )
 
-    for epoch_num in range(start_epoch, args.epochs_num):
+    if not args.is_clean_only and initial_clean_r1 is None:
+        raise RuntimeError(
+            "Rank-PGD validation needs the initial clean R@1, but the resumed checkpoint "
+            "does not store it; resume from a checkpoint trained with this protocol."
+        )
+
+    outcome = "completed"
+    final_epoch = start_epoch - 1
+    end_epoch = args.epochs_num
+    resumed_stop_state = resume_runtime_state.get("stop_state")
+    if resumed_stop_state:
+        logging.info("The resumed checkpoint ended the run (%s): going straight to the final test.", resumed_stop_state)
+        outcome = resumed_stop_state
+        end_epoch = start_epoch
+    # ponytail: the slowest epoch so far estimates the next one; with --val_every > 1 a session
+    # that has not validated yet underestimates it, and the driver's timeout is the backstop.
+    slowest_epoch_seconds = 0.0
+    epoch_start = None
+    for epoch_num in range(start_epoch, end_epoch):
+        if epoch_start is not None:
+            slowest_epoch_seconds = max(slowest_epoch_seconds, (datetime.now() - epoch_start).total_seconds())
+        if pauses_for_deadline(args, slowest_epoch_seconds):
+            outcome = "paused"
+            break
         epoch_start = datetime.now()
         model = model.train()
 
@@ -351,7 +626,14 @@ def run_training(
         else:
             lr = current_lr
         apply_lr_schedule(optimizer, lr)
-        logging.info("Start epoch %02d with lr %.2e", epoch_num, lr)
+        attack_scale = apply_attack_curriculum(train_attacks, args, epoch_num)
+        writer.add_scalar("train/attack_strength_scale", attack_scale, epoch_num)
+        logging.info(
+            "Start epoch %02d with lr %.2e and attack strength scale %.3f",
+            epoch_num,
+            lr,
+            attack_scale,
+        )
 
         epoch_clean_losses: List[float] = []
         epoch_adv_rank_losses: List[float] = []
@@ -367,13 +649,26 @@ def run_training(
             flat_images = images.reshape(batch_size * images_per_place, channels, height, width)
             labels = place_id.reshape(-1)
 
-            model.eval()
-            with torch.no_grad():
-                with amp_autocast(args.mixed_precision, args.device):
-                    clean_descriptors_eval = model(flat_images, queryflag=0)
-                clean_descriptors_eval = clean_descriptors_eval.float()
-            clean_descriptor_view = clean_descriptors_eval.reshape(batch_size, images_per_place, -1)
-            rank_targets = select_rank_targets(clean_descriptor_view, place_id, args.adv_negatives)
+            clean_descriptor_view = None
+            rank_targets = None
+            if len(train_attacks) > 0:
+                model.eval()
+                with torch.no_grad():
+                    with amp_autocast(args.mixed_precision, args.device):
+                        clean_descriptors_eval = model(flat_images, queryflag=0)
+                    clean_descriptors_eval = clean_descriptors_eval.float()
+                clean_descriptor_view = clean_descriptors_eval.reshape(batch_size, images_per_place, -1)
+                with torch.no_grad():
+                    with amp_autocast(args.mixed_precision, args.device):
+                        independent_queries = model(images[:, 0], queryflag=1).float()
+                    clean_descriptor_view = clean_descriptor_view.clone()
+                    clean_descriptor_view[:, 0, :] = independent_queries
+                rank_targets = select_rank_targets(
+                    clean_descriptor_view,
+                    place_id,
+                    args.adv_negatives,
+                    multi_positive=getattr(args, "multi_positive", False),
+                )
 
             use_adversarial_branch = epoch_num >= args.adv_warmup_epochs
             step_attacks = train_attacks if use_adversarial_branch else []
@@ -390,6 +685,7 @@ def run_training(
                         clean_query_descriptors,
                         selected_targets.positive_descriptors,
                         selected_targets.negative_descriptors,
+                        selected_targets.positive_mask,
                     )
                     if correct_mask.any():
                         selected_targets = selected_targets.subset(correct_mask)
@@ -397,6 +693,13 @@ def run_training(
                     else:
                         selected_targets = None
                         query_inputs = None
+
+            align_reference = None
+            if anchor_model is not None and query_inputs is not None and len(step_attacks) > 0:
+                with torch.no_grad():
+                    with amp_autocast(args.mixed_precision, args.device):
+                        align_reference = anchor_model(query_inputs, queryflag=1)
+                align_reference = align_reference.float()
 
             optimizer.zero_grad(set_to_none=True)
             model.train()
@@ -412,6 +715,7 @@ def run_training(
                     selected_targets,
                     step_attacks,
                     args,
+                    align_reference=align_reference,
                 ) if query_inputs is not None and selected_targets is not None else {
                     "attack_logs": [],
                     "adv_rank_loss": clean_loss.new_zeros(()),
@@ -529,22 +833,51 @@ def run_training(
             skipped_nonfinite_batches,
         )
 
+        val_every = int(getattr(args, "val_every", 1))
+        if not is_validation_epoch(epoch_num + 1, val_every, args.epochs_num):
+            collapse = measure_collapse(args, model, val_ds, reference_descriptors, collapse_sample_indices)
+            log_collapse_report(writer, collapse, epoch_num)
+            aborted = collapse_aborts(args, collapse, epoch_num)
+            checkpoint_state = build_checkpoint_state(
+                args,
+                model,
+                optimizer,
+                epoch_num,
+                None,
+                None,
+                best_score,
+                not_improved,
+                scaler=scaler,
+                iteration=iteration,
+                collapse_sample_indices=collapse_sample_indices,
+                reference_descriptors=reference_descriptors,
+                initial_clean_r1=initial_clean_r1,
+                best_budget_scores=best_budget_scores,
+                best_checkpoint_epochs=best_checkpoint_epochs,
+                stop_state="collapse_aborted" if aborted else None,
+            )
+            save_checkpoint(args, checkpoint_state, False, filename="last_model.pth")
+            final_epoch = epoch_num
+            logging.info("Saved latest checkpoint after epoch %02d (not validated, --val_every %d).", epoch_num + 1, val_every)
+            if aborted:
+                outcome = "collapse_aborted"
+                break
+            continue
+
         logging.info("Begin validation")
-        metrics = evaluate_against_attacks_retrieval(
-            args,
-            model,
-            val_ds,
-            validation_attacks,
-            writer=writer,
-            iteration=iteration,
-        )
-        validation_scores = compute_validation_selection_scores(metrics, args.selection_robust_weight)
+        metrics, validation_scores = validate(False)
         clean_score = validation_scores["clean_score"]
         robust_score = validation_scores["robust_score"]
         selection_score = validation_scores["selection_score"]
-        validation_record = build_validation_metrics_record(epoch_num + 1, metrics, validation_scores)
+        collapse = measure_collapse(args, model, val_ds, reference_descriptors, collapse_sample_indices)
+        validation_record = build_validation_metrics_record(
+            epoch_num + 1, metrics, validation_scores, collapse, initial_clean_r1=initial_clean_r1
+        )
         append_validation_metrics(args, validation_record)
         log_validation_recalls(f"after epoch {epoch_num + 1:02d}", metrics)
+        if initial_clean_r1 is not None:
+            log_rank_selection(validation_scores, initial_clean_r1)
+        log_collapse_report(writer, collapse, epoch_num)
 
         writer.add_scalar("val/clean_score", clean_score, epoch_num)
         writer.add_scalar("val/robust_score", robust_score, epoch_num)
@@ -552,7 +885,13 @@ def run_training(
 
         is_best = selection_score > (best_score + args.early_stop_min_delta)
         next_best_score = selection_score if is_best else best_score
-        next_not_improved = 0 if is_best else not_improved + 1
+        if is_best:
+            next_not_improved = 0
+        elif counts_toward_patience(args, epoch_num):
+            next_not_improved = not_improved + 1
+        else:
+            next_not_improved = not_improved
+            logging.info("No validation improvement during the attack ramp; not counted toward patience.")
         if should_drop_lr_on_plateau(next_not_improved, args.lr_plateau_patience):
             current_lr *= args.lr_plateau_factor
             apply_lr_schedule(optimizer, current_lr)
@@ -562,6 +901,19 @@ def run_training(
                 current_lr,
             )
 
+        epoch_budgets = improved_budgets(validation_scores, best_budget_scores)
+        for key in epoch_budgets:
+            best_budget_scores[key] = float(robust_score)
+            best_checkpoint_epochs[key] = epoch_num + 1
+        if is_best:
+            best_checkpoint_epochs["best"] = epoch_num + 1
+        logging.info("Best checkpoints by epoch: %s", best_checkpoint_epochs)
+        if collapse_aborts(args, collapse, epoch_num):
+            stop_state = "collapse_aborted"
+        elif next_not_improved >= args.patience:
+            stop_state = "early_stopped"
+        else:
+            stop_state = None
         checkpoint_state = build_checkpoint_state(
             args,
             model,
@@ -571,11 +923,23 @@ def run_training(
             validation_scores,
             next_best_score,
             next_not_improved,
+            scaler=scaler,
+            iteration=iteration,
+            collapse_sample_indices=collapse_sample_indices,
+            reference_descriptors=reference_descriptors,
+            initial_clean_r1=initial_clean_r1,
+            best_budget_scores=best_budget_scores,
+            best_checkpoint_epochs=best_checkpoint_epochs,
+            stop_state=stop_state,
         )
-        util.save_checkpoint(args, checkpoint_state, is_best, filename="last_model.pth")
-        intermediate_name = f"checkpoint_epoch_{epoch_num + 1:04d}.pth"
-        util.save_checkpoint(args, checkpoint_state, False, filename=intermediate_name)
-        maybe_remove_old_checkpoint(args, epoch_num + 1)
+        save_checkpoint(args, checkpoint_state, is_best, filename="last_model.pth")
+        if epoch_budgets:
+            copy_budget_checkpoints(args, "last_model.pth", epoch_budgets)
+        if args.keep_every > 0:
+            intermediate_name = f"checkpoint_epoch_{epoch_num + 1:04d}.pth"
+            save_checkpoint(args, checkpoint_state, False, filename=intermediate_name)
+            maybe_remove_old_checkpoint(args, epoch_num + 1)
+        final_epoch = epoch_num
         logging.info(
             "Saved latest checkpoint after epoch %02d%s.",
             epoch_num + 1,
@@ -594,23 +958,35 @@ def run_training(
         writer.add_scalar("early_stop/best_score", best_score, epoch_num)
         writer.add_scalar("early_stop/not_improved_epochs", not_improved, epoch_num)
 
-        if not_improved >= args.patience:
+        if stop_state == "collapse_aborted":
+            outcome = "collapse_aborted"
+            break
+
+        if stop_state == "early_stopped":
             logging.info(
                 "Early stopping triggered after %d non-improving epochs. Best score = %.1f.",
                 not_improved,
                 best_score,
             )
+            outcome = "early_stopped"
             break
 
+    if outcome == "paused":
+        logging.info("Paused after epoch %02d; rerun to resume.", final_epoch + 1)
+        return {"state": outcome, "final_epoch": final_epoch}
+
     logging.info("Best validation selection score: %.2f", best_score)
-    best_model_state_dict = util.load_trusted_checkpoint(
+    if best_checkpoint_epochs.get("best") == -1:
+        logging.warning("best_model.pth is the initial (un-fine-tuned) model: no epoch beat the initial validation.")
+    best_model_state_dict = load_trusted_checkpoint(
         join(args.save_dir, "best_model.pth"),
         map_location=args.device,
     )["model_state_dict"]
     model.load_state_dict(best_model_state_dict)
 
-    recalls, recalls_str = test.test(args, test_ds, unwrap_model(model), test_method=args.test_method)
+    recalls, recalls_str = supervlad_compat.test(args, test_ds, unwrap_model(model), test_method=args.test_method)
     logging.info("Final test recalls on %s: %s", test_ds, recalls_str)
     for recall_value, recall_metric in zip(args.recall_values, recalls):
         writer.add_scalar(f"test/R@{recall_value}", float(recall_metric), 0)
     logging.info("Finished in %s", str(datetime.now() - start_time)[:-7])
+    return {"state": outcome, "final_epoch": final_epoch}

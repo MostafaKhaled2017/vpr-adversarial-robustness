@@ -1,14 +1,12 @@
 from dataclasses import dataclass
-from typing import Dict, Literal, Optional, Sequence
+from typing import Dict, Optional, Sequence
 
 import torch
 from torch import Tensor, nn
 
 from .config import denormalize_imagenet, get_normalized_bounds
+from .losses import closest_positive_distance
 from .targets import RetrievalAttackBatch
-
-
-RankNorm = Literal["linf", "l2"]
 
 
 @dataclass(frozen=True)
@@ -17,7 +15,6 @@ class RankAttackConfig:
     steps: int = 20
     restarts: int = 1
     step_size: Optional[float] = None
-    norm: RankNorm = "linf"
     margin: float = 0.1
     device: str = "cuda"
     audit: bool = False
@@ -32,8 +29,6 @@ class RankAttackConfig:
             raise ValueError("restarts must be at least 1")
         if self.step_size is not None and self.step_size <= 0:
             raise ValueError("step_size must be positive when provided")
-        if self.norm not in {"linf", "l2"}:
-            raise ValueError("norm must be 'linf' or 'l2'")
 
     @property
     def resolved_step_size(self) -> float:
@@ -62,15 +57,6 @@ def _l2_norm(values: Tensor) -> Tensor:
 def project_linf(clean_inputs: Tensor, candidate_inputs: Tensor, epsilon: float) -> Tensor:
     delta = (candidate_inputs - clean_inputs).clamp(min=-epsilon, max=epsilon)
     return clean_inputs + delta
-
-
-def project_l2(clean_inputs: Tensor, candidate_inputs: Tensor, epsilon: float) -> Tensor:
-    delta = candidate_inputs - clean_inputs
-    flat_delta = delta.flatten(1)
-    norms = flat_delta.norm(p=2, dim=1).clamp_min(1e-12)
-    scale = torch.clamp(torch.full_like(norms, float(epsilon)) / norms, max=1.0)
-    projected = flat_delta * scale.unsqueeze(1)
-    return clean_inputs + projected.view_as(delta)
 
 
 class RankPGDAttack(nn.Module):
@@ -197,14 +183,19 @@ class RankPGDAttack(nn.Module):
         return self._rank_components(inputs, targets)[0]
 
     def _rank_components(self, inputs: Tensor, targets: RetrievalAttackBatch) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-        descriptors = self.model(inputs, queryflag=0).float()
+        descriptors = self.model(inputs, queryflag=1).float()
         positive_descriptors = targets.positive_descriptors.detach().to(device=inputs.device, dtype=descriptors.dtype)
         negative_descriptors = targets.negative_descriptors.detach().to(device=inputs.device, dtype=descriptors.dtype)
-        positive_distance = torch.norm(descriptors - positive_descriptors, p=2, dim=1)
+        positive_mask = None if targets.positive_mask is None else targets.positive_mask.to(device=inputs.device)
+        positive_distance = closest_positive_distance(descriptors, positive_descriptors, positive_mask)
         negative_distance = torch.norm(descriptors.unsqueeze(1) - negative_descriptors, p=2, dim=2)
         hard_negative_distance = negative_distance.min(dim=1).values
         score = self.config.margin + positive_distance - hard_negative_distance
-        return torch.relu(score), positive_distance, hard_negative_distance, descriptors
+        # Ascend the raw score, not relu(score): clamping at 0 makes the objective flat
+        # (zero gradient) for every already-successful query, so PGD would never perturb
+        # a confidently-correct query even though pushing it further from the boundary
+        # still helps robustness.
+        return score, positive_distance, hard_negative_distance, descriptors
 
     def _audit_components(self, inputs: Tensor, targets: RetrievalAttackBatch) -> Dict[str, Tensor]:
         with torch.no_grad():
@@ -247,28 +238,12 @@ class RankPGDAttack(nn.Module):
     def _initial_inputs(self, clean_inputs: Tensor, restart_index: int) -> Tensor:
         if restart_index == 0 or self.config.epsilon == 0:
             return self._clamp_to_valid_range(clean_inputs)
-        if self.config.norm == "linf":
-            noise = torch.empty_like(clean_inputs).uniform_(-self.config.epsilon, self.config.epsilon)
-            return self._clamp_to_valid_range(clean_inputs + noise)
-
-        flat_noise = torch.randn_like(clean_inputs).flatten(1)
-        noise_norm = flat_noise.norm(p=2, dim=1).clamp_min(1e-12)
-        radius = torch.rand(clean_inputs.shape[0], device=clean_inputs.device, dtype=clean_inputs.dtype) * self.config.epsilon
-        scaled_noise = flat_noise / noise_norm.unsqueeze(1) * radius.unsqueeze(1)
-        return self._clamp_to_valid_range(clean_inputs + scaled_noise.view_as(clean_inputs))
+        noise = torch.empty_like(clean_inputs).uniform_(-self.config.epsilon, self.config.epsilon)
+        return self._clamp_to_valid_range(clean_inputs + noise)
 
     def _step(self, clean_inputs: Tensor, adv_inputs: Tensor, gradient: Tensor, step_sizes: Tensor) -> Tensor:
-        if self.config.norm == "linf":
-            step = _as_batch_shape(step_sizes, adv_inputs) * gradient.sign()
-            stepped = adv_inputs + step
-            projected = project_linf(clean_inputs, stepped, self.config.epsilon)
-        else:
-            flat_gradient = gradient.flatten(1)
-            gradient_norm = flat_gradient.norm(p=2, dim=1).clamp_min(1e-12)
-            normalized_gradient = flat_gradient / gradient_norm.unsqueeze(1)
-            step = normalized_gradient * step_sizes.unsqueeze(1)
-            stepped = adv_inputs + step.view_as(adv_inputs)
-            projected = project_l2(clean_inputs, stepped, self.config.epsilon)
+        step = _as_batch_shape(step_sizes, adv_inputs) * gradient.sign()
+        projected = project_linf(clean_inputs, adv_inputs + step, self.config.epsilon)
         return self._clamp_to_valid_range(projected)
 
     def _step_sizes(self, inputs: Tensor) -> Tensor:
@@ -299,10 +274,7 @@ class RankPGDAttack(nn.Module):
         return best_adv, best_loss, best_restart
 
     def _perturbation_norm(self, clean_inputs: Tensor, adv_inputs: Tensor) -> Tensor:
-        delta = adv_inputs - clean_inputs
-        if self.config.norm == "linf":
-            return delta.flatten(1).abs().max(dim=1).values
-        return _l2_norm(delta)
+        return (adv_inputs - clean_inputs).flatten(1).abs().max(dim=1).values
 
     def _perturbation_linf_norm(self, clean_inputs: Tensor, adv_inputs: Tensor) -> Tensor:
         return (adv_inputs - clean_inputs).flatten(1).abs().max(dim=1).values
@@ -364,10 +336,6 @@ class RankPGDAttack(nn.Module):
 
 
 class RankAPGDLinfAttack(RankPGDAttack):
-    def __init__(self, model: nn.Module, config: RankAttackConfig):
-        if config.norm != "linf":
-            raise ValueError("RankAPGDLinfAttack supports only Linf constraints")
-        super().__init__(model, config)
 
     def forward(self, inputs: Tensor, targets: RetrievalAttackBatch) -> RankAttackResult:
         clean_inputs = inputs.detach()

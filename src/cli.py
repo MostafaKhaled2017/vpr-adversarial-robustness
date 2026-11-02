@@ -1,4 +1,4 @@
-import parser as parser_module
+from . import supervlad_compat
 
 from .config import SUPPORTED_ATTACK_NAMES, UNSUPPORTED_ATTACK_NAMES
 from .models import add_model_arguments, model_names
@@ -25,7 +25,7 @@ def parse_attack_names(attack_strings):
 
 
 def build_parser():
-    parser = parser_module.build_parser()
+    parser = supervlad_compat.build_parser()
     parser.description = "Perceptual adversarial training for visual place recognition models"
     parser.add_argument(
         "--model",
@@ -40,6 +40,12 @@ def build_parser():
         default=None,
         metavar=("HEIGHT", "WIDTH"),
         help="Training image size. Defaults to --resize.",
+    )
+    parser.add_argument(
+        "--pipe_loader",
+        action="store_true",
+        help="Send data-loader batches through a pipe instead of /dev/shm (servers with a small "
+        "/dev/shm). Same batches, slower.",
     )
     parser.add_argument(
         "--weight_decay",
@@ -67,7 +73,6 @@ def build_parser():
         default=None,
         help="Training batch size alias kept for perceptual-advex style.",
     )
-    parser.add_argument("--val_batches", type=int, default=10, help="Number of validation query batches to attack.")
     parser.add_argument(
         "--batches_per_epoch",
         type=int,
@@ -83,6 +88,12 @@ def build_parser():
         "resumed runs reproduce the same ordering.",
     )
     parser.add_argument("--log_dir", type=str, default="logs", help="Base folder for perceptual adversarial training runs.")
+    parser.add_argument(
+        "--run_dir",
+        type=str,
+        default=None,
+        help="Exact output directory for a managed run; bypasses the timestamp appended to --save_dir.",
+    )
     parser.add_argument("--parallel", type=int, default=1, help="Number of GPUs to use when CUDA is available.")
     parser.add_argument(
         "--only_attack_correct",
@@ -103,7 +114,13 @@ def build_parser():
         help="Use the strongest configured attack loss for each training step.",
     )
     parser.add_argument("--continue", dest="continue_training", action="store_true", default=False)
-    parser.add_argument("--keep_every", type=int, default=1, help="Keep one intermediate checkpoint every N epochs.")
+    parser.add_argument(
+        "--keep_every",
+        type=int,
+        default=0,
+        help="Keep one intermediate checkpoint_epoch_<N>.pth every N epochs. 0 (default) keeps none: only "
+        "last_model.pth, best_model.pth and the clean-budget checkpoints are saved.",
+    )
     parser.add_argument("--clip_grad", type=float, default=1.0, help="Clip gradients to this absolute value.")
     parser.add_argument("--lpips_model", type=str, default=None, help="Optional LPIPS model override.")
     parser.add_argument("--lr_schedule", type=str, default=None, help="Epochs when the learning rate drops by 10x.")
@@ -125,6 +142,12 @@ def build_parser():
         help="Load only model weights from --resume and reset optimizer and epoch state.",
     )
     parser.add_argument(
+        "--grad_checkpointing",
+        action="store_true",
+        help="Recompute DINOv2 block activations during backward so deeper fine-tuning "
+        "(--freeze_te < 8) fits in GPU memory. Outputs, gradients and checkpoint keys are unchanged.",
+    )
+    parser.add_argument(
         "--adv_loss_weight",
         type=float,
         default=1.0,
@@ -134,7 +157,14 @@ def build_parser():
         "--adv_align_weight",
         type=float,
         default=0.05,
-        help="Weight for the descriptor alignment loss.",
+        help="Weight of the alignment loss between the attacked query descriptor and the --align_target clean descriptor.",
+    )
+    parser.add_argument(
+        "--align_target",
+        choices=("current", "initial"),
+        default="current",
+        help="Clean descriptor the attacked query is aligned to: 'current' uses the model being "
+        "trained; 'initial' uses a frozen copy of the --resume weights (the ARAFT anchor).",
     )
     parser.add_argument(
         "--adv_negatives",
@@ -149,16 +179,108 @@ def build_parser():
         help="Number of initial epochs that train only on the clean loss.",
     )
     parser.add_argument(
+        "--attack_ramp_epochs",
+        type=int,
+        default=0,
+        help="Ramp the training attack budget linearly to full strength over this many "
+        "epochs after --adv_warmup_epochs. 0 disables the curriculum.",
+    )
+    parser.add_argument(
+        "--attack_ramp_min_scale",
+        type=float,
+        default=0.1,
+        help="Attack budget multiplier at the first adversarial epoch of the ramp.",
+    )
+    parser.add_argument(
+        "--collapse_sample_size",
+        type=int,
+        default=256,
+        help="Validation images used for collapse and neighborhood-distortion monitoring. "
+        "0 disables the monitoring.",
+    )
+    parser.add_argument(
+        "--collapse_knn",
+        type=int,
+        default=10,
+        help="Neighbourhood size for the k-NN overlap against the reference embedding.",
+    )
+    parser.add_argument(
+        "--collapse_abort_knn",
+        type=float,
+        default=None,
+        help="Abort training when k-NN overlap against the reference embedding falls below "
+        "this value. Off by default.",
+    )
+    parser.add_argument(
+        "--defense_loss",
+        choices=("hinge", "listwise"),
+        default="hinge",
+        help="Adversarial defense objective. 'hinge' is a margin loss; "
+        "'listwise' is the smooth top-K recall surrogate. The attack's inner "
+        "objective follows this choice so attack and defense fight over the same thing.",
+    )
+    parser.add_argument(
+        "--listwise_tau",
+        type=float,
+        default=0.05,
+        help="Temperature of the smooth rank. Must be comparable to the descriptor "
+        "distance scale: much smaller and the sigmoid saturates and no gradient flows.",
+    )
+    parser.add_argument(
+        "--listwise_k",
+        type=int,
+        default=1,
+        help="Rank the best positive must reach for the listwise objective to be satisfied.",
+    )
+    parser.add_argument(
+        "--multi_positive",
+        action="store_true",
+        default=False,
+        help="Target every positive of a place instead of only the hardest one. Retrieval "
+        "succeeds if any positive outranks the negatives, so the attack must beat the "
+        "closest positive.",
+    )
+    parser.add_argument(
         "--adv_margin",
         type=float,
         default=0.1,
         help="Margin used for the retrieval adversarial objective.",
     )
+    # Validation measures clean and rank-PGD L-inf recall on a fixed query sample, selects the most
+    # robust epoch and keeps one extra checkpoint per --selection_clean_budgets entry.
+    parser.add_argument("--val_queries", type=int, default=2000, help="Validation queries sampled for rank-PGD validation.")
+    parser.add_argument("--val_query_seed", type=int, default=0, help="Seed of the validation query sample.")
+    parser.add_argument("--val_rank_steps", type=int, default=10, help="Rank-PGD steps in validation.")
     parser.add_argument(
-        "--selection_robust_weight",
+        "--val_every",
+        type=int,
+        default=1,
+        help="Validate after every N-th epoch and after the last one. Early-stopping and lr-plateau "
+        "patience count validations, not epochs. Other epochs still save last_model.pth and run the "
+        "collapse check.",
+    )
+    parser.add_argument(
+        "--stop_by",
         type=float,
-        default=0.75,
-        help="Weight of the robust score in the validation selection score; clean weight is 1 minus this.",
+        default=None,
+        help="Unix time: do not start an epoch that, with the final test, could end after it; "
+        "pause instead (run_status 'paused', exit code 5) and resume later with --continue.",
+    )
+    parser.add_argument(
+        "--val_rank_epsilons",
+        type=float,
+        nargs="+",
+        default=[0.01, 0.1],
+        help="Rank-PGD L-inf budgets in rank_pgd validation.",
+    )
+    parser.add_argument(
+        "--selection_clean_budgets",
+        type=float,
+        nargs="+",
+        default=[1.0, 3.0, 5.0],
+        help="Clean R@1 drops (points) from the initial validation. For each budget b, "
+        "best_model_budget<b>.pth keeps the most robust epoch whose clean R@1 is within b. "
+        "Reporting views only: best_model.pth and early stopping follow the robust score.",
     )
     parser.add_argument(
         "--early_stop_min_delta",
@@ -178,19 +300,13 @@ def build_parser():
         default=None,
         help="Path to the GSV-Cities training dataset.",
     )
-    parser.add_argument(
-        "--skip_initial_validation",
-        action="store_true",
-        default=False,
-        help="Skip baseline validation before the first training epoch.",
-    )
     add_model_arguments(parser)
     return parser
 
 
 def parse_arguments(argv=None):
     args = build_parser().parse_args(argv)
-    args = parser_module.validate_arguments(args)
+    args = supervlad_compat.validate_arguments(args)
 
     if args.train_batch_size is None:
         args.train_batch_size = 60
@@ -201,8 +317,8 @@ def parse_arguments(argv=None):
             args.lr_schedule = "30,60,80"
         else:
             args.lr_schedule = "120"
-    if args.keep_every < 1:
-        raise ValueError("--keep_every must be at least 1")
+    if args.keep_every < 0:
+        raise ValueError("--keep_every must be non-negative")
     if args.batches_per_epoch is not None and args.batches_per_epoch < 1:
         raise ValueError("--batches_per_epoch must be at least 1")
     if args.lr_plateau_patience is not None and args.lr_plateau_patience < 1:
@@ -211,12 +327,38 @@ def parse_arguments(argv=None):
         raise ValueError("--lr_plateau_factor must be between 0 and 1 (exclusive)")
     if args.adv_negatives < 1:
         raise ValueError("--adv_negatives must be at least 1")
+    if args.listwise_tau <= 0:
+        raise ValueError("--listwise_tau must be positive")
+    if args.listwise_k < 1:
+        raise ValueError("--listwise_k must be at least 1")
+    if args.collapse_sample_size < 0:
+        raise ValueError("--collapse_sample_size must be non-negative")
+    if args.collapse_knn < 1:
+        raise ValueError("--collapse_knn must be at least 1")
+    if args.attack_ramp_epochs < 0:
+        raise ValueError("--attack_ramp_epochs must be non-negative")
+    if not 0.0 <= args.attack_ramp_min_scale <= 1.0:
+        raise ValueError("--attack_ramp_min_scale must be between 0 and 1 (inclusive)")
     if args.adv_warmup_epochs < 0:
         raise ValueError("--adv_warmup_epochs must be non-negative")
+    if args.align_target == "initial" and args.resume is None:
+        raise ValueError("--align_target initial requires --resume (the weights to anchor to)")
+    if args.align_target == "initial" and args.continue_training and args.run_dir is None:
+        raise ValueError(
+            "--align_target initial with --continue requires --run_dir (the original run directory holding initial_model.pth)"
+        )
     if args.clip_grad <= 0:
         raise ValueError("--clip_grad must be positive")
-    if not 0.0 <= args.selection_robust_weight <= 1.0:
-        raise ValueError("--selection_robust_weight must be between 0 and 1 (inclusive)")
+    if args.val_queries < 1:
+        raise ValueError("--val_queries must be at least 1")
+    if args.val_rank_steps < 1:
+        raise ValueError("--val_rank_steps must be at least 1")
+    if args.val_every < 1:
+        raise ValueError("--val_every must be at least 1")
+    if any(epsilon <= 0 for epsilon in args.val_rank_epsilons):
+        raise ValueError("--val_rank_epsilons must be positive")
+    if any(budget < 0 for budget in args.selection_clean_budgets):
+        raise ValueError("--selection_clean_budgets must be non-negative")
     if args.weight_decay is not None and args.weight_decay < 0:
         raise ValueError("--weight_decay must be non-negative")
     if args.train_resize is None:
@@ -227,11 +369,21 @@ def parse_arguments(argv=None):
         from .models.boq import resolve_descriptor_dimension
 
         args.boq_descriptors_dimension = resolve_descriptor_dimension(args)
-    elif args.model == "mixvpr":
-        from .models.mixvpr import resolve_descriptor_dimension
-
-        args.mixvpr_descriptors_dimension = resolve_descriptor_dimension(args)
 
     args.recall_values = list(dict.fromkeys([*args.recall_values, *REQUIRED_RECALL_VALUES]))
-    parse_attack_names(args.attack)
+    resolve_checkpoint_selection_rule(args)
+    return args
+
+
+def resolve_checkpoint_selection_rule(args):
+    """Derive the checkpoint-selection rule from the configured attacks.
+
+    A clean-only fine-tune has no adversarial validation signal, so it selects on clean
+    recall; adversarial runs select on the rank-PGD robust score. Recording the rule on
+    ``args`` puts it into ``training_config.yaml``.
+    """
+    attack_names = parse_attack_names(args.attack)
+    args.adversarial_attack_names = [name for name in attack_names if name != "NoAttack"]
+    args.is_clean_only = len(args.adversarial_attack_names) == 0
+    args.checkpoint_selection_rule = "clean_recall" if args.is_clean_only else "robust_rank_pgd"
     return args

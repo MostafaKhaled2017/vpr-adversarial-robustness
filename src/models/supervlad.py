@@ -1,4 +1,7 @@
-from torch import nn
+import math
+
+import torch
+from torch import Tensor, nn
 
 from ..checkpoints import load_model_weights
 from .registry import ModelAdapter, ModelBundle, register_model
@@ -8,10 +11,48 @@ def add_arguments(parser) -> None:
     del parser
 
 
-def _build(args, pretrained_foundation: bool) -> ModelBundle:
+def encode_cross_image(encoder: nn.Module, tokens: Tensor, independent: bool) -> Tensor:
+    """Run SuperVLAD's cross-image encoder on ``(B, clusters, D)`` cluster tokens.
+
+    Upstream calls ``encoder(x.view(B, -1, D))`` with ``batch_first=False``, so the batch is
+    the attention sequence and every image attends to the others in its batch. That makes a
+    query's descriptor depend on its batch neighbours. ``independent=True`` uses a length-1
+    sequence, which is exactly upstream's computation at batch size 1, at batched speed.
+    Set via ``forward(x, queryflag=1)`` when encoding queries and database images independently
+    in evaluation to avoid cross-image batch effects.
+    """
+    batch_size = tokens.shape[0]
+    if independent:
+        return encoder(tokens.reshape(1, -1, tokens.shape[-1])).reshape(batch_size, -1)
+    return encoder(tokens.reshape(batch_size, -1, tokens.shape[-1])).reshape(batch_size, -1)
+
+
+def _query_mode_model_class():
     from model import network
 
-    model = network.SuperVLADModel(
+    class QueryModeSuperVLAD(network.SuperVLADModel):
+        """SuperVLAD whose ``queryflag=1`` encodes each image independently.
+
+        Used to encode both query and database images in evaluation without cross-image batch effects.
+        """
+
+        def forward(self, x, queryflag=0):
+            if not (self.crossimage_encoder and self.arch_name.startswith("dino")):
+                return super().forward(x, queryflag)
+            features = self.backbone(x)
+            _, patches, dim = features["x_prenorm"].shape
+            side = int(math.sqrt(patches - 1))
+            patch_tokens = features["x_norm_patchtokens"].view(-1, side, side, dim).permute(0, 3, 1, 2)
+            aggregated = self.aggregation(patch_tokens)
+            batch_size = aggregated.shape[0]
+            encoded = encode_cross_image(self.encoder, aggregated.view(batch_size, -1, dim), independent=bool(queryflag))
+            return torch.nn.functional.normalize(encoded, p=2, dim=-1)
+
+    return QueryModeSuperVLAD
+
+
+def _build(args, pretrained_foundation: bool) -> ModelBundle:
+    model = _query_mode_model_class()(
         args,
         pretrained_foundation=pretrained_foundation,
         foundation_model_path=args.foundation_model_path,
@@ -40,14 +81,12 @@ def configure_evaluation(args) -> None:
 def build_evaluation_dataset(args, dataset_name: str):
     import datasets_ws
 
-    return datasets_ws.BaseDataset(args, args.eval_datasets_folder, dataset_name, "test")
+    return datasets_ws.BaseDataset(args, args.eval_datasets_folder, dataset_name, args.dataset_split)
 
 
 def load_evaluation_weights(model: nn.Module, checkpoint_path: str, args) -> None:
-    import util
-
     args.resume = checkpoint_path
-    util.resume_model(args, model)
+    load_model_weights(model, checkpoint_path, map_location=args.device, strict=True)
 
 
 ADAPTER = ModelAdapter(

@@ -100,24 +100,63 @@ def compute_recalls_from_features(
     return format_recalls(recalls, recall_values)
 
 
-def rank_displacement_summary(clean_ranks: np.ndarray, attacked_ranks: np.ndarray) -> Dict[str, object]:
+DISPLACEMENT_CROSSING_BOUNDARIES = (1, 5, 10, 100)
+
+
+def rank_displacement_summary(
+    clean_ranks: np.ndarray,
+    attacked_ranks: np.ndarray,
+    database_size: int | None = None,
+) -> Dict[str, object]:
+    """Summarize how far attacks push the nearest positive down the ranking.
+
+    Percentiles and the median are reported alongside the mean because a handful of
+    queries pushed to the tail of the gallery dominate the mean. ``mean_normalized``
+    divides the mean by the gallery size so displacements are comparable across
+    datasets. ``p_cross_K`` is the fraction of valid queries whose nearest positive
+    ranked at or above K before the attack and below K after it — the probability
+    that the attack breaks R@K for a query it did not already break.
+    """
+    clean_ranks = np.asarray(clean_ranks)
+    attacked_ranks = np.asarray(attacked_ranks)
     valid = (clean_ranks > 0) & (attacked_ranks > 0)
-    displacement = attacked_ranks[valid] - clean_ranks[valid]
+    valid_clean = clean_ranks[valid]
+    valid_attacked = attacked_ranks[valid]
+    displacement = valid_attacked - valid_clean
+    resolved_database_size = int(database_size) if database_size else None
+
     if displacement.size == 0:
         return {
             "count": 0,
             "mean": 0.0,
             "median": 0.0,
             "max": 0,
+            "p90": 0.0,
             "p95": 0.0,
+            "p99": 0.0,
+            "mean_normalized": None,
+            "database_size": resolved_database_size,
+            **{f"p_cross_{boundary}": 0.0 for boundary in DISPLACEMENT_CROSSING_BOUNDARIES},
         }
 
+    mean_displacement = float(np.mean(displacement))
+    crossings = {
+        f"p_cross_{boundary}": float(
+            np.count_nonzero((valid_clean <= boundary) & (valid_attacked > boundary)) / displacement.size
+        )
+        for boundary in DISPLACEMENT_CROSSING_BOUNDARIES
+    }
     return {
         "count": int(displacement.size),
-        "mean": float(np.mean(displacement)),
+        "mean": mean_displacement,
         "median": float(np.median(displacement)),
         "max": int(np.max(displacement)),
+        "p90": float(np.percentile(displacement, 90)),
         "p95": float(np.percentile(displacement, 95)),
+        "p99": float(np.percentile(displacement, 99)),
+        "mean_normalized": mean_displacement / resolved_database_size if resolved_database_size else None,
+        "database_size": resolved_database_size,
+        **crossings,
     }
 
 
@@ -145,11 +184,41 @@ def attack_success_metrics(clean_ranks: np.ndarray, attacked_ranks: np.ndarray) 
     }
 
 
+def per_query_rank_records(
+    query_ids: Sequence[int],
+    clean_ranks: np.ndarray,
+    attacked_ranks: np.ndarray,
+) -> list[Dict[str, object]]:
+    """Expose the per-query ranks that the summary metrics are aggregated from.
+
+    A rank of -1 means the query had no positive in the gallery and is excluded from
+    every summary; such rows are still emitted so the release artifact stays complete.
+    """
+    clean = np.asarray(clean_ranks, dtype=np.int64)
+    attacked = np.asarray(attacked_ranks, dtype=np.int64)
+    if len(query_ids) != clean.size or clean.size != attacked.size:
+        raise ValueError(
+            "query_ids, clean_ranks, and attacked_ranks must have the same length, but received "
+            f"{len(query_ids)}, {clean.size}, and {attacked.size}."
+        )
+    return [
+        {
+            "query_id": int(query_id),
+            "clean_rank": int(clean_rank),
+            "attacked_rank": int(attacked_rank),
+            "clean_correct_at_1": bool(clean_rank == 1),
+            "attacked_correct_at_1": bool(attacked_rank == 1),
+        }
+        for query_id, clean_rank, attacked_rank in zip(query_ids, clean, attacked)
+    ]
+
+
 def rank_metric_bundle(
     clean_ranks: np.ndarray,
     attacked_ranks: np.ndarray,
+    database_size: int | None = None,
 ) -> Mapping[str, object]:
     return {
-        "rank_displacement": rank_displacement_summary(clean_ranks, attacked_ranks),
+        "rank_displacement": rank_displacement_summary(clean_ranks, attacked_ranks, database_size),
         "attack_success": attack_success_metrics(clean_ranks, attacked_ranks),
     }

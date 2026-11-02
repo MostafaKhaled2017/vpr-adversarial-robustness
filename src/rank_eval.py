@@ -25,27 +25,44 @@ SUPERVLAD_ROOT = REPO_ROOT / "third_party" / "SuperVLAD"
 if str(SUPERVLAD_ROOT) not in sys.path:
     sys.path.insert(0, str(SUPERVLAD_ROOT))
 
-import parser as parser_module
+from src import supervlad_compat
 from src.config import denormalize_imagenet, normalized_epsilon_to_raw_pixels, validate_cuda_runtime
 from src.faiss_utils import validate_faiss_runtime
 from src.grad_checkpoint import enable_backbone_grad_checkpointing
 from src.models import add_model_arguments, get_model_adapter, model_names
 from src.rank_attacks import RankAPGDLinfAttack, RankAttackConfig, RankPGDAttack
 from src.retrieval_metrics import (
-    attack_success_metrics,
     compute_recalls_from_features,
     nearest_positive_ranks,
+    per_query_rank_records,
     prepare_distance_database,
-    rank_displacement_summary,
+    rank_metric_bundle,
     squared_l2_distance_chunk,
 )
-from src.targets import RetrievalAttackBatch, build_attack_targets
+from src.targets import (
+    RetrievalAttackBatch,
+    build_attack_targets,
+    cap_query_indices,
+    pad_positive_sets,
+)
 
 
 SUPPORTED_TEST_METHODS = {"hard_resize", "central_crop", "single_query"}
-SUPPORTED_RANK_ATTACKS = {"rank_pgd_linf", "rank_pgd_l2", "rank_apgd_linf"}
+SUPPORTED_RANK_ATTACKS = {"rank_pgd_linf", "rank_apgd_linf"}
 REQUIRED_RECALL_VALUES = (1, 5, 10, 100)
 DEFAULT_MODEL_TAGS = ("base", "checkpoint")
+PER_QUERY_RANK_FIELDNAMES = (
+    "query_id",
+    "dataset",
+    "model_tag",
+    "checkpoint_tag",
+    "condition",
+    "epsilon",
+    "clean_rank",
+    "attacked_rank",
+    "clean_correct_at_1",
+    "attacked_correct_at_1",
+)
 
 
 def remove_parser_argument(parser, *option_strings: str) -> None:
@@ -61,7 +78,7 @@ def remove_parser_argument(parser, *option_strings: str) -> None:
 
 
 def build_parser():
-    parser = parser_module.build_parser()
+    parser = supervlad_compat.build_parser()
     parser.allow_abbrev = False
     parser.description = "Native rank attack evaluation for one or more VPR checkpoints"
     remove_parser_argument(parser, "--resume")
@@ -82,11 +99,17 @@ def build_parser():
         help="One or more dataset names under --eval_datasets_folder to evaluate.",
     )
     parser.add_argument(
+        "--dataset_split",
+        choices=("test", "val"),
+        default="test",
+        help="Dataset split to evaluate. Use val for model selection and test only for final reporting.",
+    )
+    parser.add_argument(
         "--model_paths",
         type=str,
         nargs="+",
         required=True,
-        help="One or more local checkpoint paths. Attacks are generated on each model separately unless --shared_attacks is set.",
+        help="One or more local checkpoint paths. Attacks are generated on each model separately.",
     )
     parser.add_argument(
         "--model_tags",
@@ -94,14 +117,6 @@ def build_parser():
         nargs="+",
         default=None,
         help="Labels for --model_paths. Defaults to 'base' for one model and 'base checkpoint' for two models.",
-    )
-    parser.add_argument(
-        "--shared_attacks",
-        action="store_true",
-        help=(
-            "Generate attacks once on the first model in --model_paths and evaluate every model on the same "
-            "attacked queries (transfer protocol). By default attacks are generated separately on each model."
-        ),
     )
     parser.add_argument(
         "--rank_attack",
@@ -127,7 +142,7 @@ def build_parser():
     )
     parser.add_argument("--adv_negatives", type=int, default=5, help="Hard negatives per rank attack target.")
     parser.add_argument("--adv_margin", type=float, default=0.1, help="Margin for the retrieval rank objective.")
-    parser.add_argument("--max_queries", type=int, default=None, help="Optional cap on attacked valid queries.")
+    parser.add_argument("--max_queries", type=int, default=None, help="Optional cap on attacked valid queries, spread evenly over them.")
     parser.add_argument(
         "--max_dataset_samples",
         type=int,
@@ -234,7 +249,7 @@ def parse_arguments():
 
 
 def finalize_arguments(args):
-    args = parser_module.validate_arguments(args)
+    args = supervlad_compat.validate_arguments(args)
     args.model_tags = resolve_model_tags(args.model_paths, args.model_tags)
     args.recall_values = list(dict.fromkeys([*args.recall_values, *REQUIRED_RECALL_VALUES]))
     adapter = get_model_adapter(args.model_type)
@@ -309,7 +324,7 @@ def validate_arguments(args) -> None:
         require_file(model_path, "--model_paths")
     if args.foundation_model_path is not None:
         require_file(args.foundation_model_path, "--foundation_model_path")
-    validate_dataset_layouts(args.eval_datasets_folder, args.datasets)
+    validate_dataset_layouts(args.eval_datasets_folder, args.datasets, args.dataset_split)
 
 
 def require_file(path: str, argument_name: str) -> None:
@@ -318,15 +333,16 @@ def require_file(path: str, argument_name: str) -> None:
         raise FileNotFoundError(f"{argument_name} does not exist: {resolved_path}")
 
 
-def validate_dataset_layouts(datasets_root: str, dataset_names: Sequence[str]) -> None:
+def validate_dataset_layouts(datasets_root: str, dataset_names: Sequence[str], dataset_split: str = "test") -> None:
     root = Path(datasets_root).expanduser()
     for dataset_name in dataset_names:
-        test_root = root / dataset_name / "images" / "test"
-        database_root = test_root / "database"
-        queries_root = test_root / "queries"
+        split_root = root / dataset_name / "images" / dataset_split
+        database_root = split_root / "database"
+        queries_root = split_root / "queries"
         if not database_root.is_dir() or not queries_root.is_dir():
             raise FileNotFoundError(
-                f"Dataset {dataset_name!r} must contain images/test/database and images/test/queries under {root}."
+                f"Dataset {dataset_name!r} must contain images/{dataset_split}/database and "
+                f"images/{dataset_split}/queries under {root}."
             )
 
 
@@ -371,6 +387,49 @@ def build_attack_image_output_dir(args, run_dir: Path) -> Path:
     if args.attack_image_output_dir is None:
         return run_dir / "attack_images"
     return Path(args.attack_image_output_dir).expanduser()
+
+
+def build_per_query_ranks_path(run_dir: Path) -> Path:
+    return run_dir / "per_query_ranks.csv"
+
+
+def checkpoint_tag_for_model(args, model_tag: str) -> str:
+    for tag, model_path in zip(args.model_tags, args.model_paths):
+        if tag == model_tag:
+            return str(model_path)
+    return ""
+
+
+def build_per_query_rank_rows(
+    dataset_name: str,
+    model_tag: str,
+    checkpoint_tag: str,
+    condition_name: str,
+    epsilon: float,
+    query_ids: Sequence[int],
+    clean_ranks: np.ndarray,
+    attacked_ranks: np.ndarray,
+) -> list[Dict[str, object]]:
+    return [
+        {
+            "dataset": dataset_name,
+            "model_tag": model_tag,
+            "checkpoint_tag": checkpoint_tag,
+            "condition": condition_name,
+            "epsilon": float(epsilon),
+            **record,
+        }
+        for record in per_query_rank_records(query_ids, clean_ranks, attacked_ranks)
+    ]
+
+
+def write_per_query_ranks_csv(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
+    """Write the released per-query rank artifact, header-only when nothing was evaluated."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(PER_QUERY_RANK_FIELDNAMES))
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def attack_image_root(args, attack_group_tag: str | None) -> Path:
@@ -433,19 +492,8 @@ def attack_reference_tag(args) -> str:
     return args.model_tags[0]
 
 
-def attack_generation_mode(args) -> str:
-    return "shared_first_model" if args.shared_attacks else "per_model"
-
-
 def attack_groups(args, models: Mapping[str, Tuple[nn.Module, object]]):
-    """Yield (reference_tag, models_to_evaluate) pairs for attack generation.
-
-    Shared mode generates one attack set on the first model and evaluates every model
-    on it. Per-model mode (the default) generates attacks on each model separately.
-    """
-    if args.shared_attacks:
-        yield attack_reference_tag(args), dict(models)
-        return
+    """Yield (reference_tag, models_to_evaluate) pairs: attacks are generated on each model separately."""
     for model_tag, model_bundle in models.items():
         yield model_tag, {model_tag: model_bundle}
 
@@ -462,6 +510,7 @@ def extract_features_for_models(
     desc: str,
     test_method: str,
     batch_size: int,
+    queryflag: int = 0,
 ) -> tuple[Dict[str, np.ndarray], Dict[str, float], float]:
     eval_ds.test_method = test_method
     ordered_indices = [int(index) for index in dataset_indices]
@@ -496,7 +545,7 @@ def extract_features_for_models(
 
                 for model_tag, (model, _) in models.items():
                     model_start = perf_counter()
-                    descriptors = model(device_inputs, queryflag=0).cpu().numpy()
+                    descriptors = model(device_inputs, queryflag=queryflag).cpu().numpy()
                     features[model_tag][positions, :] = descriptors
                     model_seconds[model_tag] += perf_counter() - model_start
                 progress.update(1)
@@ -512,6 +561,7 @@ def extract_database_features(args, eval_ds, model: nn.Module) -> np.ndarray:
         desc="Database",
         test_method="hard_resize",
         batch_size=args.infer_batch_size,
+        queryflag=1,
     )
     return features["model"]
 
@@ -526,6 +576,7 @@ def extract_clean_query_features(args, eval_ds, model: nn.Module) -> np.ndarray:
         desc="Clean queries",
         test_method=args.test_method,
         batch_size=query_batch_size(args),
+        queryflag=1,
     )
     return features["model"]
 
@@ -563,8 +614,7 @@ def select_valid_query_indices(positives_per_query: Sequence[Sequence[int]], lim
     )
     if len(valid_query_indices) == 0:
         raise RuntimeError("No queries with positives were found, cannot run attack evaluation.")
-    if limit_queries is not None:
-        valid_query_indices = valid_query_indices[:limit_queries]
+    valid_query_indices = cap_query_indices(valid_query_indices, limit_queries)
     return valid_query_indices.astype(np.int64, copy=False)
 
 
@@ -581,9 +631,9 @@ def attack_generation_seed(seed: int, dataset_name: str, model_tag: str, conditi
 def reseed_attack_rng(args, dataset_name: str, model_tag: str, condition_name: str) -> None:
     """Give each per-model attack run a stable RNG state so metrics do not depend on model order.
 
-    Shared mode keeps the legacy RNG stream untouched; seed == -1 keeps the non-deterministic convention.
+    seed == -1 keeps the non-deterministic convention.
     """
-    if args.shared_attacks or args.seed == -1:
+    if args.seed == -1:
         return
     derived_seed = attack_generation_seed(args.seed, dataset_name, model_tag, condition_name)
     torch.manual_seed(derived_seed)
@@ -776,6 +826,7 @@ def build_sampled_attack_targets(
                 "query_index": int(query_index),
                 "query_feature_index": int(query_row),
                 "positive_index": positive_index,
+                "positive_indexes": positive_candidates,
                 "negative_indexes": negative_candidates[negative_order[: args.adv_negatives]].astype(np.int64),
             }
         )
@@ -792,7 +843,7 @@ def make_attack_batch(
     query_tensors = []
     query_indices = []
     query_feature_indices = []
-    positive_descriptors = []
+    positive_banks = []
     negative_descriptors = []
 
     for target in targets:
@@ -803,27 +854,38 @@ def make_attack_batch(
         query_indices.append(query_index)
         query_feature_indices.append(query_feature_index)
 
-        positive_descriptors.append(database_features[int(target["positive_index"])])
-        negative_indexes = torch.as_tensor(target["negative_indexes"], dtype=torch.long, device=args.device)
-        negative_descriptors.append(database_features[negative_indexes])
+        # Attack every positive, not just the one nearest the clean query: R@1
+        # counts a retrieval as correct if *any* positive is closest, so the attack must
+        # push away whichever positive ends up closest under perturbation.
+        positive_rows = np.asarray(target.get("positive_indexes", [target["positive_index"]]), dtype=np.int64)
+        negative_rows = np.asarray(target["negative_indexes"], dtype=np.int64)
+        positive_banks.append(
+            database_features[torch.as_tensor(positive_rows, dtype=torch.long, device=database_features.device)]
+        )
+        negative_descriptors.append(
+            database_features[torch.as_tensor(negative_rows, dtype=torch.long, device=database_features.device)]
+        )
+
+    positive_descriptors, positive_mask = pad_positive_sets(
+        positive_banks, database_features.shape[1], database_features.device
+    )
 
     attack_targets = RetrievalAttackBatch(
         query_indices=torch.as_tensor(query_indices, dtype=torch.long, device=args.device),
         clean_query_descriptors=torch.from_numpy(clean_query_features[query_feature_indices]).to(args.device),
-        positive_descriptors=torch.stack(positive_descriptors, dim=0),
+        positive_descriptors=positive_descriptors,
         negative_descriptors=torch.stack(negative_descriptors, dim=0),
+        positive_mask=positive_mask,
     )
     return torch.stack(query_tensors, dim=0).to(args.device), attack_targets
 
 
 def build_rank_attack(model: nn.Module, args, epsilon: float) -> nn.Module:
-    norm = "l2" if args.rank_attack == "rank_pgd_l2" else "linf"
     config = RankAttackConfig(
         epsilon=float(epsilon),
         steps=args.rank_steps,
         restarts=args.rank_restarts,
         step_size=args.rank_step_size,
-        norm=norm,
         margin=args.adv_margin,
         device=args.device,
         audit=bool(args.audit_attack_implementation),
@@ -1266,7 +1328,7 @@ def generate_attacked_query_features(
 
         with torch.inference_mode():
             for model_tag, (model, _) in models.items():
-                descriptors = model(attack_result.adversarial, queryflag=0).cpu().numpy()
+                descriptors = model(attack_result.adversarial, queryflag=1).cpu().numpy()
                 attacked_features[model_tag][offset : offset + len(batch_targets), :] = descriptors
 
         for key, value in attack_result.metadata.items():
@@ -1434,7 +1496,7 @@ def add_sampled_gallery_clean_results(
 
 def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, Tuple[nn.Module, object]]):
     eval_ds = build_evaluation_dataset(args, dataset_name)
-    logging.info("Test set: %s", eval_ds)
+    logging.info("%s split: %s", args.dataset_split, eval_ds)
     logging.info(
         "Using audit sample mode with max_queries=%s and audit_sample_database_size=%s. "
         "Results are not benchmark-comparable.",
@@ -1468,6 +1530,7 @@ def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, 
         desc=f"{dataset_name}:audit database",
         test_method="hard_resize",
         batch_size=args.infer_batch_size,
+        queryflag=1,
     )
     query_features, query_times, query_input_seconds = extract_features_for_models(
         args,
@@ -1477,6 +1540,7 @@ def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, 
         desc=f"{dataset_name}:audit queries",
         test_method=args.test_method,
         batch_size=query_batch_size(args),
+        queryflag=1,
     )
     clean_features = {
         model_tag: {"database": database_features[model_tag], "queries": query_features[model_tag]}
@@ -1526,6 +1590,7 @@ def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, 
     attack_times: Dict[str, object] = {}
     audit_by_condition: Dict[str, object] = {}
     image_manifest: list[Dict[str, object]] = []
+    per_query_rows: list[Dict[str, object]] = []
     query_feature_indices = np.arange(len(valid_query_indices), dtype=np.int64)
     positives_by_query = {int(index): sampled_positives[row] for row, index in enumerate(valid_query_indices)}
 
@@ -1533,11 +1598,7 @@ def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, 
         condition_name = f"{args.rank_attack}_eps_{epsilon:g}"
         for reference_tag, group_models in attack_groups(args, models):
             targets = targets_for_reference(reference_tag)
-            desc = (
-                f"{dataset_name}:{condition_name}:audit sample"
-                if args.shared_attacks
-                else f"{dataset_name}:{condition_name}:audit sample:{reference_tag}"
-            )
+            desc = f"{dataset_name}:{condition_name}:audit sample:{reference_tag}"
             attacked_features_by_model, attack_metadata, image_rows, elapsed = run_attack_for_group(
                 args,
                 eval_ds,
@@ -1563,12 +1624,8 @@ def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, 
                 attack_metadata,
                 clean_query_feature_indices=query_feature_indices,
             )
-            if args.shared_attacks:
-                attack_times[condition_name] = elapsed
-                audit_by_condition[condition_name] = group_audit
-            else:
-                attack_times.setdefault(condition_name, {})[reference_tag] = elapsed
-                audit_by_condition.setdefault(condition_name, {})[reference_tag] = group_audit
+            attack_times.setdefault(condition_name, {})[reference_tag] = elapsed
+            audit_by_condition.setdefault(condition_name, {})[reference_tag] = group_audit
 
             for model_tag, attacked_features in attacked_features_by_model.items():
                 model_database_features = clean_features[model_tag]["database"]
@@ -1600,8 +1657,23 @@ def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, 
                     sampled_positives,
                     args.recall_values,
                 )
-                displacement = rank_displacement_summary(clean_ranks_by_model[model_tag], attacked_ranks)
-                success = attack_success_metrics(clean_ranks_by_model[model_tag], attacked_ranks)
+                metric_bundle = rank_metric_bundle(
+                    clean_ranks_by_model[model_tag],
+                    attacked_ranks,
+                    database_size=int(model_database_features.shape[0]),
+                )
+                per_query_rows.extend(
+                    build_per_query_rank_rows(
+                        dataset_name,
+                        model_tag,
+                        checkpoint_tag_for_model(args, model_tag),
+                        condition_name,
+                        epsilon,
+                        valid_query_indices,
+                        clean_ranks_by_model[model_tag],
+                        attacked_ranks,
+                    )
+                )
 
                 results[model_tag][condition_name] = {
                     **attacked_recalls,
@@ -1617,8 +1689,7 @@ def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, 
                     "attacked_queries": query_counts["attacked_queries"],
                     "audit_sample": True,
                     "sampled_database_images": query_counts["sampled_database_images"],
-                    "rank_displacement": displacement,
-                    "attack_success": success,
+                    **metric_bundle,
                     "runtime_seconds": elapsed,
                     "runtime_per_query_seconds": float(elapsed / max(1, len(valid_query_indices))),
                     "attack_metadata": group_metadata_summary,
@@ -1631,7 +1702,7 @@ def evaluate_audit_sample_dataset(args, dataset_name: str, models: Mapping[str, 
         "target_seconds": target_seconds_total,
         "attack_seconds": attack_times,
     }
-    return results, runtimes, query_counts, audit_by_condition, image_manifest
+    return results, runtimes, query_counts, audit_by_condition, image_manifest, per_query_rows
 
 
 def prepare_dataset_context(
@@ -1655,6 +1726,7 @@ def prepare_dataset_context(
             desc=f"{dataset_name}:database",
             test_method="hard_resize",
             batch_size=args.infer_batch_size,
+            queryflag=1,
         )
         query_dataset_indices = range(eval_ds.database_num, eval_ds.database_num + eval_ds.queries_num)
         query_features, query_times, query_input_seconds = extract_features_for_models(
@@ -1665,6 +1737,7 @@ def prepare_dataset_context(
             desc=f"{dataset_name}:clean queries",
             test_method=args.test_method,
             batch_size=query_batch_size(args),
+            queryflag=1,
         )
         clean_features = {
             model_tag: {"database": database_features[model_tag], "queries": query_features[model_tag]}
@@ -1755,6 +1828,7 @@ def prepare_dataset_context(
         desc=f"{dataset_name}:sampled database",
         test_method="hard_resize",
         batch_size=args.infer_batch_size,
+        queryflag=1,
     )
     query_features, query_times, query_input_seconds = extract_features_for_models(
         args,
@@ -1764,6 +1838,7 @@ def prepare_dataset_context(
         desc=f"{dataset_name}:sampled queries",
         test_method=args.test_method,
         batch_size=query_batch_size(args),
+        queryflag=1,
     )
     clean_features = {
         model_tag: {"database": database_features[model_tag], "queries": query_features[model_tag]}
@@ -1884,7 +1959,7 @@ def run_attack_for_group(
         dataset_name,
         epsilon,
         desc=desc,
-        attack_group_tag=None if args.shared_attacks else reference_tag,
+        attack_group_tag=reference_tag,
     )
     elapsed = perf_counter() - attack_start
     write_trace_csvs(
@@ -1895,7 +1970,7 @@ def run_attack_for_group(
         trace_rows,
         reference_features["database"],
         positives_by_query,
-        model_subdir=None if args.shared_attacks else reference_tag,
+        model_subdir=reference_tag,
     )
     return attacked_features_by_model, attack_metadata, image_rows, elapsed
 
@@ -1915,6 +1990,7 @@ def evaluate_condition_from_context(
     condition_name = f"{args.rank_attack}_eps_{epsilon:g}"
     audit_by_condition: Dict[str, object] = {}
     image_manifest: list[Dict[str, object]] = []
+    per_query_rows: list[Dict[str, object]] = []
     clean_query_feature_indices = (
         np.arange(len(valid_query_indices), dtype=np.int64)
         if context.get("sampled_gallery")
@@ -1928,11 +2004,7 @@ def evaluate_condition_from_context(
         reference_features = clean_features[reference_tag]
         targets, target_seconds = get_context_targets(args, context, reference_tag)
         total_target_seconds += target_seconds
-        desc = (
-            f"{dataset_name}:{condition_name}"
-            if args.shared_attacks
-            else f"{dataset_name}:{condition_name}:{reference_tag}"
-        )
+        desc = f"{dataset_name}:{condition_name}:{reference_tag}"
         attacked_features_by_model, attack_metadata, image_rows, elapsed = run_attack_for_group(
             args,
             context["eval_ds"],
@@ -1960,10 +2032,7 @@ def evaluate_condition_from_context(
                 attack_metadata,
                 clean_query_feature_indices=clean_query_feature_indices,
             )
-            if args.shared_attacks:
-                audit_by_condition[condition_name] = group_audit
-            else:
-                audit_by_condition.setdefault(condition_name, {})[reference_tag] = group_audit
+            audit_by_condition.setdefault(condition_name, {})[reference_tag] = group_audit
 
         for model_tag, attacked_features in attacked_features_by_model.items():
             model_database_features = clean_features[model_tag]["database"]
@@ -1995,8 +2064,23 @@ def evaluate_condition_from_context(
                 valid_positives,
                 args.recall_values,
             )
-            displacement = rank_displacement_summary(clean_ranks_by_model[model_tag], attacked_ranks)
-            success = attack_success_metrics(clean_ranks_by_model[model_tag], attacked_ranks)
+            metric_bundle = rank_metric_bundle(
+                clean_ranks_by_model[model_tag],
+                attacked_ranks,
+                database_size=int(model_database_features.shape[0]),
+            )
+            per_query_rows.extend(
+                build_per_query_rank_rows(
+                    dataset_name,
+                    model_tag,
+                    checkpoint_tag_for_model(args, model_tag),
+                    condition_name,
+                    epsilon,
+                    valid_query_indices,
+                    clean_ranks_by_model[model_tag],
+                    attacked_ranks,
+                )
+            )
 
             results[model_tag][condition_name] = {
                 **attacked_recalls,
@@ -2012,8 +2096,7 @@ def evaluate_condition_from_context(
                 "attacked_queries": context["query_counts"]["attacked_queries"],
                 "sampled_gallery": bool(context.get("sampled_gallery")),
                 "benchmark_comparable": not bool(context.get("sampled_gallery")),
-                "rank_displacement": displacement,
-                "attack_success": success,
+                **metric_bundle,
                 "runtime_seconds": elapsed,
                 "runtime_per_query_seconds": float(elapsed / max(1, len(valid_query_indices))),
                 "attack_metadata": attack_metadata_summary,
@@ -2024,15 +2107,9 @@ def evaluate_condition_from_context(
         "feature_seconds": context["feature_times"],
         "feature_shared_input_seconds": context["feature_shared_input_seconds"],
         "target_seconds": total_target_seconds,
-        "attack_seconds": {
-            condition_name: (
-                attack_seconds_by_group[attack_reference_tag(args)]
-                if args.shared_attacks
-                else dict(attack_seconds_by_group)
-            )
-        },
+        "attack_seconds": {condition_name: dict(attack_seconds_by_group)},
     }
-    return results, runtimes, context["query_counts"], audit_by_condition, image_manifest
+    return results, runtimes, context["query_counts"], audit_by_condition, image_manifest, per_query_rows
 
 
 def evaluate_dataset(args, dataset_name: str, models: Mapping[str, Tuple[nn.Module, object]]):
@@ -2050,9 +2127,17 @@ def evaluate_dataset(args, dataset_name: str, models: Mapping[str, Tuple[nn.Modu
     query_counts = context["query_counts"]
     audit_by_condition: Dict[str, object] = {}
     image_manifest: list[Dict[str, object]] = []
+    per_query_rows: list[Dict[str, object]] = []
 
     for epsilon in args.epsilons:
-        condition_results, condition_runtimes, _, condition_audit, condition_images = evaluate_condition_from_context(
+        (
+            condition_results,
+            condition_runtimes,
+            _,
+            condition_audit,
+            condition_images,
+            condition_per_query_rows,
+        ) = evaluate_condition_from_context(
             args,
             context,
             dataset_name,
@@ -2064,8 +2149,9 @@ def evaluate_dataset(args, dataset_name: str, models: Mapping[str, Tuple[nn.Modu
         runtimes["attack_seconds"].update(condition_runtimes["attack_seconds"])
         audit_by_condition.update(condition_audit)
         image_manifest.extend(condition_images)
+        per_query_rows.extend(condition_per_query_rows)
 
-    return results, runtimes, query_counts, audit_by_condition, image_manifest
+    return results, runtimes, query_counts, audit_by_condition, image_manifest, per_query_rows
 
 
 def flatten_rows(results: Mapping[str, Mapping[str, Mapping[str, object]]], recall_values: Sequence[int]) -> list[Dict[str, object]]:
@@ -2086,12 +2172,24 @@ def flatten_rows(results: Mapping[str, Mapping[str, Mapping[str, object]]], reca
                     "clean_correct_attack_success_rate": "",
                     "all_valid_attack_success_rate": "",
                     "mean_rank_displacement": "",
+                    "median_rank_displacement": "",
+                    "p90_rank_displacement": "",
+                    "mean_normalized_rank_displacement": "",
+                    "p_cross_1": "",
+                    "p_cross_10": "",
                 }
                 if "attack_success" in metrics:
                     row["clean_correct_attack_success_rate"] = metrics["attack_success"]["clean_correct"]["rate"]
                     row["all_valid_attack_success_rate"] = metrics["attack_success"]["all_valid"]["rate"]
                 if "rank_displacement" in metrics:
-                    row["mean_rank_displacement"] = metrics["rank_displacement"]["mean"]
+                    displacement = metrics["rank_displacement"]
+                    row["mean_rank_displacement"] = displacement["mean"]
+                    row["median_rank_displacement"] = displacement["median"]
+                    row["p90_rank_displacement"] = displacement["p90"]
+                    normalized = displacement.get("mean_normalized")
+                    row["mean_normalized_rank_displacement"] = "" if normalized is None else normalized
+                    row["p_cross_1"] = displacement["p_cross_1"]
+                    row["p_cross_10"] = displacement["p_cross_10"]
                 for recall_value in recall_values:
                     row[f"R@{recall_value}"] = float(metrics["recalls"][f"R@{recall_value}"])
                 rows.append(row)
@@ -2112,6 +2210,11 @@ def write_csv(path: Path, rows: Sequence[Mapping[str, object]], recall_values: S
         "clean_correct_attack_success_rate",
         "all_valid_attack_success_rate",
         "mean_rank_displacement",
+        "median_rank_displacement",
+        "p90_rank_displacement",
+        "mean_normalized_rank_displacement",
+        "p_cross_1",
+        "p_cross_10",
         "recalls_str",
     ]
     with path.open("w", encoding="utf-8", newline="") as handle:
@@ -2148,6 +2251,7 @@ def main() -> None:
     trace_output_dir = build_trace_output_dir(args, run_dir)
     diagnostics_output_dir = build_diagnostics_output_dir(args, run_dir) if args.compute_diagnostics else None
     attack_image_output_dir = build_attack_image_output_dir(args, run_dir)
+    per_query_ranks_path = build_per_query_ranks_path(run_dir)
     args.trace_output_dir_path = trace_output_dir
     args.diagnostics_output_dir_path = diagnostics_output_dir
     args.attack_image_output_dir_path = attack_image_output_dir
@@ -2168,9 +2272,17 @@ def main() -> None:
     query_counts = {}
     audit_results = {}
     attack_image_manifest: list[Dict[str, object]] = []
+    per_query_rank_rows: list[Dict[str, object]] = []
     for dataset_name in args.datasets:
         logging.info("Evaluating %s.", dataset_name)
-        dataset_results, dataset_runtimes, dataset_query_counts, dataset_audit, dataset_images = evaluate_dataset(
+        (
+            dataset_results,
+            dataset_runtimes,
+            dataset_query_counts,
+            dataset_audit,
+            dataset_images,
+            dataset_per_query_rows,
+        ) = evaluate_dataset(
             args,
             dataset_name,
             models,
@@ -2179,6 +2291,7 @@ def main() -> None:
         runtimes[dataset_name] = dataset_runtimes
         query_counts[dataset_name] = dataset_query_counts
         attack_image_manifest.extend(dataset_images)
+        per_query_rank_rows.extend(dataset_per_query_rows)
         if args.audit_attack_implementation:
             audit_results[dataset_name] = dataset_audit
 
@@ -2198,15 +2311,14 @@ def main() -> None:
             },
         },
         "datasets": list(args.datasets),
+        "dataset_split": args.dataset_split,
         "arguments": serialize_args(args),
         "attack": {
             "mode": args.rank_attack,
             "epsilons": [float(epsilon) for epsilon in args.epsilons],
             "scope": "queries_only",
             "epsilon_space": "normalized_image_tensor",
-            "attack_reference_model": attack_reference_tag(args) if args.shared_attacks else None,
-            "attack_generation": attack_generation_mode(args),
-            "shared_attacks_across_models": bool(args.shared_attacks),
+            "attack_generation": "per_model",
             "target_selection": {
                 "adv_negatives": int(args.adv_negatives),
                 "adv_margin": float(args.adv_margin),
@@ -2228,6 +2340,7 @@ def main() -> None:
         "attack_image_output_dir": str(attack_image_output_dir),
         "attack_image_manifest_csv": str(attack_image_manifest_path) if attack_image_manifest else None,
         "attack_image_manifest": attack_image_manifest,
+        "per_query_ranks_csv": str(per_query_ranks_path),
         "duration_seconds": (datetime.now() - started_at).total_seconds(),
     }
     if args.audit_attack_implementation:
@@ -2254,8 +2367,10 @@ def main() -> None:
             json.dump(report["implementation_audit"], handle, indent=2)
     write_csv(output_csv, rows, args.recall_values)
     write_attack_image_manifest(attack_image_manifest_path, attack_image_manifest)
+    write_per_query_ranks_csv(per_query_ranks_path, per_query_rank_rows)
 
     logging.info("Saved JSON rank evaluation report to %s", output_json)
+    logging.info("Saved per-query rank CSV to %s", per_query_ranks_path)
     if audit_output_json is not None:
         logging.info("Saved JSON implementation audit to %s", audit_output_json)
     logging.info("Saved CSV rank evaluation summary to %s", output_csv)

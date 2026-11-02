@@ -2,6 +2,7 @@ import copy
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import torch
 from torch import nn
@@ -10,7 +11,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.grad_checkpoint import CheckpointedBlock, enable_backbone_grad_checkpointing
+from src.grad_checkpoint import (
+    CheckpointedBlock,
+    checkpoint_backbone_blocks_in_place,
+    enable_backbone_grad_checkpointing,
+)
 
 
 class _Block(nn.Module):
@@ -40,6 +45,18 @@ class _Model(nn.Module):
 
     def forward(self, x):
         return self.backbone(x)
+
+
+class _BoQShapedModel(nn.Module):
+    """BoQ's layout: the DINOv2 blocks sit one level deeper, at backbone.dino.blocks."""
+
+    def __init__(self):
+        super().__init__()
+        self.backbone = nn.Module()
+        self.backbone.dino = _Backbone()
+
+    def forward(self, x):
+        return self.backbone.dino(x)
 
 
 class GradCheckpointTests(unittest.TestCase):
@@ -93,6 +110,81 @@ class GradCheckpointTests(unittest.TestCase):
     def test_model_without_backbone_blocks_is_rejected(self):
         with self.assertRaises(ValueError):
             enable_backbone_grad_checkpointing(nn.Linear(4, 4))
+
+    def test_boq_style_dino_blocks_are_wrapped(self):
+        model = enable_backbone_grad_checkpointing(_BoQShapedModel())
+        for block in model.backbone.dino.blocks:
+            self.assertIsInstance(block, CheckpointedBlock)
+
+
+class InPlaceCheckpointTests(unittest.TestCase):
+    def test_state_dict_keys_are_unchanged(self):
+        model = _Model()
+        keys = list(model.state_dict())
+        checkpoint_backbone_blocks_in_place(model)
+        self.assertEqual(list(model.state_dict()), keys)
+
+    def test_outputs_and_parameter_gradients_match_reference(self):
+        torch.manual_seed(0)
+        model = _Model()
+        reference = copy.deepcopy(model)
+        for frozen in (model.backbone.blocks[0], reference.backbone.blocks[0]):
+            frozen.requires_grad_(False)  # like --freeze_te: next block's input has no grad
+        checkpoint_backbone_blocks_in_place(model)
+        x = torch.randn(2, 8)
+        out, ref_out = model(x), reference(x)
+        torch.testing.assert_close(out, ref_out, rtol=0.0, atol=0.0)
+        out.sum().backward()
+        ref_out.sum().backward()
+        for (name, param), (_, ref_param) in zip(model.named_parameters(), reference.named_parameters()):
+            if ref_param.grad is None:
+                self.assertIsNone(param.grad, name)
+            else:
+                torch.testing.assert_close(param.grad, ref_param.grad, rtol=0.0, atol=0.0)
+
+    def test_trainable_blocks_are_checkpointed_once(self):
+        model = _Model()
+        checkpoint_backbone_blocks_in_place(model)
+        checkpoint_backbone_blocks_in_place(model)
+        with mock.patch("src.grad_checkpoint.checkpoint", wraps=torch.utils.checkpoint.checkpoint) as spy:
+            model(torch.randn(2, 8)).sum().backward()
+        self.assertEqual(spy.call_count, 3)
+
+    def test_boq_style_dino_blocks_are_checkpointed_in_place(self):
+        model = _BoQShapedModel()
+        keys = list(model.state_dict())
+        checkpoint_backbone_blocks_in_place(model)
+        self.assertEqual(list(model.state_dict()), keys)
+        with mock.patch("src.grad_checkpoint.checkpoint", wraps=torch.utils.checkpoint.checkpoint) as spy:
+            model(torch.randn(2, 8)).sum().backward()
+        self.assertEqual(spy.call_count, 3)
+
+    def test_no_grad_bypasses_checkpoint(self):
+        model = _Model()
+        checkpoint_backbone_blocks_in_place(model)
+        with mock.patch("src.grad_checkpoint.checkpoint") as spy, torch.no_grad():
+            model(torch.randn(2, 8))
+        spy.assert_not_called()
+
+    def test_deepcopy_uses_the_copys_own_weights(self):
+        torch.manual_seed(0)
+        model = _Model()
+        checkpoint_backbone_blocks_in_place(model)
+        clone = copy.deepcopy(model)
+        for parameter in clone.parameters():
+            nn.init.zeros_(parameter)
+        x = torch.randn(2, 8, requires_grad=True)
+        torch.testing.assert_close(clone(x), x)  # zero Linear -> each block is identity (x + relu(0))
+
+    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA for nn.parallel.replicate")
+    def test_dataparallel_replica_still_checkpoints_every_block(self):
+        # A DataParallel replica has empty self.parameters(); checkpointing must not depend on it.
+        model = _Model().cuda()
+        checkpoint_backbone_blocks_in_place(model)
+        replica = torch.nn.parallel.replicate(model, [0, 0])[0]
+        with mock.patch("src.grad_checkpoint.checkpoint", wraps=torch.utils.checkpoint.checkpoint) as spy:
+            replica(torch.randn(2, 8, device="cuda")).sum().backward()
+        self.assertEqual(spy.call_count, 3)
 
 
 if __name__ == "__main__":

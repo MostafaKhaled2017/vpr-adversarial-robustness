@@ -35,15 +35,10 @@ class ResolveModeTests(unittest.TestCase):
         self.assertEqual(mode, "rank")
         self.assertEqual(forwarded, ["--epsilons", "0.01"])
 
-    def test_perceptual_token_selects_perceptual(self):
-        mode, forwarded = resolve_mode(["perceptual", "--datasets", "sped"])
-        self.assertEqual(mode, "perceptual")
-        self.assertEqual(forwarded, ["--datasets", "sped"])
-
     def test_mode_token_only_recognized_in_first_position(self):
-        mode, forwarded = resolve_mode(["--model_tags", "perceptual"])
+        mode, forwarded = resolve_mode(["--model_tags", "rank"])
         self.assertEqual(mode, "rank")
-        self.assertEqual(forwarded, ["--model_tags", "perceptual"])
+        self.assertEqual(forwarded, ["--model_tags", "rank"])
 
     def test_importing_eval_module_stays_lightweight(self):
         self.assertNotIn("torch", root_eval.__dict__)

@@ -10,6 +10,7 @@ from torch.utils.data.dataset import Subset
 from tqdm import tqdm
 
 import datasets_ws
+from . import supervlad_compat
 from .config import IMAGENET_MEAN_STD, TRAIN_CITIES
 
 
@@ -91,8 +92,31 @@ def make_train_sampler(dataset, batches_per_epoch, batch_size, shuffle_seed=None
     return SequentialChunkSampler(dataset, batches_per_epoch * batch_size, shuffle_seed=shuffle_seed)
 
 
+def numpy_collate(batch):
+    """default_collate's values and dtypes, as numpy arrays in ordinary memory."""
+    return tuple(np.stack([np.asarray(sample[i]) for sample in batch]) for i in range(len(batch[0])))
+
+
+class PipeDataLoader(DataLoader):
+    """A DataLoader whose workers send batches through a pipe instead of /dev/shm (--pipe_loader),
+    for servers where /dev/shm is too small. Yields the same tensors, bit for bit, as a plain DataLoader."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs.pop("pin_memory", None)  # pinning only applies to tensors, not numpy batches
+        super().__init__(*args, collate_fn=numpy_collate, **kwargs)
+
+    def __iter__(self):
+        for batch in super().__iter__():
+            yield tuple(torch.from_numpy(array) for array in batch)
+
+
+def loader_class(args):
+    """PipeDataLoader with --pipe_loader (a small /dev/shm), else the plain DataLoader."""
+    return PipeDataLoader if getattr(args, "pipe_loader", False) else DataLoader
+
+
 def build_training_dataloader(args) -> DataLoader:
-    from dataloaders.train.GSVCitiesDataset import GSVCitiesDataset
+    GSVCitiesDataset = supervlad_compat.import_gsv_cities_dataset()
     from torchvision import transforms as T
 
     image_size = tuple(args.train_resize)
@@ -114,7 +138,7 @@ def build_training_dataloader(args) -> DataLoader:
         min_img_per_place=4,
         random_sample_from_each_place=True,
         transform=train_transform,
-        base_path=gsv_cities_base_path,
+        base_path=f"{gsv_cities_base_path}/",
     )
 
     sampler = make_train_sampler(
@@ -123,10 +147,11 @@ def build_training_dataloader(args) -> DataLoader:
         args.train_batch_size,
         shuffle_seed=args.seed if args.shuffle else None,
     )
-    return DataLoader(
+    return loader_class(args)(
         dataset=train_dataset,
         batch_size=args.train_batch_size,
-        num_workers=4,
+        # The worker count changes the augmentation draws: 4 is the reference.
+        num_workers=min(4, args.num_workers),
         drop_last=False,
         pin_memory=True,
         sampler=sampler,

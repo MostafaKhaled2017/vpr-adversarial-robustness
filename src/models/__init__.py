@@ -2,10 +2,9 @@ from .registry import ModelAdapter, ModelBundle, add_model_arguments, get_model_
 
 
 def register_builtin_models() -> None:
-    from . import boq, mixvpr, supervlad
+    from . import boq, supervlad
 
     boq.register()
-    mixvpr.register()
     supervlad.register()
 
 
