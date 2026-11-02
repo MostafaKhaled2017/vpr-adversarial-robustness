@@ -458,7 +458,7 @@ def build_attack_namespace(model: nn.Module, args) -> Dict[str, object]:
             )
 
     class RankLinfAttack(nn.Module):
-        """L∞ rank-PGD in normalized space, the test's threat model, for training (spec D6).
+        """L∞ rank-PGD in normalized space, the test's threat model, for training.
 
         Uses the evaluation attack's objective and units so training and test share the
         threat model. ``set_strength_scale`` scales epsilon for the attack-strength ramp.

@@ -1,4 +1,4 @@
-"""Rank-PGD validation on a fixed random MSLS-val sample and checkpoint selection (spec D2).
+"""Rank-PGD validation on a fixed random MSLS-val sample and checkpoint selection.
 
 The best checkpoint is the most robust epoch (clean R@1 for clean-only runs); each
 --selection_clean_budgets entry additionally keeps a reporting checkpoint, the best such
@@ -112,7 +112,7 @@ def evaluate_rank_validation(args, model: nn.Module, val_ds, query_indices: np.n
 def select_checkpoint(
     metrics: Dict[str, object], initial_clean_r1: Optional[float], clean_budgets: Sequence[float], is_clean_only: bool
 ) -> Dict[str, object]:
-    """Robust-score selection (spec D2): C = clean R@1, R = mean attacked R@1.
+    """Robust-score selection: C = clean R@1, R = mean attacked R@1.
 
     Adversarial runs select on R. ``eligible_budgets`` lists the clean-drop budgets b with
     C >= C0 - b (``initial_clean_r1=None`` marks the initial validation, eligible for every

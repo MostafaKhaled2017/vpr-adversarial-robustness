@@ -31,7 +31,7 @@ def _query_mode_model_class():
     from model import network
 
     class QueryModeSuperVLAD(network.SuperVLADModel):
-        """SuperVLAD whose ``queryflag=1`` encodes each image independently (spec D1).
+        """SuperVLAD whose ``queryflag=1`` encodes each image independently.
 
         Used to encode both query and database images in evaluation without cross-image batch effects.
         """

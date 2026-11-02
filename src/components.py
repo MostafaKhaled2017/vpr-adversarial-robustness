@@ -100,7 +100,7 @@ def build_training_components(args):
 
 
 def build_anchor_model(args, model):
-    """Frozen copy of the run's initial weights for the --align_target initial anchor (spec D1).
+    """Frozen copy of the run's initial weights for the --align_target initial anchor.
 
     Loads ``<save_dir>/initial_model.pth`` rather than copying ``model``'s current weights, so
     a --continue resume still anchors to the weights the run started from.

@@ -69,7 +69,7 @@ def main():
         if args.continue_training:
             append_resume_history(args.save_dir, args.resume, start_epoch)
         maybe_copy_resume_checkpoint(args, model)
-        # Spec D1: the anchor is built before gradient checkpointing patches block forwards.
+        # The anchor is built before gradient checkpointing patches block forwards.
         anchor_model = build_anchor_model(args, model) if args.align_target == "initial" else None
         if args.grad_checkpointing:
             checkpoint_backbone_blocks_in_place(model)

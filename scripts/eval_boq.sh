@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 E="$(dirname "$0")/eval.sh"
-R=${RUN_ROOT:-logs/paper}
+R=${RUN_ROOT:-logs}
 PRETRAINED=checkpoints/boq_dinov2_12288.pth
 EPS_HEADLINE=(0.0342 0.0685)
 EPS_GRID=(0.01712 0.03425 0.0685 0.137)

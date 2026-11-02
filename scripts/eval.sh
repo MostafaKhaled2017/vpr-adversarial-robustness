@@ -17,7 +17,7 @@
 # skips a piece whose DONE file points at complete results.
 #
 # Environment:
-#   OUT_ROOT  results root                   (default: output/paper)
+#   OUT_ROOT  results root                   (default: output)
 #   DRY_RUN=1 print the eval.py command instead of running it
 #   PYTHON    python interpreter             (default: python)
 set -euo pipefail
@@ -33,7 +33,7 @@ MODEL=$1 ATTACK=$2 DATASET=$3 TAG=$4 CHECKPOINT=$5
 shift 5
 EPSILONS=("$@")
 PYTHON=${PYTHON:-python}
-DIR="${OUT_ROOT:-output/paper}/${MODEL}/${ATTACK}/${DATASET}/${TAG}"
+DIR="${OUT_ROOT:-output}/${MODEL}/${ATTACK}/${DATASET}/${TAG}"
 
 case "${MODEL}" in
   supervlad) MODEL_FLAGS=("${SUPERVLAD_EVAL_FLAGS[@]}") ;;

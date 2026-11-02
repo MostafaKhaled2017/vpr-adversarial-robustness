@@ -82,7 +82,7 @@ def compute_attack_losses(
             "combined_adv_loss": zero,
         }
 
-    # Spec D1: with --align_target initial the anchor is the frozen initial model's clean
+    # With --align_target initial the anchor is the frozen initial model's clean
     # descriptor; otherwise the current model's (the pre-sprint-5 behaviour).
     if align_reference is None:
         align_reference = attack_targets.clean_query_descriptors
@@ -92,7 +92,7 @@ def compute_attack_losses(
     rank_losses = []
     align_losses = []
     for attack in attacks:
-        # Attacks that need a clean reference (FARE's embedding-shift attack) get the anchor.
+        # Attacks see the anchor as the clean query descriptor (no current attack reads it).
         adv_queries = attack(query_inputs, replace(attack_targets, clean_query_descriptors=align_reference))
         with amp_autocast(False, args.device):
             adv_query_descriptors = model(adv_queries, queryflag=1)
@@ -308,7 +308,7 @@ def budget_key(budget: float) -> str:
 
 
 def improved_budgets(validation_scores: Dict[str, object], best_budget_scores: Dict[str, float]) -> List[str]:
-    """Budgets whose best robust score this validation strictly beats (spec D2)."""
+    """Budgets whose best robust score this validation strictly beats."""
     robust = float(validation_scores["robust_score"])
     return [
         budget_key(budget)

@@ -12,7 +12,7 @@ training on SuperVLAD and BoQ. Every result in the paper can be reproduced with 
 | `eval.py`                     | Test-set evaluation under rank-PGD and rank-APGD attacks.                             |
 | `src/`                        | Attacks, losses, training loop, rank evaluation, model adapters (SuperVLAD, BoQ).     |
 | `scripts/`                    | Bash scripts that reproduce the paper (below).                                        |
-| `tests/`                      | Unit tests; `tests/golden/` holds the arguments of every run the paper reports.       |
+| `tests/`                      | Unit tests.                                                                           |
 | `third_party/`                | SuperVLAD, Bag-of-Queries and the VPR benchmark's dataset code.                       |
 | `submodules/perceptual-advex` | Perceptual attacks, used only by the attack-set screens of the hyperparameter search. |
 
@@ -48,7 +48,7 @@ python -m pip install git+https://github.com/MadryLab/robustness.git
 
 Run the scripts in this order from the repository root. Each one can be stopped and rerun: finished
 runs and evaluations are skipped, and a stopped training run resumes from its last checkpoint.
-Training runs go to `logs/paper/<run>/` and evaluations to `output/paper/<model>/<attack>/<dataset>/<tag>/`.
+Training runs go to `logs/<run>/` and evaluations to `output/<model>/<attack>/<dataset>/<tag>/`.
 
 | Step | Script                       | What it produces                                                  | Paper                     |
 | ---- | ---------------------------- | ----------------------------------------------------------------- | ------------------------- |
@@ -70,6 +70,3 @@ for the options.
 ```bash
 python -m unittest discover tests
 ```
-
-`tests/test_paper_scripts.py` checks that the scripts run exactly the configurations recorded for
-the paper.

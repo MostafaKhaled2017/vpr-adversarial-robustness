@@ -219,6 +219,6 @@ def maybe_remove_old_checkpoint(args, checkpoint_epoch: int) -> None:
 
 
 def copy_budget_checkpoints(args, source_filename: str, budget_keys) -> None:
-    """Copy ``source_filename`` to ``best_model_budget<b>.pth`` for each improved budget (spec D2)."""
+    """Copy ``source_filename`` to ``best_model_budget<b>.pth`` for each improved budget."""
     for key in budget_keys:
         atomic_copy(Path(args.save_dir) / source_filename, Path(args.save_dir) / f"best_model_budget{key}.pth")

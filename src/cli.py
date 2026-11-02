@@ -164,7 +164,7 @@ def build_parser():
         choices=("current", "initial"),
         default="current",
         help="Clean descriptor the attacked query is aligned to: 'current' uses the model being "
-        "trained; 'initial' uses a frozen copy of the --resume weights (FARE-style anchor, spec D1).",
+        "trained; 'initial' uses a frozen copy of the --resume weights (the ARAFT anchor).",
     )
     parser.add_argument(
         "--adv_negatives",

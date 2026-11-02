@@ -16,13 +16,13 @@
 #                                                               (default: linf)
 #     FTE=<int>                 frozen DINOv2 blocks            (default: 0)
 #     LR=<float>                learning rate                   (default: 1e-5)
-#     SCREEN=1                  12-epoch screen(default: 0, full run)
+#     SCREEN=1                  12-epoch screen                 (default: 0, full run)
 #
 # A rerun skips a finished run (terminal state in run_status.json) and resumes a stopped one
 # from its last checkpoint.
 #
 # Environment:
-#   RUN_ROOT  run directory root          (default: logs/paper)
+#   RUN_ROOT  run directory root          (default: logs)
 #   DRY_RUN=1 print the train.py command instead of running it
 #   PYTHON    python interpreter          (default: python)
 set -euo pipefail
@@ -44,7 +44,7 @@ for setting in "$@"; do
   esac
 done
 PYTHON=${PYTHON:-python}
-RUN_DIR="${RUN_ROOT:-logs/paper}/${NAME}"
+RUN_DIR="${RUN_ROOT:-logs}/${NAME}"
 TRAIN_EPS=0.0685  # 4/255
 
 case "${MODEL}" in
