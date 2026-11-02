@@ -54,12 +54,12 @@ Run the scripts from the repository root. Each one can be stopped and rerun: fin
 evaluations are skipped, and a stopped training run resumes from its last checkpoint. Training runs
 go to `logs/<run>/` and evaluations to `output/<model>/<attack>/<dataset>/<tag>/`.
 
-| Script                       | What it does                                                               |
-| ---------------------------- | -------------------------------------------------------------------------- |
-| `scripts/train_supervlad.sh` | Trains ARAFT and FARE on SuperVLAD into `logs/supervlad_{araft,fare}_s0/`. |
-| `scripts/train_boq.sh`       | Trains ARAFT and FARE on BoQ into `logs/boq_{araft,fare}_s0/`.             |
-| `scripts/eval_supervlad.sh`  | Rank-APGD and rank-PGD test results of the SuperVLAD ARAFT checkpoint.     |
-| `scripts/eval_boq.sh`        | Rank-APGD and rank-PGD test results of the BoQ ARAFT checkpoint.           |
+| Script                       | What it does                                                            |
+| ---------------------------- | ----------------------------------------------------------------------- |
+| `scripts/train_supervlad.sh` | Trains ARAFT on SuperVLAD into `logs/supervlad_araft_s0/`.              |
+| `scripts/train_boq.sh`       | Trains ARAFT on BoQ into `logs/boq_araft_s0/`.                          |
+| `scripts/eval_supervlad.sh`  | Rank-APGD and rank-PGD test results of the SuperVLAD ARAFT checkpoint.  |
+| `scripts/eval_boq.sh`        | Rank-APGD and rank-PGD test results of the BoQ ARAFT checkpoint.        |
 
 The evaluation scripts cover MSLS, Pitts30k, SPED and Nordland, with rank-APGD at 2/255 and 4/255
 and rank-PGD at 1, 2, 4 and 8/255.
@@ -74,10 +74,6 @@ CHECKPOINT=checkpoints/<araft_boq>.pth scripts/eval_boq.sh
 
 # One evaluation: SuperVLAD on MSLS under rank-APGD at 4/255
 scripts/eval.sh supervlad apgd msls araft logs/supervlad_araft_s0/best_model.pth 0.0685
-
-# The FARE baseline on SuperVLAD, evaluated the same way
-scripts/train.sh supervlad_fare_s0 supervlad fare 0
-scripts/eval.sh supervlad apgd msls fare logs/supervlad_fare_s0/best_model.pth 0.0685
 
 # ARAFT on SuperVLAD with the closest positive and anchor weight 2
 scripts/train.sh supervlad_araft_closest_aw2_s0 supervlad araft 0 POSITIVE=closest AW=2
