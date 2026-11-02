@@ -28,7 +28,7 @@ def commands(result):
     return [shlex.split(line[2:]) for line in result.stdout.splitlines() if line.startswith("+ ")]
 
 
-class PaperScriptTests(unittest.TestCase):
+class ScriptTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)

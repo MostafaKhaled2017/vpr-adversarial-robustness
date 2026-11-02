@@ -6,17 +6,12 @@
 #
 #   MODEL   supervlad | boq
 #   METHOD  araft     ARAFT: listwise rank loss + anchor to the pretrained model
-#           plain_at  plain adversarial training: hinge rank loss, no anchor
-#           clean     clean fine-tuning without attacks (the clean twin)
-#   KEY=VALUE overrides, ARAFT ablations and screens only:
+#   KEY=VALUE overrides:
 #     POSITIVE=hardest|closest  protected positive              (default: hardest)
 #     LOSS=listwise|hinge       rank loss                       (default: listwise)
 #     AW=<float>                anchor weight lambda_anc        (default: 1.0)
-#     MIX=linf|all              training attacks; "all" adds two perceptual attacks
-#                                                               (default: linf)
 #     FTE=<int>                 frozen DINOv2 blocks            (default: 0)
 #     LR=<float>                learning rate                   (default: 1e-5)
-#     SCREEN=1                  12-epoch screen                 (default: 0, full run)
 #
 # A rerun skips a finished run (terminal state in run_status.json) and resumes a stopped one
 # from its last checkpoint.
@@ -36,10 +31,10 @@ source "${SCRIPT_DIR}/common.sh"
 [ "$#" -ge 4 ] || { sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0" >&2; exit 2; }
 NAME=$1 MODEL=$2 METHOD=$3 SEED=$4
 shift 4
-POSITIVE=hardest LOSS=listwise AW=1.0 MIX=linf FTE=0 LR=1e-5 SCREEN=0
+POSITIVE=hardest LOSS=listwise AW=1.0 FTE=0 LR=1e-5
 for setting in "$@"; do
   case "${setting}" in
-    POSITIVE=* | LOSS=* | AW=* | MIX=* | FTE=* | LR=* | SCREEN=*) declare "${setting}" ;;
+    POSITIVE=* | LOSS=* | AW=* | FTE=* | LR=*) declare "${setting}" ;;
     *) echo "unknown setting: ${setting}" >&2; exit 2 ;;
   esac
 done
@@ -55,28 +50,10 @@ esac
 MODEL_FLAGS+=(--freeze_te="${FTE}")
 [ "${FTE}" -ge 8 ] || MODEL_FLAGS+=(--grad_checkpointing)
 
-# Screens keep the recipe's patience; with 4 validations it never stops a screen early.
-if [ "${SCREEN}" = "1" ]; then
-  SCHEDULE_FLAGS=(--num_epochs=12 --patience=8 --lr_plateau_patience=5)
-else
-  SCHEDULE_FLAGS=(--num_epochs=100 --patience=6 --lr_plateau_patience=3)
-fi
-
-RANK_ATTACK="RankLinfAttack(model, epsilon=${TRAIN_EPS}, steps=5)"
 case "${METHOD}" in
   araft)
-    case "${MIX}" in
-      linf) METHOD_FLAGS=(--attack "${RANK_ATTACK}") ;;
-      all)
-        METHOD_FLAGS=(
-          --attack "FastLagrangePerceptualAttack(model, bound=0.1, num_iterations=5)"
-          --attack "PerceptualPGDAttack(model, bound=0.1, num_iterations=5)"
-          --attack "${RANK_ATTACK}"
-        )
-        ;;
-      *) echo "unknown MIX: ${MIX}" >&2; exit 2 ;;
-    esac
-    METHOD_FLAGS+=(
+    METHOD_FLAGS=(
+      --attack "RankLinfAttack(model, epsilon=${TRAIN_EPS}, steps=5)"
       --defense_loss="${LOSS}"
       --listwise_tau=0.05
       --listwise_k=1
@@ -91,16 +68,6 @@ case "${METHOD}" in
       *) echo "unknown POSITIVE: ${POSITIVE}" >&2; exit 2 ;;
     esac
     ;;
-  plain_at)
-    METHOD_FLAGS=(
-      --attack "${RANK_ATTACK}"
-      --defense_loss=hinge
-      --adv_align_weight=0
-      --attack_ramp_epochs=5
-      --collapse_abort_knn=0.15
-    )
-    ;;
-  clean) METHOD_FLAGS=() ;;
   *) echo "unknown method: ${METHOD}" >&2; exit 2 ;;
 esac
 
@@ -136,12 +103,14 @@ COMMAND=(
   "${MODEL_FLAGS[@]}"
   "${TRAIN_RECIPE_FLAGS[@]}"
   --lr="${LR}"
-  "${SCHEDULE_FLAGS[@]}"
+  --num_epochs=100
+  --patience=6
+  --lr_plateau_patience=3
   "${INIT_FLAGS[@]}"
   --run_dir="${RUN_DIR}"
   --seed="${SEED}"
   --save_dir="${NAME}"
-  "${METHOD_FLAGS[@]+"${METHOD_FLAGS[@]}"}"
+  "${METHOD_FLAGS[@]}"
 )
 if [ "${DRY_RUN:-0}" = "1" ]; then
   printf '+'; printf ' %q' "${COMMAND[@]}"; printf '\n'
