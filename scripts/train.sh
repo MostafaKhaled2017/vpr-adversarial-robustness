@@ -6,8 +6,8 @@
 #
 #   MODEL   supervlad | boq
 #   METHOD  araft     ARAFT: listwise rank loss + anchor to the pretrained model
-#           fare      FARE: anchor loss only, against an attack pushing the descriptor away
-#                     from the pretrained model's
+#           fare      FARE: clean loss + anchor loss, no rank loss, against an attack pushing
+#                     the descriptor away from the pretrained model's
 #   KEY=VALUE overrides:
 #     POSITIVE=hardest|closest  protected positive, araft only  (default: hardest)
 #     LOSS=listwise|hinge       rank loss, araft only           (default: listwise)

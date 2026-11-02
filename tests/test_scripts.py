@@ -86,6 +86,20 @@ class ScriptTests(unittest.TestCase):
         self.assertIn("=== SKIP", result.stdout)
         self.assertEqual(commands(result), [])
 
+    def test_eval_wrapper_tag_picks_results_dir_and_run(self):
+        for tag in ("araft", "fare"):
+            with self.subTest(tag=tag):
+                environment = {} if tag == "araft" else {"TAG": tag}
+                result = subprocess.run(["bash", str(REPO_ROOT / "scripts" / "eval_boq.sh")], cwd=REPO_ROOT,
+                                        env={**os.environ, "DRY_RUN": "1", "PYTHON": sys.executable,
+                                             "RUN_ROOT": str(self.root / "runs"),
+                                             "OUT_ROOT": str(self.root / "out"), **environment},
+                                        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertEqual(len(commands(result)), 8)
+                self.assertIn(str(self.root / "out" / "boq" / "apgd" / "msls" / tag), result.stdout)
+                self.assertIn(str(self.root / "runs" / f"boq_{tag}_s0" / "best_model.pth"), result.stdout)
+
     def test_unknown_model_or_method_fails(self):
         for model, method in (("supervlad", "fgsm"), ("mixvpr", "araft")):
             result = run_script(self.root, "train.sh", "x", model, method, "0")
