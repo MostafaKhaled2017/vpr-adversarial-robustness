@@ -31,9 +31,11 @@ from .losses import (
     compute_align_loss,
     compute_listwise_loss,
     compute_rank_loss,
+    compute_relational_loss,
     loss_function,
     query_is_correct,
 )
+from .negative_bank import merge_bank_negatives
 from .rank_validation import evaluate_rank_validation, sample_validation_queries, select_checkpoint
 from .targets import RetrievalAttackBatch, select_rank_targets
 
@@ -72,6 +74,7 @@ def compute_attack_losses(
     attacks: Sequence[nn.Module],
     args,
     align_reference: Optional[Tensor] = None,
+    relational_neighbours: Optional[Tensor] = None,
 ) -> Dict[str, object]:
     if len(attack_targets) == 0 or len(attacks) == 0:
         zero = query_inputs.new_zeros(())
@@ -79,8 +82,13 @@ def compute_attack_losses(
             "attack_logs": [],
             "adv_rank_loss": zero,
             "align_loss": zero,
+            "relational_loss": zero,
             "combined_adv_loss": zero,
         }
+
+    anchor_kind = getattr(args, "anchor_kind", "isotropic")
+    if anchor_kind != "isotropic" and relational_neighbours is None:
+        raise ValueError(f"anchor kind {anchor_kind} needs relational_neighbours")
 
     # With --align_target initial the anchor is the frozen initial model's clean
     # descriptor; otherwise the current model's.
@@ -91,6 +99,7 @@ def compute_attack_losses(
     combined_losses = []
     rank_losses = []
     align_losses = []
+    relational_losses = []
     for attack in attacks:
         # Attacks that need a clean reference (FARE's embedding-shift attack) get the anchor.
         adv_queries = attack(query_inputs, replace(attack_targets, clean_query_descriptors=align_reference))
@@ -102,39 +111,78 @@ def compute_attack_losses(
             align_reference,
             adv_query_descriptors,
         )
-        combined_loss = args.adv_loss_weight * rank_loss + args.adv_align_weight * align_loss
+        if anchor_kind == "isotropic":
+            relational_loss = align_loss.new_zeros(())
+        else:
+            relational_loss = compute_relational_loss(
+                align_reference,
+                adv_query_descriptors,
+                relational_neighbours,
+                getattr(args, "relational_temperature", 0.1),
+            )
+        # align_loss is always reported; it enters the objective only for the isotropic kinds.
+        anchor_loss = relational_loss if anchor_kind == "relational" else align_loss + relational_loss
+        combined_loss = args.adv_loss_weight * rank_loss + args.adv_align_weight * anchor_loss
         attack_logs.append(
             {
                 "name": make_attack_name(attack),
                 "rank_loss": rank_loss,
                 "align_loss": align_loss,
+                "relational_loss": relational_loss,
                 "combined_loss": combined_loss,
             }
         )
         combined_losses.append(combined_loss)
         rank_losses.append(rank_loss)
         align_losses.append(align_loss)
+        relational_losses.append(relational_loss)
 
     stacked_combined = torch.stack(combined_losses)
     stacked_rank = torch.stack(rank_losses)
     stacked_align = torch.stack(align_losses)
+    stacked_relational = torch.stack(relational_losses)
 
     if args.maximize_attack:
         max_index = int(torch.argmax(stacked_combined).item())
         combined_adv_loss = stacked_combined[max_index]
         adv_rank_loss = stacked_rank[max_index]
         align_loss = stacked_align[max_index]
+        relational_loss = stacked_relational[max_index]
     else:
         combined_adv_loss = stacked_combined.mean()
         adv_rank_loss = stacked_rank.mean()
         align_loss = stacked_align.mean()
+        relational_loss = stacked_relational.mean()
 
     return {
         "attack_logs": attack_logs,
         "adv_rank_loss": adv_rank_loss,
         "align_loss": align_loss,
+        "relational_loss": relational_loss,
         "combined_adv_loss": combined_adv_loss,
     }
+
+
+def compute_drift_loss(anchor_model: Optional[nn.Module], flat_images: Tensor, clean_descriptors: Tensor, args) -> Tensor:
+    """Mean squared distance of the clean descriptors from the frozen anchor model's.
+
+    Zero when there is no anchor model or the clean-drift weight is not positive.
+    """
+    if anchor_model is None or getattr(args, "clean_drift_weight", 0.0) <= 0:
+        return clean_descriptors.new_zeros(())
+    with torch.no_grad():
+        with amp_autocast(args.mixed_precision, args.device):
+            anchor_clean = anchor_model(flat_images, queryflag=0)
+    return compute_align_loss(anchor_clean.float(), clean_descriptors)
+
+
+def mine_bank_rows(negative_bank, targets: RetrievalAttackBatch, place_id: Tensor, k: int) -> Tensor:
+    """The ``k`` bank descriptors nearest each target query's clean descriptor, other places only."""
+    return negative_bank.nearest(
+        targets.clean_query_descriptors,
+        k,
+        exclude_place_ids=place_id[targets.query_indices, 0],
+    )
 
 
 def measure_collapse(args, model, val_ds, reference_descriptors, sample_indices):
@@ -485,6 +533,7 @@ def run_training(
     train_attacks,
     resume_runtime_state=None,
     anchor_model=None,
+    negative_bank=None,
 ):
     start_time = datetime.now()
     resume_runtime_state = dict(resume_runtime_state or {})
@@ -638,6 +687,8 @@ def run_training(
         epoch_clean_losses: List[float] = []
         epoch_adv_rank_losses: List[float] = []
         epoch_align_losses: List[float] = []
+        epoch_relational_losses: List[float] = []
+        epoch_drift_losses: List[float] = []
         epoch_total_losses: List[float] = []
         skipped_nonfinite_batches = 0
 
@@ -669,6 +720,9 @@ def run_training(
                     args.adv_negatives,
                     multi_positive=getattr(args, "multi_positive", False),
                 )
+                if negative_bank is not None and rank_targets is not None:
+                    extra = mine_bank_rows(negative_bank, rank_targets, place_id, args.bank_negatives)
+                    rank_targets = merge_bank_negatives(rank_targets, extra)
 
             use_adversarial_branch = epoch_num >= args.adv_warmup_epochs
             step_attacks = train_attacks if use_adversarial_branch else []
@@ -701,11 +755,19 @@ def run_training(
                         align_reference = anchor_model(query_inputs, queryflag=1)
                 align_reference = align_reference.float()
 
+            relational_neighbours = None
+            relational_kind = getattr(args, "anchor_kind", "isotropic") != "isotropic"
+            if relational_kind and selected_targets is not None and len(step_attacks) > 0:
+                relational_neighbours = mine_bank_rows(
+                    negative_bank, selected_targets, place_id, args.relational_neighbours
+                )
+
             optimizer.zero_grad(set_to_none=True)
             model.train()
             with amp_autocast(args.mixed_precision, args.device):
                 clean_descriptors = model(flat_images, queryflag=0)
             clean_descriptors = clean_descriptors.float()
+            drift_loss = compute_drift_loss(anchor_model, flat_images, clean_descriptors, args)
             with amp_autocast(args.mixed_precision, args.device):
                 clean_loss = loss_function(clean_descriptors, labels)
 
@@ -716,25 +778,33 @@ def run_training(
                     step_attacks,
                     args,
                     align_reference=align_reference,
+                    relational_neighbours=relational_neighbours,
                 ) if query_inputs is not None and selected_targets is not None else {
                     "attack_logs": [],
                     "adv_rank_loss": clean_loss.new_zeros(()),
                     "align_loss": clean_loss.new_zeros(()),
+                    "relational_loss": clean_loss.new_zeros(()),
                     "combined_adv_loss": clean_loss.new_zeros(()),
                 }
 
-                total_loss = clean_loss + attack_outputs["combined_adv_loss"]
+                total_loss = (
+                    clean_loss
+                    + attack_outputs["combined_adv_loss"]
+                    + getattr(args, "clean_drift_weight", 0.0) * drift_loss
+                )
 
             if not torch.isfinite(total_loss):
                 skipped_nonfinite_batches += 1
                 logging.warning(
                     "Skipping non-finite batch at iter %06d during epoch %02d: clean_loss=%s adv_rank_loss=%s "
-                    "align_loss=%s combined_adv_loss=%s total_loss=%s",
+                    "align_loss=%s relational_loss=%s drift_loss=%s combined_adv_loss=%s total_loss=%s",
                     iteration,
                     epoch_num,
                     float(clean_loss.detach().item()),
                     float(attack_outputs["adv_rank_loss"].detach().item()),
                     float(attack_outputs["align_loss"].detach().item()),
+                    float(attack_outputs["relational_loss"].detach().item()),
+                    float(drift_loss.detach().item()),
                     float(attack_outputs["combined_adv_loss"].detach().item()),
                     float(total_loss.detach().item()),
                 )
@@ -777,16 +847,22 @@ def run_training(
             clean_loss_value = float(clean_loss.item())
             adv_rank_loss_value = float(attack_outputs["adv_rank_loss"].item())
             align_loss_value = float(attack_outputs["align_loss"].item())
+            relational_loss_value = float(attack_outputs["relational_loss"].item())
+            drift_loss_value = float(drift_loss.item())
             combined_adv_loss_value = float(attack_outputs["combined_adv_loss"].item())
             total_loss_value = float(total_loss.item())
             epoch_clean_losses.append(clean_loss_value)
             epoch_adv_rank_losses.append(adv_rank_loss_value)
             epoch_align_losses.append(align_loss_value)
+            epoch_relational_losses.append(relational_loss_value)
+            epoch_drift_losses.append(drift_loss_value)
             epoch_total_losses.append(total_loss_value)
 
             writer.add_scalar("train/clean_loss", clean_loss_value, iteration)
             writer.add_scalar("train/adv_rank_loss", adv_rank_loss_value, iteration)
             writer.add_scalar("train/align_loss", align_loss_value, iteration)
+            writer.add_scalar("train/relational_loss", relational_loss_value, iteration)
+            writer.add_scalar("train/drift_loss", drift_loss_value, iteration)
             writer.add_scalar("train/combined_adv_loss", combined_adv_loss_value, iteration)
             writer.add_scalar("train/total_loss", total_loss_value, iteration)
             writer.add_scalar("train/lr", float(optimizer.param_groups[0]["lr"]), iteration)
@@ -803,11 +879,14 @@ def run_training(
 
             if iteration % 10 == 0:
                 logging.info(
-                    "ITER %06d\tclean_loss=%.4f\tadv_rank_loss=%.4f\talign_loss=%.4f\tcombined_adv_loss=%.4f\ttotal_loss=%.4f",
+                    "ITER %06d\tclean_loss=%.4f\tadv_rank_loss=%.4f\talign_loss=%.4f\trelational_loss=%.4f"
+                    "\tdrift_loss=%.4f\tcombined_adv_loss=%.4f\ttotal_loss=%.4f",
                     iteration,
                     clean_loss_value,
                     adv_rank_loss_value,
                     align_loss_value,
+                    relational_loss_value,
+                    drift_loss_value,
                     combined_adv_loss_value,
                     total_loss_value,
                 )
@@ -816,19 +895,26 @@ def run_training(
         mean_clean_loss = float(np.mean(epoch_clean_losses)) if epoch_clean_losses else 0.0
         mean_adv_rank_loss = float(np.mean(epoch_adv_rank_losses)) if epoch_adv_rank_losses else 0.0
         mean_align_loss = float(np.mean(epoch_align_losses)) if epoch_align_losses else 0.0
+        mean_relational_loss = float(np.mean(epoch_relational_losses)) if epoch_relational_losses else 0.0
+        mean_drift_loss = float(np.mean(epoch_drift_losses)) if epoch_drift_losses else 0.0
         mean_total_loss = float(np.mean(epoch_total_losses)) if epoch_total_losses else 0.0
         writer.add_scalar("epoch/clean_loss_mean", mean_clean_loss, epoch_num)
         writer.add_scalar("epoch/adv_rank_loss_mean", mean_adv_rank_loss, epoch_num)
         writer.add_scalar("epoch/align_loss_mean", mean_align_loss, epoch_num)
+        writer.add_scalar("epoch/relational_loss_mean", mean_relational_loss, epoch_num)
+        writer.add_scalar("epoch/drift_loss_mean", mean_drift_loss, epoch_num)
         writer.add_scalar("epoch/total_loss_mean", mean_total_loss, epoch_num)
 
         logging.info(
-            "Finished epoch %02d in %s, clean loss = %.4f, adv rank loss = %.4f, align loss = %.4f, total loss = %.4f, skipped non-finite batches = %d",
+            "Finished epoch %02d in %s, clean loss = %.4f, adv rank loss = %.4f, align loss = %.4f, "
+            "relational loss = %.4f, drift loss = %.4f, total loss = %.4f, skipped non-finite batches = %d",
             epoch_num,
             str(datetime.now() - epoch_start)[:-7],
             mean_clean_loss,
             mean_adv_rank_loss,
             mean_align_loss,
+            mean_relational_loss,
+            mean_drift_loss,
             mean_total_loss,
             skipped_nonfinite_batches,
         )

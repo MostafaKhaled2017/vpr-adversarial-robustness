@@ -20,6 +20,7 @@ from src.config import create_summary_writer, validate_cuda_runtime
 from src.faiss_utils import validate_faiss_runtime
 from src.grad_checkpoint import checkpoint_backbone_blocks_in_place
 from src.losses import configure_metric_learning
+from src.negative_bank import NegativeBank
 from src import supervlad_compat
 from src.train_loop import run_training
 
@@ -71,6 +72,10 @@ def main():
         maybe_copy_resume_checkpoint(args, model)
         # The anchor is built before gradient checkpointing patches block forwards.
         anchor_model = build_anchor_model(args, model) if args.align_target == "initial" else None
+        negative_bank = None
+        if args.negative_bank:
+            negative_bank = NegativeBank.load(args.negative_bank, args.bank_device, expected_dim=args.features_dim)
+            logging.info("Loaded %d descriptors from the negative bank %s", len(negative_bank), args.negative_bank)
         if args.grad_checkpointing:
             checkpoint_backbone_blocks_in_place(model)
 
@@ -90,6 +95,7 @@ def main():
             train_attacks,
             resume_runtime_state,
             anchor_model=anchor_model,
+            negative_bank=negative_bank,
         )
         write_run_status(args.save_dir, outcome["state"], final_epoch=outcome["final_epoch"])
     except BaseException as exc:
