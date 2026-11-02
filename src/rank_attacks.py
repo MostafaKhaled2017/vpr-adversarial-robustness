@@ -335,6 +335,25 @@ class RankPGDAttack(nn.Module):
         return torch.max(torch.min(inputs, max_value), min_value)
 
 
+class EmbeddingShiftPGDAttack(RankPGDAttack):
+    """PGD that pushes the query descriptor away from ``targets.clean_query_descriptors``.
+
+    Maximises ‖f(x′) − r‖² and needs no labels: FARE's training attack, with r = f₀(x) from
+    the frozen initial model. Positive and negative distances are still returned for audits
+    and traces.
+    """
+
+    def _rank_components(self, inputs: Tensor, targets: RetrievalAttackBatch) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        _, positive_distance, hard_negative_distance, descriptors = super()._rank_components(inputs, targets)
+        reference = targets.clean_query_descriptors.detach().to(device=inputs.device, dtype=descriptors.dtype)
+        return (descriptors - reference).pow(2).sum(dim=1), positive_distance, hard_negative_distance, descriptors
+
+    def _initial_inputs(self, clean_inputs: Tensor, restart_index: int) -> Tensor:
+        # With r = f(x) the shift and its gradient are exactly zero at x′ = x, so a clean start
+        # never moves; every restart starts from uniform noise, as in FARE.
+        return super()._initial_inputs(clean_inputs, max(restart_index, 1))
+
+
 class RankAPGDLinfAttack(RankPGDAttack):
 
     def forward(self, inputs: Tensor, targets: RetrievalAttackBatch) -> RankAttackResult:
