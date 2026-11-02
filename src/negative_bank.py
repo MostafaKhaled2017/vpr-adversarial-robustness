@@ -4,13 +4,16 @@ The bank holds one fp16 descriptor per training place, encoded once with the pre
 Each query fetches its nearest entries from other places, which are appended to its in-batch negatives.
 """
 
+import argparse
 import dataclasses
+import logging
 import os
-from typing import Optional
+from typing import Optional, Tuple
 
 import torch
 from torch import Tensor
 
+from src.config import amp_autocast
 from src.targets import RetrievalAttackBatch
 
 BANK_FILE_KEYS = ("descriptors", "place_ids", "model", "checkpoint", "image_size")
@@ -70,3 +73,68 @@ def merge_bank_negatives(targets: RetrievalAttackBatch, extra: Tensor) -> Retrie
     """Append ``(B, K, D)`` bank negatives to the batch's ``(B, N, D)`` negatives."""
     negatives = torch.cat([targets.negative_descriptors, extra.to(targets.negative_descriptors)], dim=1)
     return dataclasses.replace(targets, negative_descriptors=negatives)
+
+
+def encode_bank(model, loader, device: str, mixed_precision: bool) -> Tuple[Tensor, Tensor]:
+    """Encode ``(images (B, 1, C, H, W), place_ids (B, 1))`` batches into fp16 ``(N, D)`` descriptors and ``(N,)`` ids."""
+    model.eval()
+    descriptors, place_ids = [], []
+    with torch.inference_mode(), amp_autocast(mixed_precision, device):
+        for images, ids in loader:
+            descriptors.append(model(images[:, 0].to(device), queryflag=1).half().cpu())
+            place_ids.append(ids[:, 0].long())
+    return torch.cat(descriptors), torch.cat(place_ids)
+
+
+def build_bank_dataset(args):
+    """One un-augmented image per GSV-Cities training place, at the training resolution."""
+    from torchvision import transforms as T
+
+    from src import supervlad_compat
+    from src.config import IMAGENET_MEAN_STD, TRAIN_CITIES
+    from src.data import resolve_gsv_cities_base_path
+
+    transform = T.Compose(
+        [
+            T.Resize(tuple(args.train_resize), interpolation=T.InterpolationMode.BILINEAR),
+            T.ToTensor(),
+            T.Normalize(mean=IMAGENET_MEAN_STD["mean"], std=IMAGENET_MEAN_STD["std"]),
+        ]
+    )
+    GSVCitiesDataset = supervlad_compat.import_gsv_cities_dataset()
+    return GSVCitiesDataset(
+        cities=TRAIN_CITIES,
+        img_per_place=1,
+        min_img_per_place=4,
+        random_sample_from_each_place=False,
+        transform=transform,
+        base_path=f"{resolve_gsv_cities_base_path(args)}/",
+    )
+
+
+def main(argv=None) -> None:
+    from torch.utils.data import DataLoader
+
+    from src.cli import parse_arguments
+    from src.models import get_model_adapter
+
+    parser = argparse.ArgumentParser(description="Encode one image per training place into a descriptor bank file.")
+    parser.add_argument("--out", required=True, help="bank file to write")
+    parser.add_argument("--bank_batch_size", type=int, default=32, help="images per encoding batch")
+    bank_args, remaining = parser.parse_known_args(argv)
+    args = parse_arguments(remaining)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+
+    adapter = get_model_adapter(args.model)
+    model = adapter.build(args).model.to(args.device)
+    adapter.load_weights(model, args.resume, args)
+    loader = DataLoader(build_bank_dataset(args), batch_size=bank_args.bank_batch_size,
+                        num_workers=min(4, args.num_workers), pin_memory=True)
+    descriptors, place_ids = encode_bank(model, loader, args.device, args.mixed_precision)
+    save_bank(bank_args.out, descriptors, place_ids, model=args.model, checkpoint=args.resume,
+              image_size=list(args.train_resize))
+    logging.info("Wrote %d descriptors of width %d to %s", descriptors.shape[0], descriptors.shape[1], bank_args.out)
+
+
+if __name__ == "__main__":
+    main()

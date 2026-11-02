@@ -4,7 +4,7 @@ import unittest
 
 import torch
 
-from src.negative_bank import BANK_FILE_KEYS, NegativeBank, merge_bank_negatives, save_bank
+from src.negative_bank import BANK_FILE_KEYS, NegativeBank, encode_bank, merge_bank_negatives, save_bank
 from src.targets import RetrievalAttackBatch
 
 
@@ -85,6 +85,29 @@ class NegativeBankTest(unittest.TestCase):
         self.assertIs(merged.clean_query_descriptors, batch.clean_query_descriptors)
         self.assertIs(merged.positive_descriptors, batch.positive_descriptors)
         self.assertIs(merged.positive_mask, batch.positive_mask)
+
+
+    def test_encode_bank_stacks_fp16_descriptors_and_place_ids(self):
+        class TinyModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.queryflags = []
+
+            def forward(self, images, queryflag=0):
+                self.queryflags.append(queryflag)
+                assert not self.training
+                return images.flatten(1)[:, :5]
+
+        model = TinyModel().train()
+        images = torch.randn(4, 1, 3, 4, 4)
+        loader = [(images[:2], torch.tensor([[7], [3]])), (images[2:], torch.tensor([[9], [1]]))]
+        descriptors, place_ids = encode_bank(model, loader, device="cpu", mixed_precision=False)
+        self.assertEqual(descriptors.dtype, torch.float16)
+        self.assertEqual(descriptors.shape, (4, 5))
+        torch.testing.assert_close(descriptors, images[:, 0].flatten(1)[:, :5].half())
+        self.assertEqual(place_ids.dtype, torch.int64)
+        self.assertEqual(place_ids.tolist(), [7, 3, 9, 1])
+        self.assertEqual(model.queryflags, [1, 1])
 
 
 if __name__ == "__main__":

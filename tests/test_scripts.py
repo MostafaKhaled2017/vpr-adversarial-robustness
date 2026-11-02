@@ -106,5 +106,24 @@ class ScriptTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, (model, method))
 
 
+    def test_build_bank_dry_run_prints_module_command(self):
+        result = run_script(self.root, "build_bank.sh", "supervlad")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        [argv] = commands(result)
+        self.assertEqual(argv[1:3], ["-m", "src.negative_bank"])
+        self.assertIn(f"--out={self.root / 'runs' / 'banks' / 'supervlad_f0.pt'}", argv)
+        self.assertIn("--resume=checkpoints/SuperVLAD_base.pth", argv)
+        self.assertIn("--model=supervlad", argv)
+
+    def test_build_bank_skips_existing_file(self):
+        bank = self.root / "runs" / "banks" / "supervlad_f0.pt"
+        bank.parent.mkdir(parents=True)
+        bank.touch()
+        result = run_script(self.root, "build_bank.sh", "supervlad")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("=== SKIP", result.stdout)
+        self.assertEqual(commands(result), [])
+
+
 if __name__ == "__main__":
     unittest.main()
