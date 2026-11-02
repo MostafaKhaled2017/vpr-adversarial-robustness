@@ -1,10 +1,5 @@
 # Flags shared by scripts/train.sh and scripts/eval.sh (sourced, not run).
-#
-# Values that equal a src/cli.py default are still written out: a paper run must not change
-# when a default does.
 
-# Paper Table 1, except the per-run settings that scripts/train.sh adds: model, initial
-# weights, frozen blocks, lr, epochs, patience, attacks and loss.
 TRAIN_RECIPE_FLAGS=(
   --eval_datasets_folder=datasets
   --gsv_cities_base_path=datasets/gsv_cities

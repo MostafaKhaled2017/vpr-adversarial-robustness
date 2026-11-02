@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Full-length BoQ runs with the settings selected on SuperVLAD.
 set -euo pipefail
 T="$(dirname "$0")/train.sh"
 

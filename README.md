@@ -11,7 +11,6 @@ training on SuperVLAD and BoQ. Every result in the paper can be reproduced with 
 | `train.py`                    | Training entry point: ARAFT, plain adversarial training and clean fine-tuning.        |
 | `eval.py`                     | Test-set evaluation under rank-PGD and rank-APGD attacks.                             |
 | `src/`                        | Attacks, losses, training loop, rank evaluation, model adapters (SuperVLAD, BoQ).     |
-| `src/paper/`                  | The paper's tables, in-text numbers and figures.                                      |
 | `scripts/`                    | Bash scripts that reproduce the paper (below).                                        |
 | `tests/`                      | Unit tests; `tests/golden/` holds the arguments of every run the paper reports.       |
 | `third_party/`                | SuperVLAD, Bag-of-Queries and the VPR benchmark's dataset code.                       |
@@ -73,5 +72,4 @@ python -m unittest discover tests
 ```
 
 `tests/test_paper_scripts.py` checks that the scripts run exactly the configurations recorded for
-the paper. `tests/test_paper_tables.py` checks the paper's printed numbers; it needs the results in
-`logs/paper` and `output/paper`.
+the paper.

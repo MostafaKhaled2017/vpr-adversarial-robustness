@@ -6,7 +6,7 @@
 #   scripts/eval.sh MODEL ATTACK DATASET TAG CHECKPOINT EPSILON...
 #
 #   MODEL       supervlad | boq
-#   ATTACK      apgd       rank-APGD L-inf, 100 steps x 1 restart (headline)
+#   ATTACK      apgd       rank-APGD L-inf, 100 steps x 1 restart
 #               apgd500    rank-APGD L-inf, 500 steps x 1 restart
 #               apgd_r3    rank-APGD L-inf, 100 steps x 3 restarts
 #               pgd        rank-PGD L-inf, 20 steps x 1 restart

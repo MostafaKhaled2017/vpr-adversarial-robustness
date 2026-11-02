@@ -1,9 +1,4 @@
-"""Adapters around the unmodified SuperVLAD submodule.
-
-Upstream only exposes ``parser.parse_arguments()`` (parses sys.argv), refuses existing
-log directories, and checks a hard-coded GSV-Cities path at import time. These helpers
-reuse the upstream code as-is by patching those spots for the duration of one call.
-"""
+# Adapters around the original SuperVLAD submodule.
 
 import argparse
 import os

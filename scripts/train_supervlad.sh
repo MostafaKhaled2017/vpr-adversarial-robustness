@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Full-length SuperVLAD runs: ARAFT, plain adversarial training, the clean twin and the
-# ablations of Table 4 and Fig. 2.
 set -euo pipefail
 T="$(dirname "$0")/train.sh"
 

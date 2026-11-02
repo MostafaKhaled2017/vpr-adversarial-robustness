@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# The 12-epoch SuperVLAD screens of the hyperparameter search (Appendix A, Table 5).
-# Each stage carried its winner forward; the screens use the closest positive.
 set -euo pipefail
 T="$(dirname "$0")/train.sh"
 S=(POSITIVE=closest SCREEN=1)

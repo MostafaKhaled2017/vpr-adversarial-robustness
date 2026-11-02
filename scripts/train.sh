@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Train one run of the paper into ${RUN_ROOT}/NAME, or resume it.
+# Train one run into ${RUN_ROOT}/NAME, or resume it.
 #
 # Usage:
 #   scripts/train.sh NAME MODEL METHOD SEED [KEY=VALUE ...]
 #
 #   MODEL   supervlad | boq
-#   METHOD  araft     ARAFT (Sect. 3.3): listwise rank loss + anchor to the pretrained model
-#           plain_at  plain adversarial training (Sect. 3.4): hinge rank loss, no anchor
+#   METHOD  araft     ARAFT: listwise rank loss + anchor to the pretrained model
+#           plain_at  plain adversarial training: hinge rank loss, no anchor
 #           clean     clean fine-tuning without attacks (the clean twin)
 #   KEY=VALUE overrides, ARAFT ablations and screens only:
 #     POSITIVE=hardest|closest  protected positive              (default: hardest)
@@ -16,7 +16,7 @@
 #                                                               (default: linf)
 #     FTE=<int>                 frozen DINOv2 blocks            (default: 0)
 #     LR=<float>                learning rate                   (default: 1e-5)
-#     SCREEN=1                  12-epoch screen (Appendix A)    (default: 0, full run)
+#     SCREEN=1                  12-epoch screen(default: 0, full run)
 #
 # A rerun skips a finished run (terminal state in run_status.json) and resumes a stopped one
 # from its last checkpoint.
