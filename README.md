@@ -77,6 +77,25 @@ scripts/eval.sh supervlad apgd msls araft logs/supervlad_araft_s0/best_model.pth
 
 # ARAFT on SuperVLAD with the closest positive and anchor weight 2
 scripts/train.sh supervlad_araft_closest_aw2_s0 supervlad araft 0 POSITIVE=closest AW=2
+
+# Plain AT on SuperVLAD: rank loss against the rank attack, no anchor
+scripts/train.sh supervlad_plain_at_s0 supervlad plain_at 0
+
+# ARAFT on SuperVLAD for 12 epochs
+scripts/train.sh supervlad_araft_e12_s0 supervlad araft 0 EPOCHS=12
+
+# Build the frozen SuperVLAD descriptor bank, then train ARAFT with bank negatives
+scripts/build_bank.sh supervlad
+scripts/train.sh supervlad_araft_bank_s0 supervlad araft 0 BANK=1
+
+# ARAFT on SuperVLAD with the clean-drift term at weight 1
+scripts/train.sh supervlad_araft_drift1_s0 supervlad araft 0 DRIFT=1
+
+# ARAFT on SuperVLAD against the combined embedding-shift and rank attack
+scripts/train.sh supervlad_araft_combined_s0 supervlad araft 0 ATTACK=combined
+
+# ARAFT on SuperVLAD with the isotropic and relational anchors together
+scripts/train.sh supervlad_araft_anchor_both_s0 supervlad araft 0 BANK=1 ANCHOR=both
 ```
 
 A full-length training run takes one to two and a half days, and a 100-step rank-APGD evaluation of

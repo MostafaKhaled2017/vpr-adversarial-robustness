@@ -28,6 +28,27 @@ def commands(result):
     return [shlex.split(line[2:]) for line in result.stdout.splitlines() if line.startswith("+ ")]
 
 
+COMMON_FLAGS = (
+    "--model=supervlad --foundation_model_path=checkpoints/dinov2_vitb14_pretrain.pth --backbone=dino "
+    "--supervlad_clusters=4 --crossimage_encoder --train_resize 322 322 --resize 322 322 --freeze_te=0 "
+    "--grad_checkpointing --eval_datasets_folder=datasets --gsv_cities_base_path=datasets/gsv_cities "
+    "--eval_dataset_name=msls --optim=adam --lr_schedule=120 --lr_plateau_factor=0.1 --batch_size=20 "
+    "--batches_per_epoch=200 --infer_batch_size=16 --mixed_precision --test_method=hard_resize "
+    "--randomize_attack --adv_negatives=5 --adv_warmup_epochs=1 --adv_margin=0.1 --adv_loss_weight=1.0 "
+    "--adv_align_weight=0.05 --early_stop_min_delta=0.0 --keep_every=0 --val_every=3 "
+    "--val_rank_epsilons 0.0342 0.0685 --selection_clean_budgets 1 3 5 7 10 --lr=1e-5 --num_epochs=100 "
+    "--patience=6 --lr_plateau_patience=3 --resume=checkpoints/SuperVLAD_base.pth --resume_model_only "
+    "--run_dir={run_root}/x --seed=0 --save_dir=x "
+)
+EXPECTED_COMMANDS = {
+    "araft": COMMON_FLAGS + "--attack 'RankLinfAttack(model, epsilon=0.0685, steps=5)' --defense_loss=listwise "
+    "--listwise_tau=0.05 --listwise_k=1 --attack_ramp_epochs=5 --collapse_abort_knn=0.15 --align_target=initial "
+    "--adv_align_weight=1.0",
+    "fare": COMMON_FLAGS + "--attack 'EmbeddingShiftLinfAttack(model, epsilon=0.0685, steps=5)' --adv_loss_weight=0 "
+    "--align_target=initial --adv_align_weight=1.0 --attack_ramp_epochs=5 --collapse_abort_knn=0.15",
+}
+
+
 class ScriptTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -45,7 +66,7 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(commands(result), [])
 
     def test_stopped_run_resumes_from_last_checkpoint(self):
-        for method in ("araft", "fare"):
+        for method in ("araft", "fare", "plain_at"):
             with self.subTest(method=method):
                 name = f"supervlad_{method}_s0"
                 run_dir = self.root / "runs" / name
@@ -74,6 +95,60 @@ class ScriptTests(unittest.TestCase):
         for setting in ("LOSS=hinge", "POSITIVE=closest"):
             result = run_script(self.root, "train.sh", "x", "supervlad", "fare", "0", setting)
             self.assertNotEqual(result.returncode, 0, setting)
+
+    def test_plain_at_has_no_anchor(self):
+        result = run_script(self.root, "train.sh", "supervlad_plain_at_s0", "supervlad", "plain_at", "0")
+        [argv] = commands(result)
+        args = parse_arguments(argv[2:])
+        self.assertEqual(args.attack, ["RankLinfAttack(model, epsilon=0.0685, steps=5)"])
+        self.assertEqual(args.adv_align_weight, 0.0)
+        self.assertEqual(args.align_target, "current")
+        self.assertEqual(args.defense_loss, "listwise")
+        self.assertEqual(args.attack_ramp_epochs, 5)
+        self.assertEqual(args.collapse_abort_knn, 0.15)
+
+    def test_settings_reach_their_flags(self):
+        bank = str(self.root / "runs" / "banks" / "supervlad_f0.pt")
+        cases = (
+            (("EPOCHS=12",), {"epochs_num": 12}),
+            (("LRW=3",), {"adv_loss_weight": 3.0}),
+            (("ATTACK=shift",), {"attack": ["EmbeddingShiftLinfAttack(model, epsilon=0.0685, steps=5)"]}),
+            (("ATTACK=combined", "BETA=0.5"),
+             {"attack": ["CombinedShiftRankLinfAttack(model, epsilon=0.0685, steps=5, rank_weight=0.5)"]}),
+            (("DRIFT=1",), {"clean_drift_weight": 1.0}),
+            (("BANK=1",), {"negative_bank": bank}),
+            (("BANK=1", "NEG_BANK=8"), {"bank_negatives": 8}),
+            (("BANK=1", "BANK_DEVICE=cpu"), {"bank_device": "cpu"}),
+            (("BANK=1", "ANCHOR=rel"), {"anchor_kind": "relational"}),
+            (("BANK=1", "ANCHOR=both", "REL_M=16", "REL_T=0.5"),
+             {"anchor_kind": "both", "relational_neighbours": 16, "relational_temperature": 0.5}),
+        )
+        for settings, expected in cases:
+            with self.subTest(settings=settings):
+                result = run_script(self.root, "train.sh", "x", "supervlad", "araft", "0", *settings)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                [argv] = commands(result)
+                args = parse_arguments(argv[2:])
+                for name, value in expected.items():
+                    self.assertEqual(getattr(args, name), value, name)
+
+    def test_settings_rejected_for_the_wrong_method(self):
+        cases = (
+            ("plain_at", "AW=2"), ("plain_at", "ATTACK=shift"), ("plain_at", "DRIFT=1"),
+            ("fare", "BANK=1"), ("fare", "LRW=2"), ("fare", "ANCHOR=rel"),
+            ("araft", "ANCHOR=rel"), ("araft", "NEG_BANK=3"), ("araft", "BETA=2"), ("araft", "REL_T=0.5"),
+        )
+        for method, setting in cases:
+            with self.subTest(method=method, setting=setting):
+                result = run_script(self.root, "train.sh", "x", "supervlad", method, "0", setting)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+
+    def test_no_settings_prints_todays_command(self):
+        for method, expected in EXPECTED_COMMANDS.items():
+            with self.subTest(method=method):
+                result = run_script(self.root, "train.sh", "x", "supervlad", method, "0")
+                [argv] = commands(result)
+                self.assertEqual(argv[1:], ["train.py", *shlex.split(expected.format(run_root=self.root / "runs"))])
 
     def test_done_piece_is_skipped(self):
         piece = self.root / "out" / "supervlad" / "apgd" / "sped" / "araft"
