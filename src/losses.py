@@ -42,11 +42,11 @@ def closest_positive_distance(
     positive_descriptor: Tensor,
     positive_mask: Optional[Tensor] = None,
 ) -> Tensor:
-    """Distance to the nearest *valid* positive (Task 2.1).
+    """Distance to the nearest *valid* positive.
 
     Retrieval succeeds when any positive outranks every negative, so the attack has to
     beat the closest positive rather than the single hardest one. With one positive per
-    query this is exactly the pre-Phase-2 quantity.
+    query this is the distance to that positive.
     """
     bank = as_positive_bank(positive_descriptor)
     distances = torch.norm(query_descriptor.unsqueeze(1) - bank, p=2, dim=2)
@@ -119,7 +119,7 @@ def compute_listwise_scores(
     k: int = DEFAULT_LISTWISE_K,
     positive_mask: Optional[Tensor] = None,
 ) -> Tensor:
-    """Per-query smooth surrogate of Recall@k under the mined list (Task 2.3).
+    """Per-query smooth surrogate of Recall@k under the mined list.
 
     Retrieval is correct exactly when the best positive's rank is at most ``k``, so the
     objective penalises the best positive's *soft* rank exceeding ``k``. This is the
@@ -140,7 +140,7 @@ def compute_listwise_loss(
     k: int = DEFAULT_LISTWISE_K,
     positive_mask: Optional[Tensor] = None,
 ) -> Tensor:
-    """Scaled listwise Recall@k smooth surrogate (Task 4).
+    """Scaled listwise Recall@k smooth surrogate.
 
     Multiplies the softplus-based ranking loss by 4*tau^2, cancelling the softplus slope
     ≤ 1/tau and the sigmoid slope ≤ 1/(4*tau). The slope is then ≤ 1 in each negative

@@ -144,7 +144,7 @@ if __name__ == "__main__":
 
 
 class MultiPositiveTargetTests(unittest.TestCase):
-    """Task 2.1 — retrieval succeeds if *any* positive outranks the negatives.
+    """Retrieval succeeds if *any* positive outranks the negatives.
 
     The single hardest positive is the wrong target: it may be visually weak, and beating
     it says nothing about whether the query still retrieves the place. The attack must beat
@@ -200,7 +200,7 @@ class MultiPositiveTargetTests(unittest.TestCase):
         targets = select_rank_targets(descriptors, place_ids, adv_negatives=1)
 
         self.assertEqual(targets.positive_descriptors.shape, (2, 2))
-        # The hardest (farthest) positive, which is the pre-Phase-2 behaviour.
+        # The hardest (farthest) positive.
         self.assertTrue(torch.equal(targets.positive_descriptors[0], torch.tensor([4.0, 0.0])))
         self.assertIsNone(targets.positive_mask)
 

@@ -1,4 +1,4 @@
-"""Collapse and neighborhood-distortion monitoring (Task 2.4).
+"""Collapse and neighborhood-distortion monitoring.
 
 Listwise objectives can be satisfied degenerately: an encoder that maps everything to the
 same point trivially puts every positive at rank 1 relative to a mined list it has also

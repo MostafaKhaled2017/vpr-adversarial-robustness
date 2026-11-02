@@ -6,15 +6,15 @@ training on SuperVLAD and BoQ. Every result in the paper can be reproduced with 
 
 ## Repository layout
 
-| Path                          | Purpose                                                                               |
-| ----------------------------- | ------------------------------------------------------------------------------------- |
-| `train.py`                    | Training entry point: ARAFT, plain adversarial training and clean fine-tuning.        |
-| `eval.py`                     | Test-set evaluation under rank-PGD and rank-APGD attacks.                             |
-| `src/`                        | Attacks, losses, training loop, rank evaluation, model adapters (SuperVLAD, BoQ).     |
-| `scripts/`                    | Bash scripts that reproduce the paper (below).                                        |
-| `tests/`                      | Unit tests.                                                                           |
-| `third_party/`                | SuperVLAD, Bag-of-Queries and the VPR benchmark's dataset code.                       |
-| `submodules/perceptual-advex` | Perceptual attacks, used only by the attack-set screens of the hyperparameter search. |
+| Path                          | Purpose                                                                           |
+| ----------------------------- | --------------------------------------------------------------------------------- |
+| `train.py`                    | Training entry point: ARAFT, plain adversarial training and clean fine-tuning.    |
+| `eval.py`                     | Test-set evaluation under rank-PGD and rank-APGD attacks.                         |
+| `src/`                        | Attacks, losses, training loop, rank evaluation, model adapters (SuperVLAD, BoQ). |
+| `scripts/`                    | Bash scripts that reproduce the paper (below).                                    |
+| `tests/`                      | Unit tests.                                                                       |
+| `third_party/`                | SuperVLAD, Bag-of-Queries and the VPR benchmark's dataset code.                   |
+| `submodules/perceptual-advex` | Perceptual attacks, used only by `scripts/train.sh MIX=all`.                      |
 
 ## Installation
 
@@ -27,7 +27,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-The attack-set screens (`scripts/train_screens.sh`) also need the perceptual attack stack:
+Training with `MIX=all` in `scripts/train.sh` also needs the perceptual attack stack:
 
 ```bash
 python -m pip install advex-uar recoloradv PyWavelets tensorboardX
@@ -44,6 +44,11 @@ python -m pip install git+https://github.com/MadryLab/robustness.git
   - `dinov2_vitb14_pretrain.pth`: the DINOv2 ViT-B/14 weights SuperVLAD builds on.
   - `boq_dinov2_12288.pth`: the BoQ DINOv2 release.
 
+## Trained models
+
+The ARAFT checkpoints of SuperVLAD and BoQ are available on
+[Google Drive](https://drive.google.com/drive/folders/1dP61euhUI2I5e9e-FE1A_Vvf09b-fLQ1?usp=sharing).
+
 ## Reproducing the paper
 
 Run the scripts in this order from the repository root. Each one can be stopped and rerun: finished
@@ -52,11 +57,10 @@ Training runs go to `logs/<run>/` and evaluations to `output/<model>/<attack>/<d
 
 | Step | Script                       | What it produces                                                  | Paper                     |
 | ---- | ---------------------------- | ----------------------------------------------------------------- | ------------------------- |
-| 1    | `scripts/train_screens.sh`   | 13 SuperVLAD screens of 12 epochs (hyperparameter search)         | Table 5                   |
-| 2    | `scripts/train_supervlad.sh` | ARAFT (two seeds), plain AT, the clean twin and four ablations    | Tables 2–4, 6; Fig. 1–3   |
-| 3    | `scripts/train_boq.sh`       | ARAFT and plain AT on BoQ, with the SuperVLAD settings            | Tables 2, 3, 6; Fig. 1, 3 |
-| 4    | `scripts/eval_supervlad.sh`  | Rank-APGD / rank-PGD test results and the gradient-masking checks | Tables 2–4, 6; Sect. 5    |
-| 5    | `scripts/eval_boq.sh`        | Rank-APGD / rank-PGD test results on BoQ                          | Tables 2, 3, 6            |
+| 1    | `scripts/train_supervlad.sh` | ARAFT (two seeds), plain AT, the clean twin and four ablations    | Tables 2–4, 6; Fig. 1–3   |
+| 2    | `scripts/train_boq.sh`       | ARAFT and plain AT on BoQ, with the SuperVLAD settings            | Tables 2, 3, 6; Fig. 1, 3 |
+| 3    | `scripts/eval_supervlad.sh`  | Rank-APGD / rank-PGD test results and the gradient-masking checks | Tables 2–4, 6; Sect. 5    |
+| 4    | `scripts/eval_boq.sh`        | Rank-APGD / rank-PGD test results on BoQ                          | Tables 2, 3, 6            |
 
 The full run takes several hundred GPU-hours. A full-length training run takes one to two and a half
 days, and a 100-step rank-APGD evaluation of one model on MSLS takes about 2.5 hours. Training at the

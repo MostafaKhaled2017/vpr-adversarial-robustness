@@ -183,7 +183,7 @@ def build_parser():
         type=int,
         default=0,
         help="Ramp the training attack budget linearly to full strength over this many "
-        "epochs after --adv_warmup_epochs. 0 disables the curriculum (Task 2.5).",
+        "epochs after --adv_warmup_epochs. 0 disables the curriculum.",
     )
     parser.add_argument(
         "--attack_ramp_min_scale",
@@ -196,7 +196,7 @@ def build_parser():
         type=int,
         default=256,
         help="Validation images used for collapse and neighborhood-distortion monitoring. "
-        "0 disables the monitoring (Task 2.4).",
+        "0 disables the monitoring.",
     )
     parser.add_argument(
         "--collapse_knn",
@@ -215,8 +215,8 @@ def build_parser():
         "--defense_loss",
         choices=("hinge", "listwise"),
         default="hinge",
-        help="Adversarial defense objective. 'hinge' is the pre-Phase-2 margin loss; "
-        "'listwise' is the smooth top-K recall surrogate (Task 2.3). The attack's inner "
+        help="Adversarial defense objective. 'hinge' is a margin loss; "
+        "'listwise' is the smooth top-K recall surrogate. The attack's inner "
         "objective follows this choice so attack and defense fight over the same thing.",
     )
     parser.add_argument(
@@ -238,7 +238,7 @@ def build_parser():
         default=False,
         help="Target every positive of a place instead of only the hardest one. Retrieval "
         "succeeds if any positive outranks the negatives, so the attack must beat the "
-        "closest positive (Task 2.1).",
+        "closest positive.",
     )
     parser.add_argument(
         "--adv_margin",

@@ -121,7 +121,7 @@ class PerceptualTrainingCliTests(unittest.TestCase):
 
 
 class MatchedCleanOnlyFineTuneTests(unittest.TestCase):
-    """Task 1.1 — the clean-only control must be matched to the adversarial run."""
+    """The clean-only control must be matched to the adversarial run."""
 
     SHARED_FLAGS = (
         "--model=supervlad",
@@ -216,10 +216,9 @@ class MatchedCleanOnlyFineTuneTests(unittest.TestCase):
 
 
 class Phase2FlagDefaultTests(unittest.TestCase):
-    """Every Phase 2 component is separately switchable and OFF by default.
+    """Every optional training component is separately switchable and OFF by default.
 
-    Phase 1's PAT re-run must reproduce the pre-Phase-2 method exactly, and Phase 4's
-    ablations need each component to be independently toggleable, so no new flag may
+    Ablations need each component to be independently toggleable, so no new flag may
     change behaviour unless it is asked for.
     """
 

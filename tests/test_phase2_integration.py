@@ -53,7 +53,7 @@ def make_args(**overrides):
 
 
 class Phase2CompositionTests(unittest.TestCase):
-    """The Phase 2 components have to compose, not just work individually.
+    """The optional training components have to compose, not just work individually.
 
     Multi-positive targets change the shape of the positive tensor, and the listwise
     objective consumes it. A shape error

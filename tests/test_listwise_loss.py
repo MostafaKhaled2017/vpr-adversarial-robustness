@@ -126,8 +126,7 @@ class ListwiseLossTests(unittest.TestCase):
 
         Once |d_pos - d_neg| >> tau the sigmoid saturates and no gradient reaches the
         query, so the loss cannot recover a positive that has already been pushed far down
-        the list. tau must be chosen against the descriptor distance scale; this is why
-        --listwise_tau is in the Task 2.6 pilot grid and why Task 2.4 monitors collapse.
+        the list. tau must be chosen against the descriptor distance scale.
         """
         query = torch.tensor([[0.0, 0.0]], requires_grad=True)
         positives = torch.tensor([[[5.0, 0.0]]])

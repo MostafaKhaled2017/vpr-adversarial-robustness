@@ -103,7 +103,7 @@ def main():
     finally:
         writer.close()
     if outcome["state"] == "paused":
-        # Tells the Step 2 driver the session's time is up; the run resumes from last_model.pth.
+        # Tells the caller the session's time is up; the run resumes from last_model.pth.
         raise SystemExit(PAUSED_EXIT_CODE)
 
 

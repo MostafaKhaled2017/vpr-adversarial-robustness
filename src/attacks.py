@@ -38,7 +38,7 @@ def attack_strength_scale(
     ramp_epochs: int,
     min_scale: float = 0.1,
 ) -> float:
-    """Attack-strength multiplier for an epoch (Task 2.5).
+    """Attack-strength multiplier for an epoch.
 
     Jumping straight to full-strength attacks after the clean warm-up destabilises the
     listwise objective, so the budget ramps linearly from ``min_scale`` at the first
@@ -78,7 +78,7 @@ class RetrievalAttackProxy(nn.Module):
 
     def attack_scores(self, query_descriptors: Tensor) -> Tensor:
         """Per-query attack objective. Mirrors the defense loss so the two fight over the
-        same quantity (Task 2.3): a hinge defense gets a hinge attack, a listwise defense
+        same quantity: a hinge defense gets a hinge attack, a listwise defense
         gets the same smooth top-K surrogate."""
         targets = self.current_targets
         if self.objective == "listwise":

@@ -854,7 +854,7 @@ def make_attack_batch(
         query_indices.append(query_index)
         query_feature_indices.append(query_feature_index)
 
-        # Attack every positive (Task 3), not just the one nearest the clean query: R@1
+        # Attack every positive, not just the one nearest the clean query: R@1
         # counts a retrieval as correct if *any* positive is closest, so the attack must
         # push away whichever positive ends up closest under perturbation.
         positive_rows = np.asarray(target.get("positive_indexes", [target["positive_index"]]), dtype=np.int64)

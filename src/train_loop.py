@@ -46,7 +46,7 @@ REPORTED_RECALL_VALUES = (1, 5, 10, 100)
 
 
 def compute_defense_loss(query_descriptors: Tensor, attack_targets: RetrievalAttackBatch, args) -> Tensor:
-    """Dispatch to the configured adversarial defense objective (Task 2.3)."""
+    """Dispatch to the configured adversarial defense objective."""
     if getattr(args, "defense_loss", "hinge") == "listwise":
         return compute_listwise_loss(
             query_descriptors,
@@ -83,7 +83,7 @@ def compute_attack_losses(
         }
 
     # With --align_target initial the anchor is the frozen initial model's clean
-    # descriptor; otherwise the current model's (the pre-sprint-5 behaviour).
+    # descriptor; otherwise the current model's.
     if align_reference is None:
         align_reference = attack_targets.clean_query_descriptors
 
@@ -208,7 +208,7 @@ FINAL_TEST_RESERVE_SECONDS = 15 * 60
 def pauses_for_deadline(args, slowest_epoch_seconds: float, now: Optional[float] = None) -> bool:
     """Whether --stop_by leaves no room for one more epoch like the slowest so far plus the final test.
 
-    The session's first epoch (slowest_epoch_seconds 0) always starts: the Step 2 driver
+    The session's first epoch (slowest_epoch_seconds 0) always starts: the caller
     starts a run only with enough time left for it.
     """
     stop_by = getattr(args, "stop_by", None)
@@ -226,7 +226,7 @@ def pauses_for_deadline(args, slowest_epoch_seconds: float, now: Optional[float]
 
 
 def apply_attack_curriculum(train_attacks, args, epoch_num: int) -> float:
-    """Set this epoch's attack budget on the *training* attacks only (Task 2.5).
+    """Set this epoch's attack budget on the *training* attacks only.
 
     Validation attacks are separate instances (see train.py) and deliberately stay at full
     strength: the selection score has to mean the same thing in every epoch.

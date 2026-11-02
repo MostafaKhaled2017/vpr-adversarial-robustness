@@ -14,7 +14,7 @@ class RetrievalAttackBatch:
     """Targets for one batch of retrieval attacks.
 
     ``positive_descriptors`` carries either the single hardest positive per query with
-    shape ``(B, D)`` — the pre-Phase-2 representation, still produced by the evaluation
+    shape ``(B, D)`` — as produced by the evaluation
     paths — or the full padded positive set with shape ``(B, P, D)`` when multi-positive
     targeting is enabled. ``positive_mask`` marks the valid entries of the padded set and
     is ``None`` in the single-positive case. Consumers should read ``positive_bank`` and
@@ -76,10 +76,10 @@ def select_rank_targets(
 ) -> Optional[RetrievalAttackBatch]:
     """Mine attack targets from a batch of place-grouped descriptors.
 
-    With ``multi_positive=False`` this keeps the single hardest positive per place, which
-    is the behaviour every pre-Phase-2 run used. With ``multi_positive=True`` it keeps the
+    With ``multi_positive=False`` this keeps the single hardest positive per place.
+    With ``multi_positive=True`` it keeps the
     full positive set per place, padded to the batch maximum and accompanied by a validity
-    mask, so the attack objective can target the *closest* positive instead (Task 2.1).
+    mask, so the attack objective can target the *closest* positive instead.
 
     ``image_mask`` optionally marks which of the ``images_per_place`` slots hold real
     images, which is what makes places with differing positive counts representable.

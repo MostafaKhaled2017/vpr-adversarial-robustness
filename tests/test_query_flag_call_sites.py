@@ -1,6 +1,6 @@
 """Query-side call sites must encode images independently (queryflag=1).
 
-Covers Task 2 of the mplc-fixes plan: RankPGDAttack's internal descriptor
+RankPGDAttack's internal descriptor
 extraction, RetrievalAttackProxy.forward, train_loop.compute_attack_losses,
 and the rank_eval clean/database feature extraction helpers all have to pass
 the right queryflag through to the model.
