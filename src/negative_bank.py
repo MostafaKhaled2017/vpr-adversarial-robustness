@@ -8,7 +8,7 @@ import argparse
 import dataclasses
 import logging
 import os
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple
 
 import torch
 from torch import Tensor
@@ -35,11 +35,17 @@ class NegativeBank:
         self.chunk_rows = chunk_rows
 
     @classmethod
-    def load(cls, path: str, device: str, chunk_rows: int = 2048, expected_dim: Optional[int] = None) -> "NegativeBank":
+    def load(cls, path: str, device: str, chunk_rows: int = 2048, expected_dim: Optional[int] = None,
+             expected_model: Optional[str] = None,
+             expected_image_size: Optional[Sequence[int]] = None) -> "NegativeBank":
         state = torch.load(path, map_location="cpu", weights_only=True)
         width = state["descriptors"].shape[1]
         if expected_dim is not None and width != expected_dim:
             raise ValueError(f"bank descriptor width {width} does not match model descriptor width {expected_dim}")
+        if expected_model is not None and state.get("model") != expected_model:
+            raise ValueError(f"bank was built for model {state.get('model')!r}, expected {expected_model!r}")
+        if expected_image_size is not None and list(state.get("image_size") or []) != list(expected_image_size):
+            raise ValueError(f"bank was built at image size {state.get('image_size')}, expected {list(expected_image_size)}")
         return cls(state["descriptors"], state["place_ids"], device=device, chunk_rows=chunk_rows)
 
     @property

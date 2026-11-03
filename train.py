@@ -74,7 +74,9 @@ def main():
         anchor_model = build_anchor_model(args, model) if args.align_target == "initial" else None
         negative_bank = None
         if args.negative_bank:
-            negative_bank = NegativeBank.load(args.negative_bank, args.bank_device, expected_dim=args.features_dim)
+            negative_bank = NegativeBank.load(args.negative_bank, args.bank_device, expected_dim=args.features_dim,
+                                             expected_model=args.model,
+                                             expected_image_size=list(args.train_resize))
             logging.info("Loaded %d descriptors from the negative bank %s", len(negative_bank), args.negative_bank)
         if args.grad_checkpointing:
             checkpoint_backbone_blocks_in_place(model)

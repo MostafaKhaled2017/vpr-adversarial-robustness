@@ -68,6 +68,21 @@ class NegativeBankTest(unittest.TestCase):
         self.assertIn("5", str(ctx.exception))
         self.assertIn("6", str(ctx.exception))
 
+    def test_load_rejects_model_or_image_size_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "bank.pt")
+            save_bank(path, self.descriptors, self.place_ids, model="supervlad", checkpoint="x.pth", image_size=[322, 322])
+            with self.assertRaises(ValueError) as ctx:
+                NegativeBank.load(path, "cpu", expected_model="boq")
+            self.assertIn("supervlad", str(ctx.exception))
+            self.assertIn("boq", str(ctx.exception))
+            with self.assertRaises(ValueError) as ctx:
+                NegativeBank.load(path, "cpu", expected_image_size=[224, 224])
+            self.assertIn("322", str(ctx.exception))
+            self.assertIn("224", str(ctx.exception))
+            bank = NegativeBank.load(path, "cpu", expected_model="supervlad", expected_image_size=(322, 322))
+        self.assertEqual(len(bank), len(self.place_ids))
+
     def test_merge_keeps_shapes_and_other_fields(self):
         batch = RetrievalAttackBatch(
             query_indices=torch.tensor([0, 1]),
