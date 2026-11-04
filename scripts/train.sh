@@ -13,6 +13,10 @@
 #     EPOCHS=<int>                training epochs, all methods                   (default: 100)
 #     FTE=<int>                   frozen DINOv2 blocks, all methods              (default: 0)
 #     LR=<float>                  learning rate, all methods                     (default: 1e-5)
+#     STOP_AT="YYYY-MM-DD HH:MM"  pause (exit 5) rather than start an epoch that, with the
+#                                 final test, could end after this time; rerun to resume.
+#                                 A session's first epoch always starts. All methods
+#                                                                                (default: none)
 #     POSITIVE=hardest|closest    protected positive, araft and plain_at         (default: hardest)
 #     LOSS=listwise|hinge         rank loss, araft and plain_at                  (default: listwise)
 #     LRW=<float>                 rank loss weight, araft and plain_at           (default: 1.0)
@@ -37,6 +41,7 @@
 # Environment:
 #   RUN_ROOT  run directory root          (default: logs)
 #   BANK_ROOT bank directory              (default: logs/banks)
+#   STOP_AT   as the setting; a STOP_AT= argument wins
 #   DRY_RUN=1 print the train.py command instead of running it
 #   PYTHON    python interpreter          (default: python)
 set -euo pipefail
@@ -51,7 +56,7 @@ source "${SCRIPT_DIR}/common.sh"
 NAME=$1 MODEL=$2 METHOD=$3 SEED=$4
 shift 4
 POSITIVE=hardest LOSS=listwise AW=1.0 FTE=0 LR=1e-5 EPOCHS=100 ATTACK=rank BANK=0
-LRW="" BETA="" DRIFT="" NEG_BANK="" BANK_DEVICE="" ANCHOR="" REL_M="" REL_T=""
+STOP_AT="${STOP_AT:-}" LRW="" BETA="" DRIFT="" NEG_BANK="" BANK_DEVICE="" ANCHOR="" REL_M="" REL_T=""
 # Exit unless METHOD is one of the arguments.
 only() {
   local methods="$*"
@@ -62,7 +67,7 @@ only() {
 }
 for setting in "$@"; do
   case "${setting}" in
-    EPOCHS=* | FTE=* | LR=*) ;;
+    EPOCHS=* | FTE=* | LR=* | STOP_AT=*) ;;
     POSITIVE=* | LOSS=* | LRW=* | BANK=* | NEG_BANK=* | BANK_DEVICE=*) only araft plain_at ;;
     ATTACK=* | BETA=* | ANCHOR=* | REL_M=* | REL_T=*) only araft ;;
     DRIFT=* | AW=*) only araft fare ;;
@@ -80,6 +85,10 @@ case "${ANCHOR}" in
 esac
 case "${ANCHOR}" in rel | both) ;; *) [ -z "${REL_M}${REL_T}" ] || fail "REL_M and REL_T need ANCHOR=rel or both" ;; esac
 [ "${ATTACK}" = combined ] || [ -z "${BETA}" ] || fail "BETA needs ATTACK=combined"
+if [ -n "${STOP_AT}" ]; then
+  STOP_BY=$(date -d "${STOP_AT}" +%s 2>/dev/null) || fail "STOP_AT is not a time: ${STOP_AT}"
+  [ "${STOP_BY}" -gt "$(date +%s)" ] || fail "STOP_AT ${STOP_AT} has passed"
+fi
 PYTHON=${PYTHON:-python}
 RUN_DIR="${RUN_ROOT:-logs}/${NAME}"
 TRAIN_EPS=0.0685  # 4/255
@@ -136,6 +145,7 @@ esac
 # Flags of settings that were given; none by default.
 EXTRA_FLAGS=()
 [ -z "${LRW}" ] || EXTRA_FLAGS+=(--adv_loss_weight="${LRW}")
+[ -z "${STOP_AT}" ] || EXTRA_FLAGS+=(--stop_by="${STOP_BY}")
 [ -z "${DRIFT}" ] || EXTRA_FLAGS+=(--clean_drift_weight="${DRIFT}")
 [ "${BANK}" = 0 ] || EXTRA_FLAGS+=(--negative_bank="${BANK_ROOT:-logs/banks}/${MODEL}_f0.pt")
 [ -z "${NEG_BANK}" ] || EXTRA_FLAGS+=(--bank_negatives="${NEG_BANK}")

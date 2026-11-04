@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +22,7 @@ def run_script(root, script, *args, **extra_environment):
     environment = {**os.environ, "DRY_RUN": "1", "PYTHON": sys.executable,
                    "RUN_ROOT": str(root / "runs"), "OUT_ROOT": str(root / "out")}
     environment.pop("BANK_ROOT", None)
+    environment.pop("STOP_AT", None)
     environment.update(extra_environment)
     return subprocess.run(["bash", str(REPO_ROOT / "scripts" / script), *args], cwd=REPO_ROOT, env=environment,
                           text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
@@ -113,6 +115,7 @@ class ScriptTests(unittest.TestCase):
         bank = "logs/banks/supervlad_f0.pt"
         cases = (
             (("EPOCHS=12",), {"epochs_num": 12}),
+            (("STOP_AT=2099-01-01 08:00",), {"stop_by": datetime(2099, 1, 1, 8, 0).timestamp()}),
             (("LRW=3",), {"adv_loss_weight": 3.0}),
             (("ATTACK=shift",), {"attack": ["EmbeddingShiftLinfAttack(model, epsilon=0.0685, steps=5)"]}),
             (("ATTACK=combined", "BETA=0.5"),
@@ -144,6 +147,21 @@ class ScriptTests(unittest.TestCase):
             with self.subTest(method=method, setting=setting):
                 result = run_script(self.root, "train.sh", "x", "supervlad", method, "0", setting)
                 self.assertNotEqual(result.returncode, 0, result.stdout)
+
+    def test_stop_at_must_be_a_future_time(self):
+        for setting in ("STOP_AT=2000-01-01 08:00", "STOP_AT=not a time"):
+            with self.subTest(setting=setting):
+                result = run_script(self.root, "train.sh", "x", "supervlad", "fare", "0", setting)
+                self.assertEqual(result.returncode, 2, result.stdout)
+
+    def test_stop_at_is_read_from_the_environment_unless_given(self):
+        cases = (((), datetime(2099, 1, 1, 8, 0)), (("STOP_AT=2098-06-01 09:30",), datetime(2098, 6, 1, 9, 30)))
+        for settings, expected in cases:
+            with self.subTest(settings=settings):
+                result = run_script(self.root, "train.sh", "x", "supervlad", "araft", "0", *settings,
+                                    STOP_AT="2099-01-01 08:00")
+                [argv] = commands(result)
+                self.assertEqual(parse_arguments(argv[2:]).stop_by, expected.timestamp())
 
     def test_no_settings_prints_todays_command(self):
         for method, expected in EXPECTED_COMMANDS.items():
