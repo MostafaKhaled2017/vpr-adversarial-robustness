@@ -220,6 +220,69 @@ class ScriptTests(unittest.TestCase):
         self.assertIn("=== SKIP", result.stdout)
         self.assertEqual(commands(result), [])
 
+    def soup_sweep(self, *args, **environment):
+        return run_script(self.root, "soup_sweep.sh", "supervlad", "mix", "a.pth", "b.pth", *args,
+                          SOUP_ROOT=str(self.root / "soups"), **environment)
+
+    def test_soup_sweep_dry_run_prints_soup_screen_and_cleanup_per_alpha(self):
+        result = self.soup_sweep("0.3", "0.5")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        argvs = commands(result)
+        self.assertEqual(len(argvs), 6)
+        for offset, alpha in ((0, "0.3"), (3, "0.5")):
+            soup, screen, remove = argvs[offset:offset + 3]
+            path = str(self.root / "soups" / f"mix_a{alpha}.pth")
+            self.assertEqual(soup[1:], ["scripts/soup.py", "a.pth", "b.pth", alpha, path])
+            self.assertEqual(screen[1:4], ["scripts/validate_only.py", f"mix_a{alpha}", "--initial_clean_r1"])
+            self.assertEqual(screen[4], "88.10")
+            args = parse_arguments(screen[5:])
+            self.assertEqual(args.resume, path)
+            self.assertEqual(args.run_dir, str(self.root / "runs" / f"mix_a{alpha}"))
+            self.assertEqual(args.infer_batch_size, 16)
+            self.assertFalse(args.is_clean_only)
+            self.assertEqual(remove, ["rm", "-f", path])
+        self.assertFalse((self.root / "soups").exists())
+        self.assertFalse((self.root / "runs").exists())
+
+    def test_soup_sweep_boq_and_keep_soup(self):
+        result = run_script(self.root, "soup_sweep.sh", "boq", "mix", "a.pth", "b.pth", "0.3", KEEP_SOUP="1")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        soup, screen = commands(result)
+        self.assertEqual(soup[1], "scripts/soup.py")
+        self.assertEqual(screen[4], "91.35")
+        args = parse_arguments(screen[5:])
+        self.assertEqual(args.model, "boq")
+        self.assertEqual(args.infer_batch_size, 8)
+
+    def test_soup_sweep_stops_before_a_screen_that_ends_too_late(self):
+        soon = datetime.fromtimestamp(datetime.now().timestamp() + 120).strftime("%Y-%m-%d %H:%M")
+        for settings, environment in (((f"STOP_AT={soon}",), {}), ((), {"STOP_AT": soon})):
+            with self.subTest(settings=settings):
+                result = self.soup_sweep("0.3", "0.5", *settings, **environment)
+                self.assertEqual(result.returncode, 5, result.stdout)
+                self.assertEqual(commands(result), [])
+                self.assertIn("0.3 0.5", result.stdout)
+
+    def test_soup_sweep_rejects_a_past_stop_at(self):
+        result = self.soup_sweep("0.3", "STOP_AT=2000-01-01 08:00")
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("has passed", result.stdout)
+
+    def test_soup_sweep_skips_a_finished_screen(self):
+        run_dir = self.root / "runs" / "mix_a0.3"
+        run_dir.mkdir(parents=True)
+        (run_dir / "run_status.json").write_text(json.dumps({"state": "completed"}))
+        result = self.soup_sweep("0.3", "0.5")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("=== SKIP mix_a0.3", result.stdout)
+        self.assertEqual([argv[4] for argv in commands(result) if argv[1] == "scripts/soup.py"], ["0.5"])
+
+    def test_soup_sweep_rejects_unknown_model_and_bad_alpha(self):
+        result = run_script(self.root, "soup_sweep.sh", "mixvpr", "mix", "a.pth", "b.pth", "0.3")
+        self.assertEqual(result.returncode, 2, result.stdout)
+        result = self.soup_sweep("half")
+        self.assertEqual(result.returncode, 2, result.stdout)
+
     def test_train_bank_root_is_honoured(self):
         bank_root = str(self.root / "banks")
         result = run_script(self.root, "train.sh", "x", "supervlad", "araft", "0", "BANK=1", BANK_ROOT=bank_root)
