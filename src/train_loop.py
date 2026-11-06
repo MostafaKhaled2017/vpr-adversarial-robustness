@@ -1,8 +1,10 @@
+import copy
 import csv
 import json
 import logging
 import math
 import time
+from collections import OrderedDict
 from dataclasses import replace
 from datetime import datetime
 from os.path import exists, join
@@ -174,6 +176,43 @@ def compute_drift_loss(anchor_model: Optional[nn.Module], flat_images: Tensor, c
         with amp_autocast(args.mixed_precision, args.device):
             anchor_clean = anchor_model(flat_images, queryflag=0)
     return compute_align_loss(anchor_clean.float(), clean_descriptors)
+
+
+def build_ema_model(model: nn.Module, decay: float, saved_state=None) -> Optional[nn.Module]:
+    """Frozen copy of the weights that :func:`update_ema` averages, or None when ``decay`` is 0.
+
+    Starts from the live weights, or from ``saved_state`` on a resume so the average continues
+    rather than restarting from the live weights.
+    """
+    if decay <= 0:
+        return None
+    ema_model = copy.deepcopy(unwrap_model(model))
+    if saved_state is not None:
+        ema_model.load_state_dict(saved_state)
+    ema_model.eval()
+    ema_model.requires_grad_(False)
+    return ema_model
+
+
+@torch.no_grad()
+def update_ema(ema_model: nn.Module, model: nn.Module, decay: float) -> None:
+    """``average <- decay * average + (1 - decay) * live`` for every floating-point tensor.
+
+    Integer and boolean buffers (counters, masks) are not averaged but copied from the live model.
+    """
+    live = unwrap_model(model).state_dict()
+    for name, average in ema_model.state_dict().items():
+        current = live[name].detach()
+        if torch.is_floating_point(average):
+            average.mul_(decay).add_(current.to(average.dtype), alpha=1.0 - decay)
+        else:
+            average.copy_(current)
+
+
+def averaged_state_dict(model: nn.Module, ema_model: nn.Module) -> "OrderedDict[str, Tensor]":
+    """The averaged weights under ``model.state_dict()``'s key names (``module.`` when wrapped)."""
+    prefix = "" if unwrap_model(model) is model else "module."
+    return OrderedDict((prefix + name, value) for name, value in ema_model.state_dict().items())
 
 
 def mine_bank_rows(negative_bank, targets: RetrievalAttackBatch, place_id: Tensor, k: int) -> Tensor:
@@ -480,13 +519,16 @@ def build_checkpoint_state(
     best_budget_scores=None,
     best_checkpoint_epochs=None,
     stop_state: Optional[str] = None,
+    ema_model: Optional[nn.Module] = None,
 ) -> Dict[str, object]:
     # An epoch skipped by --val_every has no validation; resuming needs none of these fields.
     validated = metrics is not None
-    return {
+    # With a weight average, model_state_dict holds the average (what was validated and what
+    # every loader of the checkpoint gets) and live_model_state_dict the weights training resumes.
+    state = {
         "epoch_num": epoch_num,
         "next_epoch": epoch_num + 1,
-        "model_state_dict": model.state_dict(),
+        "model_state_dict": model.state_dict() if ema_model is None else averaged_state_dict(model, ema_model),
         "optimizer_state_dict": optimizer.state_dict(),
         "scaler_state_dict": None if scaler is None else scaler.state_dict(),
         "recalls": metrics["NoAttack"]["recalls_list"] if validated else None,
@@ -516,6 +558,11 @@ def build_checkpoint_state(
             "stop_state": stop_state,
         },
     }
+    if ema_model is not None:
+        # Shares storage with model_state_dict, so torch.save writes the average once.
+        state["live_model_state_dict"] = model.state_dict()
+        state["runtime_state"]["ema_model_state_dict"] = ema_model.state_dict()
+    return state
 
 
 def run_training(
@@ -561,6 +608,17 @@ def run_training(
                 len(collapse_sample_indices),
             )
 
+    ema_decay = float(getattr(args, "ema_decay", 0.0))
+    ema_model = build_ema_model(model, ema_decay, resume_runtime_state.get("ema_model_state_dict"))
+    if ema_model is not None:
+        logging.info(
+            "Validating and saving the weight average (decay %g)%s.",
+            ema_decay,
+            ", continued from the checkpoint" if "ema_model_state_dict" in resume_runtime_state else "",
+        )
+    # The model validation and the collapse monitor measure: the average when there is one.
+    evaluated_model = model if ema_model is None else ema_model
+
     lr_drop_epochs = [int(epoch_str) for epoch_str in args.lr_schedule.split(",") if epoch_str.strip()]
     iteration = int(resume_runtime_state.get("iteration", start_epoch * len(train_loader)))
     current_lr = float(optimizer.param_groups[0]["lr"])
@@ -578,7 +636,7 @@ def run_training(
     logging.info("Rank-PGD validation on %d sampled queries.", len(validation_query_indices))
 
     def validate(epoch_initial: bool):
-        metrics = evaluate_rank_validation(args, model, val_ds, validation_query_indices)
+        metrics = evaluate_rank_validation(args, evaluated_model, val_ds, validation_query_indices)
         scores = select_checkpoint(
             metrics,
             None if epoch_initial else initial_clean_r1,
@@ -622,6 +680,7 @@ def run_training(
             initial_clean_r1=initial_clean_r1,
             best_budget_scores=best_budget_scores,
             best_checkpoint_epochs=best_checkpoint_epochs,
+            ema_model=ema_model,
         )
         save_checkpoint(args, initial_checkpoint_state, True, filename="initial_validation_model.pth")
         if initial_budgets:
@@ -829,6 +888,8 @@ def run_training(
                     continue
                 scaler.step(optimizer)
                 scaler.update()
+                if ema_model is not None:
+                    update_ema(ema_model, model, ema_decay)
             else:
                 total_loss.backward()
                 grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad)
@@ -843,6 +904,8 @@ def run_training(
                     iteration += 1
                     continue
                 optimizer.step()
+                if ema_model is not None:
+                    update_ema(ema_model, model, ema_decay)
 
             clean_loss_value = float(clean_loss.item())
             adv_rank_loss_value = float(attack_outputs["adv_rank_loss"].item())
@@ -921,7 +984,7 @@ def run_training(
 
         val_every = int(getattr(args, "val_every", 1))
         if not is_validation_epoch(epoch_num + 1, val_every, args.epochs_num):
-            collapse = measure_collapse(args, model, val_ds, reference_descriptors, collapse_sample_indices)
+            collapse = measure_collapse(args, evaluated_model, val_ds, reference_descriptors, collapse_sample_indices)
             log_collapse_report(writer, collapse, epoch_num)
             aborted = collapse_aborts(args, collapse, epoch_num)
             checkpoint_state = build_checkpoint_state(
@@ -941,6 +1004,7 @@ def run_training(
                 best_budget_scores=best_budget_scores,
                 best_checkpoint_epochs=best_checkpoint_epochs,
                 stop_state="collapse_aborted" if aborted else None,
+                ema_model=ema_model,
             )
             save_checkpoint(args, checkpoint_state, False, filename="last_model.pth")
             final_epoch = epoch_num
@@ -955,7 +1019,7 @@ def run_training(
         clean_score = validation_scores["clean_score"]
         robust_score = validation_scores["robust_score"]
         selection_score = validation_scores["selection_score"]
-        collapse = measure_collapse(args, model, val_ds, reference_descriptors, collapse_sample_indices)
+        collapse = measure_collapse(args, evaluated_model, val_ds, reference_descriptors, collapse_sample_indices)
         validation_record = build_validation_metrics_record(
             epoch_num + 1, metrics, validation_scores, collapse, initial_clean_r1=initial_clean_r1
         )
@@ -1017,6 +1081,7 @@ def run_training(
             best_budget_scores=best_budget_scores,
             best_checkpoint_epochs=best_checkpoint_epochs,
             stop_state=stop_state,
+            ema_model=ema_model,
         )
         save_checkpoint(args, checkpoint_state, is_best, filename="last_model.pth")
         if epoch_budgets:

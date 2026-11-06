@@ -121,6 +121,7 @@ class ScriptTests(unittest.TestCase):
             (("ATTACK=combined", "BETA=0.5"),
              {"attack": ["CombinedShiftRankLinfAttack(model, epsilon=0.0685, steps=5, rank_weight=0.5)"]}),
             (("DRIFT=1",), {"clean_drift_weight": 1.0}),
+            (("EMA=0.999",), {"ema_decay": 0.999}),
             (("BANK=1",), {"negative_bank": bank}),
             (("BANK=1", "NEG_BANK=8"), {"bank_negatives": 8}),
             (("BANK=1", "BANK_DEVICE=cpu"), {"bank_device": "cpu"}),
@@ -136,6 +137,13 @@ class ScriptTests(unittest.TestCase):
                 args = parse_arguments(argv[2:])
                 for name, value in expected.items():
                     self.assertEqual(getattr(args, name), value, name)
+
+    def test_ema_applies_to_every_method(self):
+        for method in ("araft", "fare", "plain_at"):
+            with self.subTest(method=method):
+                result = run_script(self.root, "train.sh", "x", "supervlad", method, "0", "EMA=0.99")
+                [argv] = commands(result)
+                self.assertEqual(parse_arguments(argv[2:]).ema_decay, 0.99)
 
     def test_settings_rejected_for_the_wrong_method(self):
         cases = (

@@ -17,6 +17,9 @@
 #                                 final test, could end after this time; rerun to resume.
 #                                 A session's first epoch always starts. All methods
 #                                                                                (default: none)
+#     EMA=<float>                 decay of a moving average of the weights that is validated,
+#                                 saved and tested in place of the weights, all methods
+#                                                                                (default: off)
 #     POSITIVE=hardest|closest    protected positive, araft and plain_at         (default: hardest)
 #     LOSS=listwise|hinge         rank loss, araft and plain_at                  (default: listwise)
 #     LRW=<float>                 rank loss weight, araft and plain_at           (default: 1.0)
@@ -56,7 +59,7 @@ source "${SCRIPT_DIR}/common.sh"
 NAME=$1 MODEL=$2 METHOD=$3 SEED=$4
 shift 4
 POSITIVE=hardest LOSS=listwise AW=1.0 FTE=0 LR=1e-5 EPOCHS=100 ATTACK=rank BANK=0
-STOP_AT="${STOP_AT:-}" LRW="" BETA="" DRIFT="" NEG_BANK="" BANK_DEVICE="" ANCHOR="" REL_M="" REL_T=""
+STOP_AT="${STOP_AT:-}" EMA="" LRW="" BETA="" DRIFT="" NEG_BANK="" BANK_DEVICE="" ANCHOR="" REL_M="" REL_T=""
 # Exit unless METHOD is one of the arguments.
 only() {
   local methods="$*"
@@ -67,7 +70,7 @@ only() {
 }
 for setting in "$@"; do
   case "${setting}" in
-    EPOCHS=* | FTE=* | LR=* | STOP_AT=*) ;;
+    EPOCHS=* | FTE=* | LR=* | STOP_AT=* | EMA=*) ;;
     POSITIVE=* | LOSS=* | LRW=* | BANK=* | NEG_BANK=* | BANK_DEVICE=*) only araft plain_at ;;
     ATTACK=* | BETA=* | ANCHOR=* | REL_M=* | REL_T=*) only araft ;;
     DRIFT=* | AW=*) only araft fare ;;
@@ -147,6 +150,7 @@ EXTRA_FLAGS=()
 [ -z "${LRW}" ] || EXTRA_FLAGS+=(--adv_loss_weight="${LRW}")
 [ -z "${STOP_AT}" ] || EXTRA_FLAGS+=(--stop_by="${STOP_BY}")
 [ -z "${DRIFT}" ] || EXTRA_FLAGS+=(--clean_drift_weight="${DRIFT}")
+[ -z "${EMA}" ] || EXTRA_FLAGS+=(--ema_decay="${EMA}")
 [ "${BANK}" = 0 ] || EXTRA_FLAGS+=(--negative_bank="${BANK_ROOT:-logs/banks}/${MODEL}_f0.pt")
 [ -z "${NEG_BANK}" ] || EXTRA_FLAGS+=(--bank_negatives="${NEG_BANK}")
 [ -z "${BANK_DEVICE}" ] || EXTRA_FLAGS+=(--bank_device="${BANK_DEVICE}")

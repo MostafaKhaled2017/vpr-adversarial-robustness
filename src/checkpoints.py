@@ -91,7 +91,10 @@ def load_training_state(
     strict: bool = False,
 ) -> TrainingResumeState:
     checkpoint = load_trusted_checkpoint(str(checkpoint_path), map_location=map_location)
-    model.load_state_dict(checkpoint["model_state_dict"], strict=strict)
+    # A run with a weight average stores the average as model_state_dict; training resumes
+    # from the live weights, and the average itself comes back through the runtime state.
+    live_state_dict = checkpoint.get("live_model_state_dict")
+    model.load_state_dict(checkpoint["model_state_dict"] if live_state_dict is None else live_state_dict, strict=strict)
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     if scaler is not None and checkpoint.get("scaler_state_dict") is not None:
         scaler.load_state_dict(checkpoint["scaler_state_dict"])

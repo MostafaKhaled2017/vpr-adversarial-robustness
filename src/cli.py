@@ -253,6 +253,15 @@ def build_parser():
         help="Weight of a squared-distance term pulling clean descriptors toward the frozen initial model's.",
     )
     parser.add_argument(
+        "--ema_decay",
+        type=float,
+        default=0.0,
+        help="Decay d of an exponential moving average of the weights, updated after every optimizer "
+        "step as d * average + (1 - d) * weights. Validation, the saved model weights and the final "
+        "test use the average; checkpoints also keep the live weights to resume training from. 0 "
+        "(default) disables it.",
+    )
+    parser.add_argument(
         "--negative_bank",
         type=str,
         default=None,
@@ -392,6 +401,8 @@ def parse_arguments(argv=None):
         )
     if args.clean_drift_weight < 0:
         raise ValueError("--clean_drift_weight must be non-negative")
+    if not 0.0 <= args.ema_decay < 1.0:
+        raise ValueError("--ema_decay must be in [0, 1)")
     if args.clean_drift_weight > 0 and args.align_target != "initial":
         raise ValueError("--clean_drift_weight requires --align_target initial (the frozen model to anchor to)")
     if args.anchor_kind != "isotropic" and args.negative_bank is None:
