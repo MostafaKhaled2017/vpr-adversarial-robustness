@@ -18,7 +18,7 @@
 # a mixing weight whose screen has finished.
 #
 # Environment:
-#   RUN_ROOT   screen directory root                       (default: logs/sprint8_screens)
+#   RUN_ROOT   screen directory root, as for scripts/train.sh (default: logs)
 #   SOUP_ROOT  where the soups are written                 (default: logs/soups)
 #   KEEP_SOUP=1 keep each soup after its screen            (default: deleted)
 #   STOP_AT    "YYYY-MM-DD HH:MM": exit 5 rather than start a screen that could end after
@@ -62,7 +62,7 @@ if [ -n "${STOP_AT}" ]; then
   [ "${STOP_BY}" -gt "$(date +%s)" ] || fail "STOP_AT ${STOP_AT} has passed"
 fi
 PYTHON=${PYTHON:-python}
-RUN_ROOT=${RUN_ROOT:-logs/sprint8_screens}
+RUN_ROOT=${RUN_ROOT:-logs}
 SOUP_ROOT=${SOUP_ROOT:-logs/soups}
 
 run() {
