@@ -253,6 +253,28 @@ def build_parser():
         help="Weight of a squared-distance term pulling clean descriptors toward the frozen initial model's.",
     )
     parser.add_argument(
+        "--ood_drift_folder",
+        type=str,
+        default=None,
+        help="Folder of unlabeled images (searched recursively) on which the clean descriptors are kept "
+        "within --ood_drift_rho of the frozen initial model's: each step adds multiplier * drift, with "
+        "drift the mean squared descriptor distance on one batch, and raises the multiplier by "
+        "--ood_drift_lr * (drift - rho), never below 0. Off by default.",
+    )
+    parser.add_argument("--ood_drift_batch", type=int, default=16, help="Images of --ood_drift_folder per step.")
+    parser.add_argument(
+        "--ood_drift_rho",
+        type=float,
+        default=None,
+        help="Allowed drift on --ood_drift_folder (scripts/measure_drift.py gives a reference value).",
+    )
+    parser.add_argument(
+        "--ood_drift_lr",
+        type=float,
+        default=None,
+        help="Step size of the drift constraint's multiplier.",
+    )
+    parser.add_argument(
         "--ema_decay",
         type=float,
         default=0.0,
@@ -416,6 +438,20 @@ def parse_arguments(argv=None):
         )
     if args.clean_drift_weight < 0:
         raise ValueError("--clean_drift_weight must be non-negative")
+    if args.ood_drift_folder is None:
+        if args.ood_drift_rho is not None or args.ood_drift_lr is not None:
+            raise ValueError("--ood_drift_rho and --ood_drift_lr need --ood_drift_folder")
+    else:
+        if args.ood_drift_rho is None or args.ood_drift_lr is None:
+            raise ValueError("--ood_drift_folder needs --ood_drift_rho and --ood_drift_lr")
+        if args.ood_drift_rho < 0:
+            raise ValueError("--ood_drift_rho must be non-negative")
+        if args.ood_drift_lr <= 0:
+            raise ValueError("--ood_drift_lr must be positive")
+        if args.align_target != "initial":
+            raise ValueError("--ood_drift_folder requires --align_target initial (the frozen model to stay near)")
+    if args.ood_drift_batch < 1:
+        raise ValueError("--ood_drift_batch must be at least 1")
     if not 0.0 <= args.ema_decay < 1.0:
         raise ValueError("--ema_decay must be in [0, 1)")
     if args.clean_drift_weight > 0 and args.align_target != "initial":

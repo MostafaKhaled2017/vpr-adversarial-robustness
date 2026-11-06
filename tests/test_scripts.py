@@ -124,6 +124,8 @@ class ScriptTests(unittest.TestCase):
             (("EMA=0.999",), {"ema_decay": 0.999}),
             (("OOD_VAL=1",), {"ood_val_datasets": ["sped", "nordland"]}),
             (("OOD_VAL=0",), {"ood_val_datasets": []}),
+            (("OOD_DRIFT=images", "OOD_RHO=0.1", "OOD_ETA=0.01"),
+             {"ood_drift_folder": "images", "ood_drift_rho": 0.1, "ood_drift_lr": 0.01}),
             (("BANK=1",), {"negative_bank": bank}),
             (("BANK=1", "NEG_BANK=8"), {"bank_negatives": 8}),
             (("BANK=1", "BANK_DEVICE=cpu"), {"bank_device": "cpu"}),
@@ -147,11 +149,19 @@ class ScriptTests(unittest.TestCase):
                 [argv] = commands(result)
                 self.assertEqual(parse_arguments(argv[2:]).ema_decay, 0.99)
 
+    def test_ood_drift_reaches_fare(self):
+        result = run_script(self.root, "train.sh", "x", "supervlad", "fare", "0",
+                            "OOD_DRIFT=images", "OOD_RHO=0.1", "OOD_ETA=0.1")
+        [argv] = commands(result)
+        self.assertEqual(parse_arguments(argv[2:]).ood_drift_folder, "images")
+
     def test_settings_rejected_for_the_wrong_method(self):
         cases = (
             ("plain_at", "AW=2"), ("plain_at", "ATTACK=shift"), ("plain_at", "DRIFT=1"),
             ("fare", "BANK=1"), ("fare", "LRW=2"), ("fare", "ANCHOR=rel"),
             ("araft", "ANCHOR=rel"), ("araft", "NEG_BANK=3"), ("araft", "BETA=2"), ("araft", "REL_T=0.5"),
+            ("plain_at", "OOD_DRIFT=images"), ("araft", "OOD_RHO=0.1"), ("fare", "OOD_ETA=0.1"),
+            ("araft", "OOD_DRIFT=images"),
         )
         for method, setting in cases:
             with self.subTest(method=method, setting=setting):

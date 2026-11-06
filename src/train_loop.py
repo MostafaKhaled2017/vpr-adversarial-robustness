@@ -37,6 +37,7 @@ from .losses import (
     loss_function,
     query_is_correct,
 )
+from .drift_images import DriftBatches
 from .negative_bank import merge_bank_negatives
 from .rank_validation import (
     build_ood_validation_sets,
@@ -182,6 +183,22 @@ def compute_drift_loss(anchor_model: Optional[nn.Module], flat_images: Tensor, c
         with amp_autocast(args.mixed_precision, args.device):
             anchor_clean = anchor_model(flat_images, queryflag=0)
     return compute_align_loss(anchor_clean.float(), clean_descriptors)
+
+
+def update_drift_multiplier(multiplier: float, drift: float, rho: float, lr: float) -> float:
+    """Gradient ascent on the multiplier of ``drift <= rho``: grows while the drift exceeds rho, never below 0."""
+    return max(0.0, multiplier + lr * (drift - rho))
+
+
+def drift_penalty(current: Tensor, anchor: Tensor, multiplier: float, rho: float, lr: float):
+    """Drift, its loss term ``multiplier * drift`` and the multiplier for the next step.
+
+    The drift is the mean over images of the squared descriptor distance from the anchor. The
+    loss term uses the multiplier before this step's update.
+    """
+    drift = ((current - anchor) ** 2).sum(dim=-1).mean()
+    next_multiplier = update_drift_multiplier(multiplier, float(drift.detach().item()), rho, lr)
+    return drift, multiplier * drift, next_multiplier
 
 
 def build_ema_model(model: nn.Module, decay: float, saved_state=None) -> Optional[nn.Module]:
@@ -529,6 +546,7 @@ def build_checkpoint_state(
     best_checkpoint_epochs=None,
     stop_state: Optional[str] = None,
     ema_model: Optional[nn.Module] = None,
+    ood_drift_state: Optional[Dict[str, object]] = None,
 ) -> Dict[str, object]:
     # An epoch skipped by --val_every has no validation; resuming needs none of these fields.
     validated = metrics is not None
@@ -567,6 +585,9 @@ def build_checkpoint_state(
             "stop_state": stop_state,
         },
     }
+    if ood_drift_state is not None:
+        state["runtime_state"]["ood_drift_multiplier"] = float(ood_drift_state["multiplier"])
+        state["runtime_state"]["ood_drift_position"] = dict(ood_drift_state["position"])
     if ema_model is not None:
         # Shares storage with model_state_dict, so torch.save writes the average once.
         state["live_model_state_dict"] = model.state_dict()
@@ -627,6 +648,36 @@ def run_training(
         )
     # The model validation and the collapse monitor measure: the average when there is one.
     evaluated_model = model if ema_model is None else ema_model
+
+    # Drift constraint on unlabeled images: its multiplier and the folder position are runtime
+    # state, like the iteration count.
+    drift_batches = None
+    ood_drift_multiplier = float(resume_runtime_state.get("ood_drift_multiplier", 0.0))
+    if getattr(args, "ood_drift_folder", None):
+        if anchor_model is None:
+            raise ValueError("--ood_drift_folder needs the frozen initial model (--align_target initial)")
+        drift_batches = DriftBatches(
+            args.ood_drift_folder,
+            args.train_resize,
+            args.ood_drift_batch,
+            args.seed,
+            state=resume_runtime_state.get("ood_drift_position"),
+            num_workers=min(2, args.num_workers),
+            pin_memory=args.device == "cuda",
+        )
+        logging.info(
+            "Drift constraint on %d images of %s: rho %g, multiplier step %g, multiplier %g.",
+            len(drift_batches),
+            args.ood_drift_folder,
+            args.ood_drift_rho,
+            args.ood_drift_lr,
+            ood_drift_multiplier,
+        )
+
+    def ood_drift_state():
+        if drift_batches is None:
+            return None
+        return {"multiplier": ood_drift_multiplier, "position": drift_batches.state_dict()}
 
     lr_drop_epochs = [int(epoch_str) for epoch_str in args.lr_schedule.split(",") if epoch_str.strip()]
     iteration = int(resume_runtime_state.get("iteration", start_epoch * len(train_loader)))
@@ -712,6 +763,7 @@ def run_training(
             best_budget_scores=best_budget_scores,
             best_checkpoint_epochs=best_checkpoint_epochs,
             ema_model=ema_model,
+            ood_drift_state=ood_drift_state(),
         )
         save_checkpoint(args, initial_checkpoint_state, True, filename="initial_validation_model.pth")
         if initial_budgets:
@@ -858,6 +910,23 @@ def run_training(
                 clean_descriptors = model(flat_images, queryflag=0)
             clean_descriptors = clean_descriptors.float()
             drift_loss = compute_drift_loss(anchor_model, flat_images, clean_descriptors, args)
+            ood_drift = clean_descriptors.new_zeros(())
+            ood_drift_term = clean_descriptors.new_zeros(())
+            next_ood_drift_multiplier = ood_drift_multiplier
+            if drift_batches is not None:
+                drift_images = drift_batches.next().to(args.device, non_blocking=True)
+                with torch.no_grad():
+                    with amp_autocast(args.mixed_precision, args.device):
+                        anchor_drift_descriptors = anchor_model(drift_images, queryflag=0)
+                with amp_autocast(args.mixed_precision, args.device):
+                    drift_descriptors = model(drift_images, queryflag=0)
+                ood_drift, ood_drift_term, next_ood_drift_multiplier = drift_penalty(
+                    drift_descriptors.float(),
+                    anchor_drift_descriptors.float(),
+                    ood_drift_multiplier,
+                    args.ood_drift_rho,
+                    args.ood_drift_lr,
+                )
             with amp_autocast(args.mixed_precision, args.device):
                 clean_loss = loss_function(clean_descriptors, labels)
 
@@ -881,6 +950,7 @@ def run_training(
                     clean_loss
                     + attack_outputs["combined_adv_loss"]
                     + getattr(args, "clean_drift_weight", 0.0) * drift_loss
+                    + ood_drift_term
                 )
 
             if not torch.isfinite(total_loss):
@@ -938,6 +1008,8 @@ def run_training(
                 if ema_model is not None:
                     update_ema(ema_model, model, ema_decay)
 
+            # The multiplier moves only on steps that were taken.
+            ood_drift_multiplier = next_ood_drift_multiplier
             clean_loss_value = float(clean_loss.item())
             adv_rank_loss_value = float(attack_outputs["adv_rank_loss"].item())
             align_loss_value = float(attack_outputs["align_loss"].item())
@@ -960,6 +1032,9 @@ def run_training(
             writer.add_scalar("train/combined_adv_loss", combined_adv_loss_value, iteration)
             writer.add_scalar("train/total_loss", total_loss_value, iteration)
             writer.add_scalar("train/lr", float(optimizer.param_groups[0]["lr"]), iteration)
+            if drift_batches is not None:
+                writer.add_scalar("train/ood_drift", float(ood_drift.item()), iteration)
+                writer.add_scalar("train/ood_drift_multiplier", ood_drift_multiplier, iteration)
 
             for attack_log in attack_outputs["attack_logs"]:
                 attack_name = attack_log["name"]
@@ -984,6 +1059,13 @@ def run_training(
                     combined_adv_loss_value,
                     total_loss_value,
                 )
+                if drift_batches is not None:
+                    logging.info(
+                        "ITER %06d\tood_drift=%.4f\tood_drift_multiplier=%.4f",
+                        iteration,
+                        float(ood_drift.item()),
+                        ood_drift_multiplier,
+                    )
             iteration += 1
 
         mean_clean_loss = float(np.mean(epoch_clean_losses)) if epoch_clean_losses else 0.0
@@ -1036,6 +1118,7 @@ def run_training(
                 best_checkpoint_epochs=best_checkpoint_epochs,
                 stop_state="collapse_aborted" if aborted else None,
                 ema_model=ema_model,
+                ood_drift_state=ood_drift_state(),
             )
             save_checkpoint(args, checkpoint_state, False, filename="last_model.pth")
             final_epoch = epoch_num
@@ -1118,6 +1201,7 @@ def run_training(
             best_checkpoint_epochs=best_checkpoint_epochs,
             stop_state=stop_state,
             ema_model=ema_model,
+            ood_drift_state=ood_drift_state(),
         )
         save_checkpoint(args, checkpoint_state, is_best, filename="last_model.pth")
         if epoch_budgets:
