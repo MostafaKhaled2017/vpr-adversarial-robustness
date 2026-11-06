@@ -119,6 +119,14 @@ def build_parser():
         help="Labels for --model_paths. Defaults to 'base' for one model and 'base checkpoint' for two models.",
     )
     parser.add_argument(
+        "--attack_source",
+        type=str,
+        default=None,
+        metavar="TAG",
+        help="Generate every attack once, on the model with this --model_tags label, and evaluate all "
+        "models on those adversarial queries (transfer). By default each model is attacked separately.",
+    )
+    parser.add_argument(
         "--rank_attack",
         type=str,
         default="rank_pgd_linf",
@@ -276,6 +284,10 @@ def resolve_model_tags(models: Sequence[str], model_tags: Sequence[str] | None) 
 
 
 def validate_arguments(args) -> None:
+    if args.attack_source is not None and args.attack_source not in args.model_tags:
+        raise ValueError(
+            f"--attack_source {args.attack_source!r} is not one of the --model_tags {list(args.model_tags)}."
+        )
     if args.pca_dim is not None:
         raise NotImplementedError("rank_eval.py does not support PCA because attacks need differentiable descriptors.")
     if args.test_method not in SUPPORTED_TEST_METHODS:
@@ -489,11 +501,19 @@ def build_evaluation_dataset(args, dataset_name: str):
 
 
 def attack_reference_tag(args) -> str:
-    return args.model_tags[0]
+    return getattr(args, "attack_source", None) or args.model_tags[0]
 
 
 def attack_groups(args, models: Mapping[str, Tuple[nn.Module, object]]):
-    """Yield (reference_tag, models_to_evaluate) pairs: attacks are generated on each model separately."""
+    """Yield (reference_tag, models_to_evaluate) pairs.
+
+    Attacks are generated on each model separately, or, with --attack_source, once on that model
+    for every model.
+    """
+    source = getattr(args, "attack_source", None)
+    if source is not None:
+        yield source, dict(models)
+        return
     for model_tag, model_bundle in models.items():
         yield model_tag, {model_tag: model_bundle}
 
