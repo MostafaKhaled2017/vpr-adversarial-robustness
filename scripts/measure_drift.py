@@ -4,7 +4,7 @@
 Usage:
     python scripts/measure_drift.py MODEL CHECKPOINT FOLDER [--batch 16] [--anchor RELEASE]
 
-MODEL is supervlad or boq; the model flags and the release checkpoint are
+MODEL is supervlad, boq or dinov2_tokens; the model flags and the release checkpoint are
 the ones scripts/common.sh gives scripts/train.sh. Every image under FOLDER is encoded once by
 both models, in batches of --batch at the training image size, the same way the drift
 constraint of train.py (--ood_drift_folder) measures it: ||f(x) - f0(x)||^2 per image. The
@@ -22,6 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 MODELS = {
     "supervlad": ("SUPERVLAD_TRAIN_FLAGS", "SUPERVLAD_PRETRAINED"),
     "boq": ("BOQ_TRAIN_FLAGS", "BOQ_PRETRAINED"),
+    "dinov2_tokens": ("DINOV2_TOKENS_TRAIN_FLAGS", "DINOV2_TOKENS_PRETRAINED"),
 }
 
 

@@ -185,6 +185,16 @@ def compute_drift_loss(anchor_model: Optional[nn.Module], flat_images: Tensor, c
     return compute_align_loss(anchor_clean.float(), clean_descriptors)
 
 
+def combine_losses(args, clean_loss: Tensor, combined_adv_loss: Tensor, drift_loss: Tensor, ood_drift_term: Tensor) -> Tensor:
+    """The training objective; ``clean_loss`` itself is logged unweighted."""
+    return (
+        getattr(args, "clean_loss_weight", 1.0) * clean_loss
+        + combined_adv_loss
+        + getattr(args, "clean_drift_weight", 0.0) * drift_loss
+        + ood_drift_term
+    )
+
+
 def update_drift_multiplier(multiplier: float, drift: float, rho: float, lr: float) -> float:
     """Gradient ascent on the multiplier of ``drift <= rho``: grows while the drift exceeds rho, never below 0."""
     return max(0.0, multiplier + lr * (drift - rho))
@@ -946,11 +956,8 @@ def run_training(
                     "combined_adv_loss": clean_loss.new_zeros(()),
                 }
 
-                total_loss = (
-                    clean_loss
-                    + attack_outputs["combined_adv_loss"]
-                    + getattr(args, "clean_drift_weight", 0.0) * drift_loss
-                    + ood_drift_term
+                total_loss = combine_losses(
+                    args, clean_loss, attack_outputs["combined_adv_loss"], drift_loss, ood_drift_term
                 )
 
             if not torch.isfinite(total_loss):

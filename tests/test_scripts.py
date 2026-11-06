@@ -173,13 +173,24 @@ class ScriptTests(unittest.TestCase):
         self.assertIn("not found", result.stdout)
         self.assertFalse((self.root / "runs" / "x").exists())
 
+    def test_token_model_trains_with_fare_without_the_clean_loss(self):
+        result = run_script(self.root, "train.sh", "rbb_stage1", "dinov2_tokens", "fare", "0", "EPOCHS=30", "CLEAN_LOSS=0")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        [argv] = commands(result)
+        self.assertIn("--model=dinov2_tokens", argv)
+        args = parse_arguments(argv[2:])
+        self.assertEqual(args.model, "dinov2_tokens")
+        self.assertEqual(args.clean_loss_weight, 0.0)
+        self.assertEqual(args.resume, "checkpoints/dinov2_vitb14_pretrain.pth")
+        self.assertTrue(args.grad_checkpointing)
+
     def test_settings_rejected_for_the_wrong_method(self):
         cases = (
             ("plain_at", "AW=2"), ("plain_at", "ATTACK=shift"), ("plain_at", "DRIFT=1"),
             ("fare", "BANK=1"), ("fare", "LRW=2"), ("fare", "ANCHOR=rel"),
             ("araft", "ANCHOR=rel"), ("araft", "NEG_BANK=3"), ("araft", "BETA=2"), ("araft", "REL_T=0.5"),
             ("plain_at", "OOD_DRIFT=images"), ("araft", "OOD_RHO=0.1"), ("fare", "OOD_ETA=0.1"),
-            ("araft", "OOD_DRIFT=images"),
+            ("araft", "OOD_DRIFT=images"), ("araft", "CLEAN_LOSS=0"), ("plain_at", "CLEAN_LOSS=0"),
         )
         for method, setting in cases:
             with self.subTest(method=method, setting=setting):

@@ -4,7 +4,8 @@
 # Usage:
 #   scripts/train.sh NAME MODEL METHOD SEED [KEY=VALUE ...]
 #
-#   MODEL   supervlad | boq
+#   MODEL   supervlad | boq | dinov2_tokens (the DINOv2 backbone alone, CLS and mean patch
+#           token as the descriptor)
 #   METHOD  araft     ARAFT: listwise rank loss + anchor to the pretrained model
 #           fare      FARE: clean loss + anchor loss, no rank loss, against an attack pushing
 #                     the descriptor away from the pretrained model's
@@ -44,6 +45,7 @@
 #                                 ANCHOR=rel|both                                (default: 0.1)
 #     DRIFT=<float>               clean-drift weight, araft and fare             (default: 0)
 #     AW=<float>                  anchor weight lambda_anc, araft and fare       (default: 1.0)
+#     CLEAN_LOSS=<float>          weight of the clean metric-learning loss, fare (default: 1.0)
 #     OOD_DRIFT=<folder>          keep the clean descriptors of this folder's unlabeled images
 #                                 within OOD_RHO of the pretrained model's, with a learned
 #                                 multiplier; needs OOD_RHO and OOD_ETA, araft and fare
@@ -74,7 +76,7 @@ NAME=$1 MODEL=$2 METHOD=$3 SEED=$4
 shift 4
 POSITIVE=hardest LOSS=listwise AW=1.0 FTE=0 LR=1e-5 EPOCHS=100 ATTACK=rank BANK=0
 STOP_AT="${STOP_AT:-}" PRETRAINED="" EMA="" OOD_VAL=0 LRW="" BETA="" DRIFT="" NEG_BANK="" BANK_DEVICE="" ANCHOR="" REL_M="" REL_T=""
-OOD_DRIFT="" OOD_RHO="" OOD_ETA=""
+OOD_DRIFT="" OOD_RHO="" OOD_ETA="" CLEAN_LOSS=""
 # Exit unless METHOD is one of the arguments.
 only() {
   local methods="$*"
@@ -88,6 +90,7 @@ for setting in "$@"; do
     EPOCHS=* | FTE=* | LR=* | STOP_AT=* | PRETRAINED=* | EMA=* | OOD_VAL=*) ;;
     POSITIVE=* | LOSS=* | LRW=* | BANK=* | NEG_BANK=* | BANK_DEVICE=*) only araft plain_at ;;
     ATTACK=* | BETA=* | ANCHOR=* | REL_M=* | REL_T=*) only araft ;;
+    CLEAN_LOSS=*) only fare ;;
     DRIFT=* | AW=* | OOD_DRIFT=* | OOD_RHO=* | OOD_ETA=*) only araft fare ;;
     *) echo "unknown setting: ${setting}" >&2; exit 2 ;;
   esac
@@ -120,6 +123,7 @@ TRAIN_EPS=0.0685  # 4/255
 case "${MODEL}" in
   supervlad) MODEL_FLAGS=("${SUPERVLAD_TRAIN_FLAGS[@]}") INIT_CHECKPOINT=${SUPERVLAD_PRETRAINED} ;;
   boq) MODEL_FLAGS=("${BOQ_TRAIN_FLAGS[@]}") INIT_CHECKPOINT=${BOQ_PRETRAINED} ;;
+  dinov2_tokens) MODEL_FLAGS=("${DINOV2_TOKENS_TRAIN_FLAGS[@]}") INIT_CHECKPOINT=${DINOV2_TOKENS_PRETRAINED} ;;
   *) echo "unknown model: ${MODEL}" >&2; exit 2 ;;
 esac
 if [ -n "${PRETRAINED}" ]; then
@@ -176,6 +180,7 @@ EXTRA_FLAGS=()
 [ -z "${STOP_AT}" ] || EXTRA_FLAGS+=(--stop_by="${STOP_BY}")
 [ -z "${DRIFT}" ] || EXTRA_FLAGS+=(--clean_drift_weight="${DRIFT}")
 [ -z "${EMA}" ] || EXTRA_FLAGS+=(--ema_decay="${EMA}")
+[ -z "${CLEAN_LOSS}" ] || EXTRA_FLAGS+=(--clean_loss_weight="${CLEAN_LOSS}")
 [ "${OOD_VAL}" = 0 ] || EXTRA_FLAGS+=(--ood_val_datasets sped nordland)
 [ -z "${OOD_DRIFT}" ] || EXTRA_FLAGS+=(--ood_drift_folder="${OOD_DRIFT}" --ood_drift_rho="${OOD_RHO}" --ood_drift_lr="${OOD_ETA}")
 [ "${BANK}" = 0 ] || EXTRA_FLAGS+=(--negative_bank="${BANK_ROOT:-logs/banks}/${MODEL}_f0.pt")

@@ -247,6 +247,12 @@ def build_parser():
         help="Margin used for the retrieval adversarial objective.",
     )
     parser.add_argument(
+        "--clean_loss_weight",
+        type=float,
+        default=1.0,
+        help="Weight of the clean metric-learning loss. 0 trains on the adversarial and anchor terms only.",
+    )
+    parser.add_argument(
         "--clean_drift_weight",
         type=float,
         default=0.0,
@@ -436,6 +442,8 @@ def parse_arguments(argv=None):
         raise ValueError(
             "--align_target initial with --continue requires --run_dir (the original run directory holding initial_model.pth)"
         )
+    if args.clean_loss_weight < 0:
+        raise ValueError("--clean_loss_weight must be non-negative")
     if args.clean_drift_weight < 0:
         raise ValueError("--clean_drift_weight must be non-negative")
     if args.ood_drift_folder is None:

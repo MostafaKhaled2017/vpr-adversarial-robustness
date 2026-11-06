@@ -43,8 +43,17 @@ BOQ_TRAIN_FLAGS=(
   --train_resize 224 224
   --resize 322 322
 )
+# DINOv2 ViT-B/14 alone, described by its CLS and mean patch tokens: a backbone trained on its
+# own before it goes under another model's head (scripts/transplant.py).
+DINOV2_TOKENS_TRAIN_FLAGS=(
+  --model=dinov2_tokens
+  --foundation_model_path=checkpoints/dinov2_vitb14_pretrain.pth
+  --train_resize 322 322
+  --resize 322 322
+)
 SUPERVLAD_PRETRAINED=checkpoints/SuperVLAD_base.pth
 BOQ_PRETRAINED=checkpoints/boq_dinov2_12288.pth
+DINOV2_TOKENS_PRETRAINED=checkpoints/dinov2_vitb14_pretrain.pth
 
 # Model flags eval.py needs to rebuild a checkpoint. Batch size and gradient checkpointing
 # change memory use, not results.

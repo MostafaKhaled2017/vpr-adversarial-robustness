@@ -7,7 +7,7 @@ from src.models import ModelAdapter, ModelBundle, get_model_adapter, model_names
 
 class ModelRegistryTests(unittest.TestCase):
     def test_builtin_models_are_registered(self):
-        self.assertEqual(sorted(model_names()), ["boq", "supervlad"])
+        self.assertEqual(sorted(model_names()), ["boq", "dinov2_tokens", "supervlad"])
         self.assertEqual(get_model_adapter("supervlad").name, "supervlad")
 
     def test_unknown_model_reports_available_models(self):
