@@ -312,6 +312,21 @@ def build_parser():
         "collapse check.",
     )
     parser.add_argument(
+        "--ood_val_datasets",
+        type=str,
+        nargs="+",
+        default=[],
+        metavar="NAME",
+        help="Test sets under --eval_datasets_folder (e.g. sped nordland) on which every validation also "
+        "measures clean R@1, recorded as ood_clean. Monitoring only: selection is unchanged. Off by default.",
+    )
+    parser.add_argument(
+        "--ood_val_queries",
+        type=int,
+        default=500,
+        help="Queries sampled (with --val_query_seed) from each --ood_val_datasets set.",
+    )
+    parser.add_argument(
         "--stop_by",
         type=float,
         default=None,
@@ -421,6 +436,8 @@ def parse_arguments(argv=None):
         raise ValueError("--val_queries must be at least 1")
     if args.val_rank_steps < 1:
         raise ValueError("--val_rank_steps must be at least 1")
+    if args.ood_val_queries < 1:
+        raise ValueError("--ood_val_queries must be at least 1")
     if args.val_every < 1:
         raise ValueError("--val_every must be at least 1")
     if any(epsilon <= 0 for epsilon in args.val_rank_epsilons):

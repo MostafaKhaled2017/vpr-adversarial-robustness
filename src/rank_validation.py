@@ -4,7 +4,7 @@ The best checkpoint is the most robust epoch (clean R@1 for clean-only runs); ea
 --selection_clean_budgets entry additionally keeps a reporting checkpoint, the best such
 epoch whose clean R@1 stays within that budget of the initial model's."""
 from types import SimpleNamespace
-from typing import Dict, Optional, Sequence
+from typing import Dict, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -107,6 +107,42 @@ def evaluate_rank_validation(args, model: nn.Module, val_ds, query_indices: np.n
         return metrics
     finally:
         descriptor_model.train(was_training)
+
+
+def build_ood_validation_sets(args) -> Dict[str, Tuple[object, np.ndarray]]:
+    """Each --ood_val_datasets test set with its fixed query sample, built once per run."""
+    from .evaluation_data import build_vpr_evaluation_dataset
+
+    sets = {}
+    for name in getattr(args, "ood_val_datasets", None) or []:
+        dataset = build_vpr_evaluation_dataset(args, name)
+        queries = sample_validation_queries(dataset.get_positives(), args.ood_val_queries, args.val_query_seed)
+        sets[name] = (dataset, queries)
+    return sets
+
+
+def evaluate_ood_clean(args, model: nn.Module, datasets: Dict[str, Tuple[object, np.ndarray]]) -> Dict[str, float]:
+    """Clean R@1 on each out-of-domain set: its sampled queries against its full database.
+
+    Training never sees these domains, so the numbers show what fine-tuning costs outside the
+    validation domain; they do not enter checkpoint selection.
+    """
+    descriptor_model = unwrap_model(model)
+    was_training = descriptor_model.training
+    descriptor_model.eval()
+    results = {}
+    try:
+        for name, (dataset, query_indices) in datasets.items():
+            query_indices = np.asarray(query_indices, dtype=np.int64)
+            database = _extract(args, dataset, descriptor_model, range(dataset.database_num), queryflag=1)
+            queries = _extract(args, dataset, descriptor_model, dataset.database_num + query_indices, queryflag=1)
+            positives_all = dataset.get_positives()
+            positives = [positives_all[index] for index in query_indices]
+            recalls = compute_recalls_from_features(database, queries, positives, args.recall_values)
+            results[name] = float(recalls["recalls"]["R@1"])
+    finally:
+        descriptor_model.train(was_training)
+    return results
 
 
 def select_checkpoint(

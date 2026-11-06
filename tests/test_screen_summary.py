@@ -119,6 +119,20 @@ class ScreenSummaryTest(unittest.TestCase):
         self.assertEqual(row_a, ["screen_a", "completed", "12", "82.00", "8.00", "45.00", "25.00", "70.00", "6 (50.00)", "9 (60.00)"])
         self.assertIn("screen_b", lines[3])
 
+    def test_ood_columns_only_when_a_record_has_them(self):
+        header = screen_summary.format_table(screen_summary.summarise(self.root, 12)).splitlines()[0]
+        self.assertNotIn("ood", header)
+        rec = record(12, 85.0, 1.0, 1.0, 5.0, initial=88.0)
+        rec["ood_clean"] = {"sped": 70.5, "nordland": 30.25}
+        write_run(self.root, "screen_c", [rec], "completed")
+        rows = screen_summary.summarise(self.root, 12)
+        self.assertEqual(list(rows[0])[7:10], ["robust", "ood sped", "ood nordland"])
+        by_run = {row["run"]: row for row in rows}
+        self.assertEqual((by_run["screen_c"]["ood sped"], by_run["screen_c"]["ood nordland"]), (70.5, 30.25))
+        self.assertEqual((by_run["screen_a"]["ood sped"], by_run["screen_b"]["ood sped"]), ("-", "-"))
+        # Another epoch without the field shows no such column.
+        self.assertNotIn("ood sped", screen_summary.summarise(self.root, 3)[0])
+
     def test_main_prints_table(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):

@@ -122,6 +122,8 @@ class ScriptTests(unittest.TestCase):
              {"attack": ["CombinedShiftRankLinfAttack(model, epsilon=0.0685, steps=5, rank_weight=0.5)"]}),
             (("DRIFT=1",), {"clean_drift_weight": 1.0}),
             (("EMA=0.999",), {"ema_decay": 0.999}),
+            (("OOD_VAL=1",), {"ood_val_datasets": ["sped", "nordland"]}),
+            (("OOD_VAL=0",), {"ood_val_datasets": []}),
             (("BANK=1",), {"negative_bank": bank}),
             (("BANK=1", "NEG_BANK=8"), {"bank_negatives": 8}),
             (("BANK=1", "BANK_DEVICE=cpu"), {"bank_device": "cpu"}),

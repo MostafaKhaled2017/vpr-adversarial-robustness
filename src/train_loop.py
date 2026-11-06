@@ -38,7 +38,13 @@ from .losses import (
     query_is_correct,
 )
 from .negative_bank import merge_bank_negatives
-from .rank_validation import evaluate_rank_validation, sample_validation_queries, select_checkpoint
+from .rank_validation import (
+    build_ood_validation_sets,
+    evaluate_ood_clean,
+    evaluate_rank_validation,
+    sample_validation_queries,
+    select_checkpoint,
+)
 from .targets import RetrievalAttackBatch, select_rank_targets
 
 
@@ -410,6 +416,7 @@ def build_validation_metrics_record(
     validation_scores: Dict[str, float],
     collapse: Dict[str, float] | None = None,
     initial_clean_r1: float | None = None,
+    ood_clean: Dict[str, float] | None = None,
 ) -> Dict[str, object]:
     attacks = {
         attack_name: {f"R@{recall_at}": recall_value(attack_metrics, recall_at) for recall_at in REPORTED_RECALL_VALUES}
@@ -435,6 +442,8 @@ def build_validation_metrics_record(
         record["eligible_budgets"] = list(validation_scores["eligible_budgets"])
     if initial_clean_r1 is not None:
         record["initial_clean_r1"] = initial_clean_r1
+    if ood_clean is not None:
+        record["ood_clean"] = dict(ood_clean)
     return record
 
 
@@ -635,6 +644,15 @@ def run_training(
     validation_query_indices = sample_validation_queries(val_ds.get_positives(), args.val_queries, args.val_query_seed)
     logging.info("Rank-PGD validation on %d sampled queries.", len(validation_query_indices))
 
+    ood_validation_sets = build_ood_validation_sets(args)
+    for name, (dataset, queries) in ood_validation_sets.items():
+        logging.info(
+            "Out-of-domain clean validation on %s: %d sampled queries, %d database images.",
+            name,
+            len(queries),
+            dataset.database_num,
+        )
+
     def validate(epoch_initial: bool):
         metrics = evaluate_rank_validation(args, evaluated_model, val_ds, validation_query_indices)
         scores = select_checkpoint(
@@ -645,13 +663,26 @@ def run_training(
         )
         return metrics, scores
 
+    def validate_ood():
+        """Clean R@1 per out-of-domain set, or None when none is configured."""
+        if not ood_validation_sets:
+            return None
+        start = time.time()
+        ood_clean = evaluate_ood_clean(args, evaluated_model, ood_validation_sets)
+        logging.info(
+            "ood clean R@1: %s (%.0f s)",
+            " ".join(f"{name}={value:.2f}" for name, value in ood_clean.items()),
+            time.time() - start,
+        )
+        return ood_clean
+
     if start_epoch == 0 and not resume_runtime_state:
         logging.info("Begin initial validation before training")
         initial_metrics, initial_scores = validate(True)
         initial_clean_r1 = initial_scores["clean_score"]
         log_rank_selection(initial_scores, initial_clean_r1)
         initial_record = build_validation_metrics_record(
-            -1, initial_metrics, initial_scores, initial_clean_r1=initial_clean_r1
+            -1, initial_metrics, initial_scores, initial_clean_r1=initial_clean_r1, ood_clean=validate_ood()
         )
         append_validation_metrics(args, initial_record)
         log_validation_recalls("before training", initial_metrics)
@@ -1021,7 +1052,12 @@ def run_training(
         selection_score = validation_scores["selection_score"]
         collapse = measure_collapse(args, evaluated_model, val_ds, reference_descriptors, collapse_sample_indices)
         validation_record = build_validation_metrics_record(
-            epoch_num + 1, metrics, validation_scores, collapse, initial_clean_r1=initial_clean_r1
+            epoch_num + 1,
+            metrics,
+            validation_scores,
+            collapse,
+            initial_clean_r1=initial_clean_r1,
+            ood_clean=validate_ood(),
         )
         append_validation_metrics(args, validation_record)
         log_validation_recalls(f"after epoch {epoch_num + 1:02d}", metrics)

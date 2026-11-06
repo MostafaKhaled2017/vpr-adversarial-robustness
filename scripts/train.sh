@@ -20,6 +20,9 @@
 #     EMA=<float>                 decay of a moving average of the weights that is validated,
 #                                 saved and tested in place of the weights, all methods
 #                                                                                (default: off)
+#     OOD_VAL=0|1                 clean R@1 on 500 SPED and 500 Nordland queries after every
+#                                 validation, recorded as ood_clean; selection unchanged,
+#                                 all methods                                    (default: 0)
 #     POSITIVE=hardest|closest    protected positive, araft and plain_at         (default: hardest)
 #     LOSS=listwise|hinge         rank loss, araft and plain_at                  (default: listwise)
 #     LRW=<float>                 rank loss weight, araft and plain_at           (default: 1.0)
@@ -59,7 +62,7 @@ source "${SCRIPT_DIR}/common.sh"
 NAME=$1 MODEL=$2 METHOD=$3 SEED=$4
 shift 4
 POSITIVE=hardest LOSS=listwise AW=1.0 FTE=0 LR=1e-5 EPOCHS=100 ATTACK=rank BANK=0
-STOP_AT="${STOP_AT:-}" EMA="" LRW="" BETA="" DRIFT="" NEG_BANK="" BANK_DEVICE="" ANCHOR="" REL_M="" REL_T=""
+STOP_AT="${STOP_AT:-}" EMA="" OOD_VAL=0 LRW="" BETA="" DRIFT="" NEG_BANK="" BANK_DEVICE="" ANCHOR="" REL_M="" REL_T=""
 # Exit unless METHOD is one of the arguments.
 only() {
   local methods="$*"
@@ -70,7 +73,7 @@ only() {
 }
 for setting in "$@"; do
   case "${setting}" in
-    EPOCHS=* | FTE=* | LR=* | STOP_AT=* | EMA=*) ;;
+    EPOCHS=* | FTE=* | LR=* | STOP_AT=* | EMA=* | OOD_VAL=*) ;;
     POSITIVE=* | LOSS=* | LRW=* | BANK=* | NEG_BANK=* | BANK_DEVICE=*) only araft plain_at ;;
     ATTACK=* | BETA=* | ANCHOR=* | REL_M=* | REL_T=*) only araft ;;
     DRIFT=* | AW=*) only araft fare ;;
@@ -80,6 +83,7 @@ for setting in "$@"; do
 done
 fail() { echo "$*" >&2; exit 2; }
 case "${BANK}" in 0 | 1) ;; *) fail "BANK must be 0 or 1" ;; esac
+case "${OOD_VAL}" in 0 | 1) ;; *) fail "OOD_VAL must be 0 or 1" ;; esac
 [ "${BANK}" = 1 ] || [ -z "${NEG_BANK}${BANK_DEVICE}" ] || fail "NEG_BANK and BANK_DEVICE need BANK=1"
 case "${ANCHOR}" in
   "" | iso) ;;
@@ -151,6 +155,7 @@ EXTRA_FLAGS=()
 [ -z "${STOP_AT}" ] || EXTRA_FLAGS+=(--stop_by="${STOP_BY}")
 [ -z "${DRIFT}" ] || EXTRA_FLAGS+=(--clean_drift_weight="${DRIFT}")
 [ -z "${EMA}" ] || EXTRA_FLAGS+=(--ema_decay="${EMA}")
+[ "${OOD_VAL}" = 0 ] || EXTRA_FLAGS+=(--ood_val_datasets sped nordland)
 [ "${BANK}" = 0 ] || EXTRA_FLAGS+=(--negative_bank="${BANK_ROOT:-logs/banks}/${MODEL}_f0.pt")
 [ -z "${NEG_BANK}" ] || EXTRA_FLAGS+=(--bank_negatives="${NEG_BANK}")
 [ -z "${BANK_DEVICE}" ] || EXTRA_FLAGS+=(--bank_device="${BANK_DEVICE}")

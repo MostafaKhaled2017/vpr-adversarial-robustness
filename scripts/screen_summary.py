@@ -9,6 +9,8 @@ table shows, at the requested epoch (matched literally against each record's
 "epoch" field), the clean R@1, its drop from the initial model (epoch -1), the
 R@1 under each attack and the robust score. Each b<N> column names the most
 robust validated epoch whose clean drop is at most N, as "<epoch> (<robust>)".
+When a record at that epoch holds clean R@1 on out-of-domain sets ("ood_clean"),
+one "ood <set>" column per set follows the robust score.
 """
 import argparse
 import json
@@ -48,6 +50,10 @@ def summarise(root: Path, epoch: int, budgets=(5.0, 7.0)) -> list:
         if (run_dir / "validation_recalls.jsonl").is_file()
     }
     attack_names = sorted({name for records, _ in runs.values() for rec in records.values() for name in rec.get("attacks", {})})
+    # Set names in first-seen order, from the compared epoch only.
+    ood_names = list(dict.fromkeys(
+        name for records, _ in runs.values() for name in (records.get(epoch) or {}).get("ood_clean", {})
+    ))
     rows = []
     for run_name, (records, state) in runs.items():
         initial = _initial_clean(records)
@@ -57,6 +63,7 @@ def summarise(root: Path, epoch: int, budgets=(5.0, 7.0)) -> list:
             row.update({"clean_r1": "-", "clean_drop": "-"})
             row.update({_attack_column(name): "-" for name in attack_names})
             row["robust"] = "-"
+            row.update({f"ood {name}": "-" for name in ood_names})
         else:
             drop = _drop(initial, rec)
             row["clean_r1"] = rec["clean"]["R@1"]
@@ -64,6 +71,8 @@ def summarise(root: Path, epoch: int, budgets=(5.0, 7.0)) -> list:
             attacks = rec.get("attacks", {})
             row.update({_attack_column(name): attacks[name]["R@1"] if name in attacks else "-" for name in attack_names})
             row["robust"] = rec["robust_score"]
+            ood_clean = rec.get("ood_clean", {})
+            row.update({f"ood {name}": ood_clean.get(name, "-") for name in ood_names})
         trained = [r for e, r in records.items() if e >= 0]
         for budget in budgets:
             eligible = [r for r in trained if (d := _drop(initial, r)) is not None and d <= budget]
