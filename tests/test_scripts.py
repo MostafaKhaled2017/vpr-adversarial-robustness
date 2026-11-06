@@ -155,6 +155,24 @@ class ScriptTests(unittest.TestCase):
         [argv] = commands(result)
         self.assertEqual(parse_arguments(argv[2:]).ood_drift_folder, "images")
 
+    def test_pretrained_replaces_the_release_for_every_method(self):
+        for method in ("araft", "plain_at", "fare"):
+            with self.subTest(method=method):
+                result = run_script(self.root, "train.sh", "x", "supervlad", method, "0", "PRETRAINED=/tmp/x.pth")
+                [argv] = commands(result)
+                args = parse_arguments(argv[2:])
+                self.assertEqual(args.resume, "/tmp/x.pth")
+                self.assertTrue(args.resume_model_only)
+                if method != "plain_at":
+                    self.assertEqual(args.align_target, "initial")
+
+    def test_missing_pretrained_checkpoint_fails(self):
+        result = run_script(self.root, "train.sh", "x", "supervlad", "araft", "0",
+                            f"PRETRAINED={self.root / 'missing.pth'}", DRY_RUN="0")
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("not found", result.stdout)
+        self.assertFalse((self.root / "runs" / "x").exists())
+
     def test_settings_rejected_for_the_wrong_method(self):
         cases = (
             ("plain_at", "AW=2"), ("plain_at", "ATTACK=shift"), ("plain_at", "DRIFT=1"),

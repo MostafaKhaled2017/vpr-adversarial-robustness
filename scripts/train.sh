@@ -17,6 +17,10 @@
 #                                 final test, could end after this time; rerun to resume.
 #                                 A session's first epoch always starts. All methods
 #                                                                                (default: none)
+#     PRETRAINED=<checkpoint>     checkpoint the run starts from and anchors to, in place of
+#                                 the release weights (the run's initial_model.pth is copied
+#                                 from it, and the anchor loads initial_model.pth), all methods
+#                                                                                (default: release)
 #     EMA=<float>                 decay of a moving average of the weights that is validated,
 #                                 saved and tested in place of the weights, all methods
 #                                                                                (default: off)
@@ -69,7 +73,7 @@ source "${SCRIPT_DIR}/common.sh"
 NAME=$1 MODEL=$2 METHOD=$3 SEED=$4
 shift 4
 POSITIVE=hardest LOSS=listwise AW=1.0 FTE=0 LR=1e-5 EPOCHS=100 ATTACK=rank BANK=0
-STOP_AT="${STOP_AT:-}" EMA="" OOD_VAL=0 LRW="" BETA="" DRIFT="" NEG_BANK="" BANK_DEVICE="" ANCHOR="" REL_M="" REL_T=""
+STOP_AT="${STOP_AT:-}" PRETRAINED="" EMA="" OOD_VAL=0 LRW="" BETA="" DRIFT="" NEG_BANK="" BANK_DEVICE="" ANCHOR="" REL_M="" REL_T=""
 OOD_DRIFT="" OOD_RHO="" OOD_ETA=""
 # Exit unless METHOD is one of the arguments.
 only() {
@@ -81,7 +85,7 @@ only() {
 }
 for setting in "$@"; do
   case "${setting}" in
-    EPOCHS=* | FTE=* | LR=* | STOP_AT=* | EMA=* | OOD_VAL=*) ;;
+    EPOCHS=* | FTE=* | LR=* | STOP_AT=* | PRETRAINED=* | EMA=* | OOD_VAL=*) ;;
     POSITIVE=* | LOSS=* | LRW=* | BANK=* | NEG_BANK=* | BANK_DEVICE=*) only araft plain_at ;;
     ATTACK=* | BETA=* | ANCHOR=* | REL_M=* | REL_T=*) only araft ;;
     DRIFT=* | AW=* | OOD_DRIFT=* | OOD_RHO=* | OOD_ETA=*) only araft fare ;;
@@ -114,10 +118,14 @@ RUN_DIR="${RUN_ROOT:-logs}/${NAME}"
 TRAIN_EPS=0.0685  # 4/255
 
 case "${MODEL}" in
-  supervlad) MODEL_FLAGS=("${SUPERVLAD_TRAIN_FLAGS[@]}") PRETRAINED=${SUPERVLAD_PRETRAINED} ;;
-  boq) MODEL_FLAGS=("${BOQ_TRAIN_FLAGS[@]}") PRETRAINED=${BOQ_PRETRAINED} ;;
+  supervlad) MODEL_FLAGS=("${SUPERVLAD_TRAIN_FLAGS[@]}") INIT_CHECKPOINT=${SUPERVLAD_PRETRAINED} ;;
+  boq) MODEL_FLAGS=("${BOQ_TRAIN_FLAGS[@]}") INIT_CHECKPOINT=${BOQ_PRETRAINED} ;;
   *) echo "unknown model: ${MODEL}" >&2; exit 2 ;;
 esac
+if [ -n "${PRETRAINED}" ]; then
+  [ -f "${PRETRAINED}" ] || [ "${DRY_RUN:-0}" = "1" ] || fail "PRETRAINED checkpoint not found: ${PRETRAINED}"
+  INIT_CHECKPOINT=${PRETRAINED}
+fi
 MODEL_FLAGS+=(--freeze_te="${FTE}")
 [ "${FTE}" -ge 8 ] || MODEL_FLAGS+=(--grad_checkpointing)
 
@@ -181,7 +189,7 @@ esac
 [ -z "${REL_M}" ] || EXTRA_FLAGS+=(--relational_neighbours="${REL_M}")
 [ -z "${REL_T}" ] || EXTRA_FLAGS+=(--relational_temperature="${REL_T}")
 
-INIT_FLAGS=(--resume="${PRETRAINED}" --resume_model_only)
+INIT_FLAGS=(--resume="${INIT_CHECKPOINT}" --resume_model_only)
 if [ -d "${RUN_DIR}" ]; then
   state=""
   [ ! -f "${RUN_DIR}/run_status.json" ] || \
